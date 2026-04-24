@@ -51,10 +51,12 @@ var imageUrl = 'map.jpg';
 var bounds = [[0,0], [height, width]];
 var overlay = L.imageOverlay(imageUrl, bounds).addTo(map);
 
-overlay.getElement().style.border = "4px solid #0f0b07";
-overlay.getElement().style.boxShadow = "0 0 60px rgba(0,0,0,0.8)";
-overlay.getElement().style.boxShadow =
-  "0 0 40px rgba(0,0,0,0.9), inset 0 0 20px rgba(0,0,0,0.5)";
+overlay.on('load', function() {
+  var el = overlay.getElement();
+
+  el.style.border = "4px solid #0f0b07";
+  el.style.boxShadow = "0 0 60px rgba(0,0,0,0.9), inset 0 0 20px rgba(0,0,0,0.5)";
+});
 
 map.fitBounds(bounds);
 
