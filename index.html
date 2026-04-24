@@ -26,15 +26,17 @@
   position: relative;
 }
 
-  #map::after {
+#map::after {
   content: "";
   position: absolute;
-  top: 40px;
-  left: 60px;
-  right: 60px;
-  bottom: 40px;
+
+  top: 5%;
+  left: 5%;
+  right: 5%;
+  bottom: 5%;
 
   border: 4px solid #0f0b07;
+
   box-shadow: 
     0 0 40px rgba(0,0,0,0.9),
     inset 0 0 20px rgba(0,0,0,0.5);
@@ -70,25 +72,7 @@ var imageUrl = 'map.jpg';
 var bounds = [[0,0], [height, width]];
 var overlay = L.imageOverlay(imageUrl, bounds).addTo(map);
 
-overlay.on('load', function() {
-  var el = overlay.getElement();
-
-  el.style.border = "4px solid #0f0b07";
-  el.style.boxShadow = "0 0 60px rgba(0,0,0,0.9), inset 0 0 20px rgba(0,0,0,0.5)";
-});
-
 map.fitBounds(bounds);
-
-function updatePadding() {
-  if (map.getZoom() === map.getMinZoom()) {
-    document.getElementById('map').style.padding = "40px 80px";
-  } else {
-    document.getElementById('map').style.padding = "0px";
-  }
-}
-
-updatePadding();
-map.on('zoomend', updatePadding);
 
 if (map.getZoom() === map.getMinZoom()) {
   map.dragging.disable();
