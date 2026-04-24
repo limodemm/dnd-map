@@ -21,12 +21,7 @@
 
   background: transparent;
 
-  border: 12px solid #3b2a1a; /* рамка */
-  border-radius: 8px;
-
-  box-shadow: 
-    0 0 40px rgba(0,0,0,0.8), /* общая тень */
-    inset 0 0 20px rgba(0,0,0,0.5); /* внутренняя */
+  box-shadow: 0 0 60px rgba(0,0,0,0.9);
 }
   </style>
 </head>
@@ -54,7 +49,12 @@ var map = L.map('map', {
 var imageUrl = 'map.jpg';
 
 var bounds = [[0,0], [height, width]];
-L.imageOverlay(imageUrl, bounds).addTo(map);
+var overlay = L.imageOverlay(imageUrl, bounds).addTo(map);
+
+overlay.getElement().style.border = "4px solid #0f0b07";
+overlay.getElement().style.boxShadow = "0 0 60px rgba(0,0,0,0.8)";
+overlay.getElement().style.boxShadow =
+  "0 0 40px rgba(0,0,0,0.9), inset 0 0 20px rgba(0,0,0,0.5)";
 
 map.fitBounds(bounds);
 
