@@ -48,6 +48,18 @@ L.imageOverlay(imageUrl, bounds).addTo(map);
 
 map.fitBounds(bounds);
 
+if (map.getZoom() === map.getMinZoom()) {
+  map.dragging.disable();
+}
+
+map.on('zoomend', function() {
+  if (map.getZoom() === map.getMinZoom()) {
+    map.dragging.disable();
+  } else {
+    map.dragging.enable();
+  }
+});
+
 </script>
 
 </body>
