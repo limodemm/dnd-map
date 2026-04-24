@@ -15,26 +15,20 @@
 }
 
 #map {
-  height: 90vh;
-  width: 90vw;
-  margin: 5vh auto;
+  height: 100%;
+  width: 100%;
 
   background: transparent;
-
-  box-shadow: 0 0 25px rgba(0,0,0,0.6);
-
-  position: relative;
-  overflow: visible;
 }
 
-#map::after {
+#map-wrapper::after {
   content: "";
   position: absolute;
 
-  top: -2%;
-  left: 9%;
-  right: 9%;
-  bottom: -2%;
+  top: -3%;
+  bottom: -3%;
+  left: 2%;
+  right: 2%;
 
   border: 4px solid #0f0b07;
 
@@ -52,11 +46,22 @@
 .leaflet-pane img {
   border: none !important;
 }
+
+#map-wrapper {
+  height: 90vh;
+  width: 90vw;
+  margin: 5vh auto;
+
+  position: relative;
+}
+
   </style>
 </head>
 
 <body>
-<div id="map"></div>
+<div id="map-wrapper">
+  <div id="map"></div>
+</div>
 
 <script>
 // размеры твоей карты (пока оставим так)
