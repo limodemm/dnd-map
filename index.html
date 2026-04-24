@@ -24,9 +24,13 @@ var width = 7016;
 var height = 4960;
 
 // создаём карту
+var bounds = [[0,0], [height, width]];
+
 var map = L.map('map', {
   crs: L.CRS.Simple,
-  minZoom: -2
+  minZoom: -2,
+  maxBounds: bounds,
+  maxBoundsViscosity: 1.0
 });
 
 // загружаем картинку
