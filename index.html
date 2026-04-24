@@ -22,6 +22,10 @@
   background: transparent;
 
   box-shadow: 0 0 60px rgba(0,0,0,0.9);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
   </style>
 </head>
@@ -59,6 +63,17 @@ overlay.on('load', function() {
 });
 
 map.fitBounds(bounds);
+
+function updatePadding() {
+  if (map.getZoom() === map.getMinZoom()) {
+    document.getElementById('map').style.padding = "40px 80px";
+  } else {
+    document.getElementById('map').style.padding = "0px";
+  }
+}
+
+updatePadding();
+map.on('zoomend', updatePadding);
 
 if (map.getZoom() === map.getMinZoom()) {
   map.dragging.disable();
