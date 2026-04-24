@@ -110,20 +110,22 @@ var overlay = L.imageOverlay(imageUrl, bounds).addTo(map);
 
 map.fitBounds(bounds);
 
-if (map.getZoom() === map.getMinZoom()) {
-  map.dragging.disable();
-}
-
 function updateFrame() {
   var mapEl = document.getElementById('map');
   var wrapper = document.getElementById('map-wrapper');
 
   if (map.getZoom() === map.getMinZoom()) {
+    // минимальный зум
     wrapper.classList.remove("zoomed");
     mapEl.classList.remove("zoomed");
+
+    map.dragging.disable(); // ← блокируем
   } else {
+    // зум есть
     wrapper.classList.add("zoomed");
     mapEl.classList.add("zoomed");
+
+    map.dragging.enable(); // ← ВОТ ЭТО ВАЖНО
   }
 }
 
