@@ -277,6 +277,24 @@ function saveMarker() {
     var marker = savedMarkers.find(m => m.id === editId);
     marker.title = title;
     marker.description = desc;
+
+    // обновляем popup БЕЗ reload
+    map.eachLayer(function(layer) {
+      if (layer instanceof L.Marker && layer._customId === editId) {
+        layer.setPopupContent(`
+          <div class="marker-popup">
+            <div class="marker-title">${title}</div>
+            <div class="marker-desc">${desc}</div>
+
+            <div class="marker-buttons">
+              <button onclick="editMarker(${editId})">✏️</button>
+              <button onclick="deleteMarker(${editId})">🗑</button>
+            </div>
+          </div>
+        `);
+      }
+    });
+
   } else {
     var newMarker = {
       lat: currentLatLng.lat,
@@ -293,6 +311,13 @@ function saveMarker() {
   localStorage.setItem("markers", JSON.stringify(savedMarkers));
   closeForm();
 }
+
+document.addEventListener("keydown", function(e) {
+  if (e.key === "Escape") {
+    map.closePopup();
+    closeForm(); // если форма открыта
+  }
+});
 
 </script>
 
