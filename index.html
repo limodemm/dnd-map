@@ -170,12 +170,12 @@ var bounds = [[0,0], [height, width]];
 var overlay = L.imageOverlay(imageUrl, bounds).addTo(map);
 
 map.fitBounds(bounds, {
-  padding: [10, 10],
+  padding: [0, 0],
   animate: false
 });
 
 // чуть уменьшаем зум, чтобы убрать обрезание
-map.setZoom(map.getZoom() - 0.05);
+map.setZoom(map.getZoom() - 0.03);
 
 map.setMaxBounds(bounds);
 map.panInsideBounds(bounds, { animate: false });
@@ -198,6 +198,10 @@ function updateFrame() {
     mapEl.classList.remove("zoomed");
 
     map.dragging.disable(); // ← блокируем
+    map.fitBounds(bounds, {
+  padding: [0, 0],
+  animate: false
+});
   } else {
     // зум есть
     wrapper.classList.add("zoomed");
