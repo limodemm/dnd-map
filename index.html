@@ -82,11 +82,31 @@
 </head>
 
 <body>
+
+<div id="marker-form" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+background:#1e1e1e; padding:20px; border-radius:8px; z-index:1000; color:white; width:300px;">
+
+  <h3 id="form-title">Новая метка</h3>
+
+  <input id="marker-title" placeholder="Название" style="width:100%; margin-bottom:10px;" />
+  
+  <textarea id="marker-desc" placeholder="Описание" style="width:100%; height:80px;"></textarea>
+
+  <div style="margin-top:10px; display:flex; justify-content:space-between;">
+    <button onclick="saveMarker()">Сохранить</button>
+    <button onclick="closeForm()">Отмена</button>
+  </div>
+</div>
+
 <div id="map-wrapper">
   <div id="map"></div>
 </div>
 
 <script>
+
+var currentLatLng = null;
+var editId = null;
+
 // размеры твоей карты (пока оставим так)
 var width = 7016;
 var height = 4960;
@@ -162,24 +182,14 @@ function addMarker(data) {
 
 // --- ДОБАВЛЕНИЕ МЕТКИ ПО КЛИКУ ---
 map.on('click', function(e) {
-  var title = prompt("Название метки:");
-  if (!title) return;
+  currentLatLng = e.latlng;
+  editId = null;
 
-  var description = prompt("Описание:");
-  if (!description) return;
+  document.getElementById("form-title").innerText = "Новая метка";
+  document.getElementById("marker-title").value = "";
+  document.getElementById("marker-desc").value = "";
 
-  var markerData = {
-    lat: e.latlng.lat,
-    lng: e.latlng.lng,
-    title: title,
-    description: description,
-    id: Date.now()
-  };
-
-  addMarker(markerData);
-
-  savedMarkers.push(markerData);
-  localStorage.setItem("markers", JSON.stringify(savedMarkers));
+  document.getElementById("marker-form").style.display = "block";
 });
 
 function deleteMarker(id) {
@@ -197,18 +207,45 @@ function editMarker(id) {
   var marker = savedMarkers.find(m => m.id === id);
   if (!marker) return;
 
-  var newTitle = prompt("Новое название:", marker.title);
-  if (!newTitle) return;
+  editId = id;
+  currentLatLng = { lat: marker.lat, lng: marker.lng };
 
-  var newDesc = prompt("Новое описание:", marker.description);
-  if (!newDesc) return;
+  document.getElementById("form-title").innerText = "Редактирование";
+  document.getElementById("marker-title").value = marker.title;
+  document.getElementById("marker-desc").value = marker.description;
 
-  marker.title = newTitle;
-  marker.description = newDesc;
+  document.getElementById("marker-form").style.display = "block";
+}
+
+function closeForm() {
+  document.getElementById("marker-form").style.display = "none";
+}
+
+function saveMarker() {
+  var title = document.getElementById("marker-title").value;
+  var desc = document.getElementById("marker-desc").value;
+
+  if (!title) return;
+
+  if (editId) {
+    var marker = savedMarkers.find(m => m.id === editId);
+    marker.title = title;
+    marker.description = desc;
+  } else {
+    var newMarker = {
+      lat: currentLatLng.lat,
+      lng: currentLatLng.lng,
+      title: title,
+      description: desc,
+      id: Date.now()
+    };
+
+    savedMarkers.push(newMarker);
+    addMarker(newMarker);
+  }
 
   localStorage.setItem("markers", JSON.stringify(savedMarkers));
-
-  location.reload();
+  closeForm();
 }
 
 </script>
