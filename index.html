@@ -181,15 +181,6 @@ map.on('click', function(e) {
   savedMarkers.push(markerData);
   localStorage.setItem("markers", JSON.stringify(savedMarkers));
 });
-  // сохраняем
-  savedMarkers.push({
-    lat: e.latlng.lat,
-    lng: e.latlng.lng,
-    text: text
-  });
-
-  localStorage.setItem("markers", JSON.stringify(savedMarkers));
-});
 
 function deleteMarker(id) {
   var confirmDelete = confirm("Удалить метку?");
