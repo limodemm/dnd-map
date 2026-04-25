@@ -132,6 +132,14 @@ background:#1e1e1e; padding:20px; border-radius:8px; z-index:1000; color:white; 
   
   <textarea id="marker-desc" placeholder="Описание" style="width:100%; height:80px;"></textarea>
 
+  <select id="marker-type" style="width:100%; margin-top:10px;">
+  <option value="note">📜 Заметка</option>
+  <option value="camp">🏕 Лагерь</option>
+  <option value="cave">🕳 Пещера</option>
+  <option value="interest">⭐ Интересное место</option>
+  <option value="quest">❓ Квест</option>
+</select>
+  
   <div style="margin-top:10px; display:flex; justify-content:space-between;">
     <button onclick="saveMarker()">Сохранить</button>
     <button onclick="closeForm()">Отмена</button>
@@ -147,6 +155,42 @@ background:#1e1e1e; padding:20px; border-radius:8px; z-index:1000; color:white; 
 var currentLatLng = null;
 var editId = null;
 var popupJustClosed = false;
+var icons = {
+  camp: L.icon({
+    iconUrl: 'camp.png',
+    iconSize: [40, 40],
+    iconAnchor: [20, 40],
+    popupAnchor: [0, -35]
+  }),
+
+  cave: L.icon({
+    iconUrl: 'cave.png',
+    iconSize: [40, 40],
+    iconAnchor: [20, 40],
+    popupAnchor: [0, -35]
+  }),
+
+  note: L.icon({
+    iconUrl: 'note.png',
+    iconSize: [40, 40],
+    iconAnchor: [20, 40],
+    popupAnchor: [0, -35]
+  }),
+
+  interest: L.icon({
+    iconUrl: 'interest.png',
+    iconSize: [40, 40],
+    iconAnchor: [20, 40],
+    popupAnchor: [0, -35]
+  }),
+
+  quest: L.icon({
+    iconUrl: 'quest.png',
+    iconSize: [40, 40],
+    iconAnchor: [20, 40],
+    popupAnchor: [0, -35]
+  })
+};
 
 // размеры твоей карты (пока оставим так)
 var width = 7016;
@@ -217,7 +261,10 @@ savedMarkers.forEach(function(m) {
 });
 
 function addMarker(data) {
-  var marker = L.marker([data.lat, data.lng]).addTo(map);
+  var marker = L.marker(
+  [data.lat, data.lng],
+  { icon: icons[data.type || "note"] }
+).addTo(map);
 
 function renderPopup() {
   return `
@@ -289,6 +336,7 @@ function closeForm() {
 function saveMarker() {
   var title = document.getElementById("marker-title").value;
   var desc = document.getElementById("marker-desc").value;
+  var type = document.getElementById("marker-type").value;
 
   if (!title) return;
 
@@ -296,6 +344,7 @@ function saveMarker() {
     var marker = savedMarkers.find(m => m.id === editId);
     marker.title = title;
     marker.description = desc;
+    marker.type = type;
 
     // обновляем popup БЕЗ reload
     map.eachLayer(function(layer) {
@@ -320,6 +369,7 @@ function saveMarker() {
       lng: currentLatLng.lng,
       title: title,
       description: desc,
+      type: type,
       id: Date.now()
     };
 
