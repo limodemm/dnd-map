@@ -49,8 +49,9 @@
 }
 
 #map-wrapper {
-  height: 90vh;
   width: 90vw;
+  aspect-ratio: 7016 / 4960;
+
   margin: 5vh auto;
 
   position: relative;
@@ -174,9 +175,6 @@ map.fitBounds(bounds, {
   animate: false
 });
 
-// чуть уменьшаем зум, чтобы убрать обрезание
-map.setZoom(map.getZoom() - 0.03);
-
 map.setMaxBounds(bounds);
 map.panInsideBounds(bounds, { animate: false });
 
@@ -198,10 +196,7 @@ function updateFrame() {
     mapEl.classList.remove("zoomed");
 
     map.dragging.disable(); // ← блокируем
-    map.fitBounds(bounds, {
-  padding: [0, 0],
-  animate: false
-});
+
   } else {
     // зум есть
     wrapper.classList.add("zoomed");
