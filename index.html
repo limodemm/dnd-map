@@ -174,6 +174,9 @@ map.fitBounds(bounds, {
   animate: false
 });
 
+map.setMaxBounds(bounds);
+map.panInsideBounds(bounds, { animate: false });
+
 // вычисляем идеальный зум
 var mapSize = map.getSize();
 
