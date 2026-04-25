@@ -177,22 +177,6 @@ map.fitBounds(bounds, {
 map.setMaxBounds(bounds);
 map.panInsideBounds(bounds, { animate: false });
 
-// вычисляем идеальный зум
-var mapSize = map.getSize();
-
-var scaleX = mapSize.x / width;
-var scaleY = mapSize.y / height;
-
-// берём МЕНЬШИЙ, чтобы ничего не обрезалось
-var scale = Math.min(scaleX, scaleY);
-
-// переводим в zoom Leaflet
-var perfectZoom = Math.log2(scale);
-
-// применяем
-map.setZoom(perfectZoom);
-map.setMinZoom(perfectZoom);
-
 map.on('popupclose', function() {
   popupJustClosed = true;
 
