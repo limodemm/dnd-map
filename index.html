@@ -78,6 +78,45 @@
   display: none;
 }
 
+.marker-popup {
+  background: #1b1b1b;
+  color: #f5f5f5;
+  padding: 10px;
+  border-radius: 8px;
+  font-family: sans-serif;
+  min-width: 200px;
+}
+
+.marker-title {
+  font-size: 16px;
+  font-weight: bold;
+  margin-bottom: 5px;
+}
+
+.marker-desc {
+  font-size: 13px;
+  opacity: 0.8;
+  margin-bottom: 10px;
+}
+
+.marker-buttons {
+  display: flex;
+  justify-content: space-between;
+}
+
+.marker-buttons button {
+  background: #333;
+  border: none;
+  color: white;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.marker-buttons button:hover {
+  background: #555;
+}
+
   </style>
 </head>
 
@@ -163,17 +202,19 @@ savedMarkers.forEach(function(m) {
 function addMarker(data) {
   var marker = L.marker([data.lat, data.lng]).addTo(map);
 
-  function renderPopup() {
-    return `
-      <div style="min-width:200px">
-        <h3>${data.title}</h3>
-        <p>${data.description}</p>
+function renderPopup() {
+  return `
+    <div class="marker-popup">
+      <div class="marker-title">${data.title}</div>
+      <div class="marker-desc">${data.description}</div>
 
-        <button onclick="editMarker(${data.id})">✏️ Изменить</button>
-        <button onclick="deleteMarker(${data.id})">🗑 Удалить</button>
+      <div class="marker-buttons">
+        <button onclick="editMarker(${data.id})">✏️</button>
+        <button onclick="deleteMarker(${data.id})">🗑</button>
       </div>
-    `;
-  }
+    </div>
+  `;
+}
 
   marker.bindPopup(renderPopup());
 
@@ -194,13 +235,18 @@ map.on('click', function(e) {
 
 function deleteMarker(id) {
   var confirmDelete = confirm("Удалить метку?");
-
   if (!confirmDelete) return;
 
+  // удаляем из массива
   savedMarkers = savedMarkers.filter(m => m.id !== id);
   localStorage.setItem("markers", JSON.stringify(savedMarkers));
 
-  location.reload(); // обновляем карту
+  // удаляем с карты БЕЗ перезагрузки
+  map.eachLayer(function(layer) {
+    if (layer instanceof L.Marker && layer._customId === id) {
+      map.removeLayer(layer);
+    }
+  });
 }
 
 function editMarker(id) {
