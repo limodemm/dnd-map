@@ -158,37 +158,37 @@ var popupJustClosed = false;
 var icons = {
   camp: L.icon({
     iconUrl: 'camp.png',
-    iconSize: [40, 40],
-    iconAnchor: [20, 40],
-    popupAnchor: [0, -35]
+    iconSize: [60, 60],
+    iconAnchor: [30, 60],
+    popupAnchor: [0, -50]
   }),
 
   cave: L.icon({
     iconUrl: 'cave.png',
-    iconSize: [40, 40],
-    iconAnchor: [20, 40],
-    popupAnchor: [0, -35]
+    iconSize: [60, 60],
+    iconAnchor: [30, 60],
+    popupAnchor: [0, -50]
   }),
 
   note: L.icon({
     iconUrl: 'note.png',
-    iconSize: [40, 40],
-    iconAnchor: [20, 40],
-    popupAnchor: [0, -35]
+    iconSize: [60, 60],
+    iconAnchor: [30, 60],
+    popupAnchor: [0, -50]
   }),
 
   interest: L.icon({
     iconUrl: 'interest.png',
-    iconSize: [40, 40],
-    iconAnchor: [20, 40],
-    popupAnchor: [0, -35]
+    iconSize: [60, 60],
+    iconAnchor: [30, 60],
+    popupAnchor: [0, -50]
   }),
 
   quest: L.icon({
     iconUrl: 'quest.png',
-    iconSize: [40, 40],
-    iconAnchor: [20, 40],
-    popupAnchor: [0, -35]
+    iconSize: [60, 60],
+    iconAnchor: [30, 60],
+    popupAnchor: [0, -50]
   })
 };
 
@@ -349,6 +349,7 @@ function saveMarker() {
     // обновляем popup БЕЗ reload
     map.eachLayer(function(layer) {
       if (layer instanceof L.Marker && layer._customId === editId) {
+        layer.setIcon(icons[type]);
         layer.setPopupContent(`
           <div class="marker-popup">
             <div class="marker-title">${title}</div>
