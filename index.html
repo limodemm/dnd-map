@@ -137,25 +137,48 @@ map.on('zoomend', updateFrame);
 var savedMarkers = JSON.parse(localStorage.getItem("markers") || "[]");
 
 savedMarkers.forEach(function(m) {
-  var marker = L.marker([m.lat, m.lng]).addTo(map);
-  marker.bindPopup(m.text);
+  addMarker(m);
 });
+
+function addMarker(data) {
+  var marker = L.marker([data.lat, data.lng]).addTo(map);
+
+  function renderPopup() {
+    return `
+      <div style="min-width:200px">
+        <h3>${data.title}</h3>
+        <p>${data.description}</p>
+
+        <button onclick="editMarker(${data.id})">✏️ Изменить</button>
+        <button onclick="deleteMarker(${data.id})">🗑 Удалить</button>
+      </div>
+    `;
+  }
+
+  marker.bindPopup(renderPopup());
+
+  marker._customId = data.id;
+}
 
 // --- ДОБАВЛЕНИЕ МЕТКИ ПО КЛИКУ ---
 map.on('click', function(e) {
-  var text = prompt("Введите описание метки:");
+  var title = prompt("Название метки:");
+  if (!title) return;
 
-  if (!text) return;
+  var description = prompt("Описание:");
+  if (!description) return;
 
-  var marker = L.marker(e.latlng).addTo(map);
-  marker.bindPopup(text);
-marker.on('contextmenu', function() {
-  map.removeLayer(marker);
+  var markerData = {
+    lat: e.latlng.lat,
+    lng: e.latlng.lng,
+    title: title,
+    description: description,
+    id: Date.now()
+  };
 
-  savedMarkers = savedMarkers.filter(function(m) {
-    return !(m.lat === e.latlng.lat && m.lng === e.latlng.lng);
-  });
+  addMarker(markerData);
 
+  savedMarkers.push(markerData);
   localStorage.setItem("markers", JSON.stringify(savedMarkers));
 });
   // сохраняем
@@ -167,6 +190,35 @@ marker.on('contextmenu', function() {
 
   localStorage.setItem("markers", JSON.stringify(savedMarkers));
 });
+
+function deleteMarker(id) {
+  var confirmDelete = confirm("Удалить метку?");
+
+  if (!confirmDelete) return;
+
+  savedMarkers = savedMarkers.filter(m => m.id !== id);
+  localStorage.setItem("markers", JSON.stringify(savedMarkers));
+
+  location.reload(); // обновляем карту
+}
+
+function editMarker(id) {
+  var marker = savedMarkers.find(m => m.id === id);
+  if (!marker) return;
+
+  var newTitle = prompt("Новое название:", marker.title);
+  if (!newTitle) return;
+
+  var newDesc = prompt("Новое описание:", marker.description);
+  if (!newDesc) return;
+
+  marker.title = newTitle;
+  marker.description = newDesc;
+
+  localStorage.setItem("markers", JSON.stringify(savedMarkers));
+
+  location.reload();
+}
 
 </script>
 
