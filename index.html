@@ -161,8 +161,6 @@ var map = L.map('map', {
   maxBounds: bounds,
   maxBoundsViscosity: 1.0,
   attributionControl: false,
-  zoomSnap: 0.01,
-  zoomDelta: 0.25,
 });
 
 // загружаем картинку
@@ -175,6 +173,22 @@ map.fitBounds(bounds, {
   padding: [0, 0],
   animate: false
 });
+
+// вычисляем идеальный зум
+var mapSize = map.getSize();
+
+var scaleX = mapSize.x / width;
+var scaleY = mapSize.y / height;
+
+// берём МЕНЬШИЙ, чтобы ничего не обрезалось
+var scale = Math.min(scaleX, scaleY);
+
+// переводим в zoom Leaflet
+var perfectZoom = Math.log2(scale);
+
+// применяем
+map.setZoom(perfectZoom);
+map.setMinZoom(perfectZoom);
 
 map.on('popupclose', function() {
   popupJustClosed = true;
