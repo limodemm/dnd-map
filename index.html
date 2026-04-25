@@ -145,6 +145,7 @@ background:#1e1e1e; padding:20px; border-radius:8px; z-index:1000; color:white; 
 
 var currentLatLng = null;
 var editId = null;
+var popupJustClosed = false;
 
 // размеры твоей карты (пока оставим так)
 var width = 7016;
@@ -169,6 +170,14 @@ var bounds = [[0,0], [height, width]];
 var overlay = L.imageOverlay(imageUrl, bounds).addTo(map);
 
 map.fitBounds(bounds);
+
+map.on('popupclose', function() {
+  popupJustClosed = true;
+
+  setTimeout(function() {
+    popupJustClosed = false;
+  }, 100);
+});
 
 function updateFrame() {
   var mapEl = document.getElementById('map');
@@ -223,6 +232,8 @@ function renderPopup() {
 
 // --- ДОБАВЛЕНИЕ МЕТКИ ПО КЛИКУ ---
 map.on('click', function(e) {
+  if (popupJustClosed) return; // ← ВОТ ЭТО ГЛАВНОЕ
+
   currentLatLng = e.latlng;
   editId = null;
 
