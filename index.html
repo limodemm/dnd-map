@@ -394,7 +394,7 @@ document.addEventListener("keydown", function(e) {
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js";
   import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-auth.js";
-  import { getDatabase, ref, set, get } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-database.js";
+  import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-database.js";
 
   // Настройки Firebase
   const firebaseConfig = {
@@ -411,6 +411,97 @@ document.addEventListener("keydown", function(e) {
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const database = getDatabase(app);
+
+// =====================================
+  // СИСТЕМА ОБЩЕГО МАРКЕРА ОТРЯДА
+  // =====================================
+
+  // Начальные координаты отряда.
+  // Позже заменим их на точное место на карте.
+  const partyStartPosition = {
+    lat: 2450,
+    lng: 3200
+  };
+
+  let partyMarker = null;
+  let partyListenerStarted = false;
+
+  // Внешний вид маркера отряда
+  const partyIcon = L.divIcon({
+    className: "",
+    html: `
+      <div style="
+        width: 46px;
+        height: 46px;
+        border-radius: 50%;
+        background: #292016;
+        border: 3px solid #d6b46a;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 25px;
+        box-shadow: 0 2px 10px #000;
+      ">⚑</div>
+    `,
+    iconSize: [46, 46],
+    iconAnchor: [23, 23]
+  });
+
+  // Подключение общего положения отряда
+  async function initializeParty() {
+    if (partyListenerStarted) return;
+    partyListenerStarted = true;
+
+    const partyRef = ref(database, "party/state");
+
+    try {
+      // Проверяем, существует ли уже отряд в базе
+      const snapshot = await get(partyRef);
+
+      // Если отряда ещё нет — создаём его
+      if (!snapshot.exists()) {
+        await set(partyRef, {
+          lat: partyStartPosition.lat,
+          lng: partyStartPosition.lng
+        });
+      }
+
+      // Следим за изменениями положения отряда
+      onValue(partyRef, function(snapshot) {
+        const position = snapshot.val();
+
+        if (!position) return;
+
+        const coordinates = [
+          position.lat,
+          position.lng
+        ];
+
+        // Если маркера ещё нет — создаём его
+        if (!partyMarker) {
+          partyMarker = L.marker(coordinates, {
+            icon: partyIcon,
+            interactive: false,
+            zIndexOffset: 1000
+          }).addTo(map);
+
+          partyMarker.bindTooltip("Отряд", {
+            direction: "top",
+            offset: [0, -20]
+          });
+
+        } else {
+          // Если маркер уже есть — меняем его положение
+          partyMarker.setLatLng(coordinates);
+        }
+
+        console.log("Положение отряда:", coordinates);
+      });
+
+    } catch (error) {
+      console.error("Ошибка загрузки отряда:", error);
+    }
+  }
 
  // Тестовая проверка общей базы
   window.testFirebase = async function() {
@@ -469,6 +560,7 @@ document.addEventListener("keydown", function(e) {
       status.style.background = "#245c32";
 
       console.log("Firebase готов. UID:", user.uid);
+      initializeParty();
     } else {
       window.dndFirebase.ready = false;
       status.textContent = "Firebase: выполняется вход...";
