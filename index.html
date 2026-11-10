@@ -481,8 +481,22 @@ partyMarker.on("click", function() {
   window.routeMode = !window.routeMode;
 
   if (window.routeMode) {
+
+    // Начинаем маршрут от текущего положения отряда
+    routePoints = [partyMarker.getLatLng()];
+
     console.log("Режим прокладки маршрута включён");
+
   } else {
+
+    // Отменяем построение
+    routePoints = [];
+
+    if (routeLine) {
+      map.removeLayer(routeLine);
+      routeLine = null;
+    }
+
     console.log("Режим прокладки маршрута выключен");
   }
 });
@@ -493,25 +507,50 @@ partyMarker.on("click", function() {
 let routePoints = [];
 let routeLine = null;
 
-// Добавление точки маршрута
+// Определяем, используется ли ПК с мышью
+const hasMouse = window.matchMedia(
+  "(hover: hover) and (pointer: fine)"
+).matches;
+
+// Перерисовка линии маршрута
+function updateRouteLine(cursorPosition = null) {
+  if (routeLine) {
+    map.removeLayer(routeLine);
+    routeLine = null;
+  }
+
+  let pointsToDraw = [...routePoints];
+
+  // На ПК добавляем временную точку под курсором
+  if (cursorPosition && hasMouse) {
+    pointsToDraw.push(cursorPosition);
+  }
+
+  if (pointsToDraw.length >= 2) {
+    routeLine = L.polyline(pointsToDraw, {
+      color: "#d6b46a",
+      weight: 4,
+      dashArray: "8, 10",
+      opacity: 0.9
+    }).addTo(map);
+  }
+}
+
+// Добавление зафиксированной точки
 window.addPartyRoutePoint = function(latlng) {
   routePoints.push(latlng);
 
-  // Удаляем старую линию
-  if (routeLine) {
-    map.removeLayer(routeLine);
-  }
-
-  // Рисуем новую линию через все выбранные точки
-  routeLine = L.polyline(routePoints, {
-    color: "#d6b46a",
-    weight: 4,
-    dashArray: "8, 10",
-    opacity: 0.9
-  }).addTo(map);
+  updateRouteLine();
 
   console.log("Точки маршрута:", routePoints);
 };
+
+// Движение курсора на ПК
+map.on("mousemove", function(e) {
+  if (!window.routeMode || !hasMouse) return;
+
+  updateRouteLine(e.latlng);
+});
 
         } else {
           // Если маркер уже есть — меняем его положение
