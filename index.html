@@ -394,7 +394,7 @@ document.addEventListener("keydown", function(e) {
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js";
   import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-auth.js";
-  import { getDatabase } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-database.js";
+  import { getDatabase, ref, set, get } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-database.js";
 
   // Настройки Firebase
   const firebaseConfig = {
@@ -411,6 +411,26 @@ document.addEventListener("keydown", function(e) {
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const database = getDatabase(app);
+
+ // Тестовая проверка общей базы
+  window.testFirebase = async function() {
+    const testRef = ref(database, "connectionTest");
+
+    try {
+      await set(testRef, {
+        message: "Связь работает!",
+        updatedAt: Date.now()
+      });
+
+      const snapshot = await get(testRef);
+
+      console.log("Проверка Firebase:", snapshot.val());
+      alert("Успешно! Firebase записывает и читает данные.");
+    } catch (error) {
+      console.error("Ошибка Firebase:", error);
+      alert("Ошибка Firebase: " + error.message);
+    }
+  };
 
   // Делаем Firebase доступным для следующих частей нашей системы
   window.dndFirebase = {
