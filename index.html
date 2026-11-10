@@ -427,25 +427,11 @@ document.addEventListener("keydown", function(e) {
   let partyListenerStarted = false;
 
   // Внешний вид маркера отряда
-  const partyIcon = L.divIcon({
-    className: "",
-    html: `
-      <div style="
-        width: 46px;
-        height: 46px;
-        border-radius: 50%;
-        background: #292016;
-        border: 3px solid #d6b46a;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 25px;
-        box-shadow: 0 2px 10px #000;
-      ">⚑</div>
-    `,
-    iconSize: [46, 46],
-    iconAnchor: [23, 23]
-  });
+ const partyIcon = L.icon({
+  iconUrl: "party.png",
+  iconSize: [48, 48],
+  iconAnchor: [24, 24]
+});
 
   // Подключение общего положения отряда
   async function initializeParty() {
