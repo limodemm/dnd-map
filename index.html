@@ -391,5 +391,77 @@ document.addEventListener("keydown", function(e) {
 
 </script>
 
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js";
+  import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-auth.js";
+  import { getDatabase } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-database.js";
+
+  // Настройки Firebase
+  const firebaseConfig = {
+    apiKey: "AIzaSyAnH35p8TJPBOyE18omlEbMrdr1RedbNIc",
+    authDomain: "dnd-map-b6d21.firebaseapp.com",
+    databaseURL: "https://dnd-map-b6d21-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "dnd-map-b6d21",
+    storageBucket: "dnd-map-b6d21.firebasestorage.app",
+    messagingSenderId: "1012046242037",
+    appId: "1:1012046242037:web:7cb1db3ab10beaf66aa5bc"
+  };
+
+  // Подключение Firebase
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const database = getDatabase(app);
+
+  // Делаем Firebase доступным для следующих частей нашей системы
+  window.dndFirebase = {
+    app: app,
+    auth: auth,
+    database: database,
+    uid: null,
+    ready: false
+  };
+
+  // Индикатор подключения на экране
+  const status = document.createElement("div");
+
+  status.style.cssText = `
+    position: fixed;
+    bottom: 12px;
+    left: 12px;
+    z-index: 2000;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: #222;
+    color: white;
+    font: 13px sans-serif;
+  `;
+
+  status.textContent = "Firebase: подключение...";
+  document.body.appendChild(status);
+
+  // Анонимная авторизация игрока
+  onAuthStateChanged(auth, function(user) {
+    if (user) {
+      window.dndFirebase.uid = user.uid;
+      window.dndFirebase.ready = true;
+
+      status.textContent = "Firebase: авторизация выполнена";
+      status.style.background = "#245c32";
+
+      console.log("Firebase готов. UID:", user.uid);
+    } else {
+      window.dndFirebase.ready = false;
+      status.textContent = "Firebase: выполняется вход...";
+
+      signInAnonymously(auth).catch(function(error) {
+        console.error("Ошибка авторизации Firebase:", error);
+
+        status.textContent = "Firebase: ошибка авторизации";
+        status.style.background = "#8b2222";
+      });
+    }
+  });
+</script>
+
 </body>
 </html>
