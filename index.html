@@ -513,11 +513,6 @@ window.addPartyRoutePoint = function(latlng) {
   console.log("Точки маршрута:", routePoints);
 };
 
-          partyMarker.bindTooltip("Отряд", {
-            direction: "top",
-            offset: [0, -20]
-          });
-
         } else {
           // Если маркер уже есть — меняем его положение
           partyMarker.setLatLng(coordinates);
