@@ -478,27 +478,25 @@ window.routeMode = false;
 }).addTo(map);
 
 partyMarker.on("click", function() {
-  window.routeMode = !window.routeMode;
 
-  if (window.routeMode) {
+  // Если маршрут уже прокладывается, повторный клик ничего не делает
+  if (window.routeMode) return;
 
-    // Начинаем маршрут от текущего положения отряда
-    routePoints = [partyMarker.getLatLng()];
+  window.routeMode = true;
 
-    console.log("Режим прокладки маршрута включён");
+  // Начинаем маршрут от текущего положения отряда
+  routePoints = [partyMarker.getLatLng()];
 
-  } else {
+  lastCursorPosition = null;
 
-    // Отменяем построение
-    routePoints = [];
+  // Показываем панель управления
+  createRoutePanel();
+  routePanel.style.display = "block";
 
-    if (routeLine) {
-      map.removeLayer(routeLine);
-      routeLine = null;
-    }
+  // Отображаем начальные значения
+  updateRouteLine();
 
-    console.log("Режим прокладки маршрута выключен");
-  }
+  console.log("Режим прокладки маршрута включён");
 });
 // =====================================
 // ПОСТРОЕНИЕ МАРШРУТА
@@ -506,25 +504,292 @@ partyMarker.on("click", function() {
 
 let routePoints = [];
 let routeLine = null;
+let routeRestMarkers = [];
+
+let routePace = "normal";
+
+const routePaceLimits = {
+  slow: 225,
+  normal: 300,
+  fast: 375
+};
+
+let routePanel = null;
+let routeStatus = null;
+let routeConfirmButton = null;
+let lastCursorPosition = null;
 
 // Определяем, используется ли ПК с мышью
 const hasMouse = window.matchMedia(
   "(hover: hover) and (pointer: fine)"
 ).matches;
 
-// Перерисовка линии маршрута
-function updateRouteLine(cursorPosition = null) {
+// =====================================
+// ПАНЕЛЬ УПРАВЛЕНИЯ
+// =====================================
+
+function createRoutePanel() {
+  if (routePanel) return;
+
+  const style = document.createElement("style");
+
+  style.textContent = `
+    #party-route-panel {
+      display: none;
+      position: fixed;
+      bottom: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 3000;
+      width: 340px;
+      max-width: calc(100vw - 24px);
+      padding: 14px;
+      box-sizing: border-box;
+      background: #211b16;
+      color: #eee2c8;
+      border: 2px solid #d6b46a;
+      border-radius: 10px;
+      box-shadow: 0 4px 18px #000b;
+      font-family: Georgia, serif;
+    }
+
+    #party-route-panel .route-heading {
+      text-align: center;
+      font-size: 17px;
+      margin-bottom: 12px;
+    }
+
+    #party-route-panel .route-speeds {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    #party-route-panel button {
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    #party-route-panel .route-speed {
+      flex: 1;
+      padding: 9px 3px;
+      color: #eee2c8;
+      background: #393027;
+      border: 1px solid #756044;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+
+    #party-route-panel .route-speed.active {
+      background: #72572e;
+      border-color: #e6c77d;
+    }
+
+    #party-route-panel .route-info {
+      font-size: 13px;
+      line-height: 1.7;
+      margin-bottom: 12px;
+    }
+
+    #party-route-panel .route-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    #party-route-panel .route-action {
+      flex: 1;
+      padding: 10px 5px;
+      border-radius: 6px;
+      border: 1px solid;
+      font-size: 13px;
+    }
+
+    #party-route-panel .route-confirm {
+      background: #385b37;
+      color: white;
+      border-color: #63875b;
+    }
+
+    #party-route-panel .route-cancel {
+      background: #542b27;
+      color: white;
+      border-color: #96534a;
+    }
+
+    #party-route-panel button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+  `;
+
+  document.head.appendChild(style);
+
+  routePanel = document.createElement("div");
+  routePanel.id = "party-route-panel";
+
+  routePanel.innerHTML = `
+    <div class="route-heading">Путешествие отряда</div>
+
+    <div class="route-speeds">
+      <button class="route-speed" data-pace="slow">
+        Медленный
+      </button>
+
+      <button class="route-speed active" data-pace="normal">
+        Обычный
+      </button>
+
+      <button class="route-speed" data-pace="fast">
+        Быстрый
+      </button>
+    </div>
+
+    <div class="route-info">
+      <div>Дневной лимит: <b id="route-daily-limit">300</b> px</div>
+      <div>Длина маршрута: <b id="route-distance">0</b> px</div>
+      <div>Путешествие: <b id="route-days">0</b></div>
+    </div>
+
+    <div class="route-actions">
+      <button class="route-action route-confirm" id="route-confirm">
+        Подтвердить
+      </button>
+
+      <button class="route-action route-cancel" id="route-cancel">
+        Отменить
+      </button>
+    </div>
+  `;
+
+  document.body.appendChild(routePanel);
+
+  routeStatus = routePanel.querySelector(".route-info");
+  routeConfirmButton = document.getElementById("route-confirm");
+
+  // Выбор темпа
+  routePanel.querySelectorAll(".route-speed").forEach(button => {
+    button.addEventListener("click", function() {
+      routePace = this.dataset.pace;
+
+      routePanel.querySelectorAll(".route-speed").forEach(b => {
+        b.classList.toggle("active", b === this);
+      });
+
+      updateRouteLine(lastCursorPosition);
+    });
+  });
+
+  // Подтверждение маршрута
+  routeConfirmButton.addEventListener("click", function() {
+    if (routePoints.length < 2) return;
+
+    window.routeMode = false;
+
+    window.confirmedPartyRoute = routePoints.map(point => ({
+      lat: point.lat,
+      lng: point.lng
+    }));
+
+    lastCursorPosition = null;
+    updateRouteLine();
+
+    routePanel.style.display = "none";
+
+    console.log("Маршрут подтверждён:", window.confirmedPartyRoute);
+  });
+
+  // Отмена маршрута
+  document.getElementById("route-cancel").addEventListener("click", function() {
+    window.routeMode = false;
+
+    routePoints = [];
+    lastCursorPosition = null;
+
+    clearRouteDrawing();
+
+    routePanel.style.display = "none";
+
+    console.log("Прокладка маршрута отменена");
+  });
+}
+
+// =====================================
+// ДЛИНА МАРШРУТА
+// =====================================
+
+function getRouteLength(points) {
+  let total = 0;
+
+  for (let i = 1; i < points.length; i++) {
+    const dy = points[i].lat - points[i - 1].lat;
+    const dx = points[i].lng - points[i - 1].lng;
+
+    total += Math.sqrt(dx * dx + dy * dy);
+  }
+
+  return total;
+}
+
+// Получение координаты на определённом расстоянии пути
+function getRoutePointAtDistance(points, targetDistance) {
+  let passed = 0;
+
+  for (let i = 1; i < points.length; i++) {
+    const start = points[i - 1];
+    const end = points[i];
+
+    const dy = end.lat - start.lat;
+    const dx = end.lng - start.lng;
+
+    const segmentLength = Math.sqrt(dx * dx + dy * dy);
+
+    if (passed + segmentLength >= targetDistance) {
+      const part = (targetDistance - passed) / segmentLength;
+
+      return L.latLng(
+        start.lat + dy * part,
+        start.lng + dx * part
+      );
+    }
+
+    passed += segmentLength;
+  }
+
+  return null;
+}
+
+// =====================================
+// ОЧИСТКА ЛИНИИ И ПРИВАЛОВ
+// =====================================
+
+function clearRouteDrawing() {
   if (routeLine) {
     map.removeLayer(routeLine);
     routeLine = null;
   }
 
+  routeRestMarkers.forEach(marker => {
+    map.removeLayer(marker);
+  });
+
+  routeRestMarkers = [];
+}
+
+// =====================================
+// ОБНОВЛЕНИЕ И ОТРИСОВКА МАРШРУТА
+// =====================================
+
+function updateRouteLine(cursorPosition = null) {
   let pointsToDraw = [...routePoints];
 
-  // На ПК добавляем временную точку под курсором
-  if (cursorPosition && hasMouse) {
+  if (cursorPosition && hasMouse && window.routeMode) {
     pointsToDraw.push(cursorPosition);
   }
+
+  clearRouteDrawing();
+
+  const totalLength = getRouteLength(pointsToDraw);
+  const dailyLimit = routePaceLimits[routePace];
 
   if (pointsToDraw.length >= 2) {
     routeLine = L.polyline(pointsToDraw, {
@@ -534,11 +799,56 @@ function updateRouteLine(cursorPosition = null) {
       opacity: 0.9
     }).addTo(map);
   }
+
+  // Расставляем символы отдыха
+  for (let distance = dailyLimit; distance < totalLength; distance += dailyLimit) {
+    const restPosition = getRoutePointAtDistance(
+      pointsToDraw,
+      distance
+    );
+
+    if (restPosition) {
+      const restMarker = L.circleMarker(restPosition, {
+        radius: 7,
+        color: "#211b16",
+        weight: 2,
+        fillColor: "#e6c77d",
+        fillOpacity: 1,
+        interactive: false
+      }).addTo(map);
+
+      routeRestMarkers.push(restMarker);
+    }
+  }
+
+  // Обновляем информацию в панели
+  if (routePanel) {
+    const days = totalLength > 0
+      ? Math.ceil(totalLength / dailyLimit)
+      : 0;
+
+    document.getElementById("route-daily-limit").textContent =
+      dailyLimit;
+
+    document.getElementById("route-distance").textContent =
+      Math.round(totalLength);
+
+    document.getElementById("route-days").textContent =
+      days;
+
+    routeConfirmButton.disabled = routePoints.length < 2;
+  }
+
+  console.log("Длина маршрута:", Math.round(totalLength));
 }
 
-// Добавление зафиксированной точки
+// =====================================
+// ДОБАВЛЕНИЕ ТОЧКИ МАРШРУТА
+// =====================================
+
 window.addPartyRoutePoint = function(latlng) {
   routePoints.push(latlng);
+  lastCursorPosition = null;
 
   updateRouteLine();
 
@@ -548,6 +858,8 @@ window.addPartyRoutePoint = function(latlng) {
 // Движение курсора на ПК
 map.on("mousemove", function(e) {
   if (!window.routeMode || !hasMouse) return;
+
+  lastCursorPosition = e.latlng;
 
   updateRouteLine(e.latlng);
 });
