@@ -289,6 +289,11 @@ function renderPopup() {
 map.on('click', function(e) {
   if (popupJustClosed) return; // ← ВОТ ЭТО ГЛАВНОЕ
 
+  if (window.routeMode) {
+    window.addPartyRoutePoint(e.latlng);
+    return;
+  }
+
   currentLatLng = e.latlng;
   editId = null;
 
@@ -425,7 +430,7 @@ document.addEventListener("keydown", function(e) {
 
 let partyMarker = null;
 let partyListenerStarted = false;
-let routeMode = false;
+window.routeMode = false;
 
   // Внешний вид маркера отряда
  const partyIcon = L.icon({
@@ -473,14 +478,40 @@ let routeMode = false;
 }).addTo(map);
 
 partyMarker.on("click", function() {
-  routeMode = !routeMode;
+  window.routeMode = !window.routeMode;
 
-  if (routeMode) {
+  if (window.routeMode) {
     console.log("Режим прокладки маршрута включён");
   } else {
     console.log("Режим прокладки маршрута выключен");
   }
 });
+// =====================================
+// ПОСТРОЕНИЕ МАРШРУТА
+// =====================================
+
+let routePoints = [];
+let routeLine = null;
+
+// Добавление точки маршрута
+window.addPartyRoutePoint = function(latlng) {
+  routePoints.push(latlng);
+
+  // Удаляем старую линию
+  if (routeLine) {
+    map.removeLayer(routeLine);
+  }
+
+  // Рисуем новую линию через все выбранные точки
+  routeLine = L.polyline(routePoints, {
+    color: "#d6b46a",
+    weight: 4,
+    dashArray: "8, 10",
+    opacity: 0.9
+  }).addTo(map);
+
+  console.log("Точки маршрута:", routePoints);
+};
 
           partyMarker.bindTooltip("Отряд", {
             direction: "top",
