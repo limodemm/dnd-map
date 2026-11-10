@@ -423,8 +423,9 @@ document.addEventListener("keydown", function(e) {
     lng: 3200
   };
 
-  let partyMarker = null;
-  let partyListenerStarted = false;
+let partyMarker = null;
+let partyListenerStarted = false;
+let routeMode = false;
 
   // Внешний вид маркера отряда
  const partyIcon = L.icon({
@@ -466,10 +467,20 @@ document.addEventListener("keydown", function(e) {
         // Если маркера ещё нет — создаём его
         if (!partyMarker) {
           partyMarker = L.marker(coordinates, {
-            icon: partyIcon,
-            interactive: false,
-            zIndexOffset: 1000
-          }).addTo(map);
+  icon: partyIcon,
+  interactive: true,
+  zIndexOffset: 1000
+}).addTo(map);
+
+partyMarker.on("click", function() {
+  routeMode = !routeMode;
+
+  if (routeMode) {
+    console.log("Режим прокладки маршрута включён");
+  } else {
+    console.log("Режим прокладки маршрута выключен");
+  }
+});
 
           partyMarker.bindTooltip("Отряд", {
             direction: "top",
