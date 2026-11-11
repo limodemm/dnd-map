@@ -293,6 +293,7 @@ map.on('click', function(e) {
   window.handlePartyRouteClick(e.latlng);
   return;
 }
+  if (window.routePendingConfirmation) return;
 
   currentLatLng = e.latlng;
   editId = null;
@@ -765,6 +766,7 @@ if (!routeFinished) return;
 
 window.routeMode = false;
 map.doubleClickZoom.enable();
+window.routePendingConfirmation = false;
 
     window.confirmedPartyRoute = routePoints.map(point => ({
       lat: point.lat,
@@ -793,11 +795,12 @@ map.doubleClickZoom.enable();
     }
 
     // Если маршрут был завершён, снова открываем его для редактирования
-    if (routeFinished) {
-      routeFinished = false;
-      window.routeMode = true;
-      map.doubleClickZoom.disable();
-    }
+  if (routeFinished) {
+  routeFinished = false;
+  window.routePendingConfirmation = false;
+  window.routeMode = true;
+  map.doubleClickZoom.disable();
+}
 
     lastCursorPosition = null;
 
@@ -816,6 +819,7 @@ pendingRouteClickTimer = null;
 pendingRouteClickPosition = null;
 
 routeFinished = false;
+window.routePendingConfirmation = false;
 map.doubleClickZoom.enable();
     window.routeMode = false;
 
@@ -1025,6 +1029,7 @@ function finishPartyRoute(latlng) {
 
   routeFinished = true;
   window.routeMode = false;
+  window.routePendingConfirmation = true;
 
   lastCursorPosition = null;
 
@@ -1081,7 +1086,7 @@ window.handlePartyRouteClick = function(latlng) {
 
     pendingRouteClickTimer = null;
     pendingRouteClickPosition = null;
-  }, 200);
+  }, 180);
 };
 
 // Движение курсора на ПК
