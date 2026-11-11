@@ -633,7 +633,7 @@ function createRoutePanel() {
       opacity: 0.4;
       cursor: not-allowed;
     }
- @media max-width: 768px, (pointer: coarse) {
+ @media (max-width: 768px), (pointer: coarse) {
       #party-route-panel {
         width: 300px;
         bottom: 8px;
@@ -878,14 +878,15 @@ function updateRouteLine(cursorPosition = null) {
     }
   }
 
-  // Обновляем информацию в панели
-const days = routeRestMarkers.length;
+// Обновляем информацию в панели
+  if (routePanel) {
+    const days = routeRestMarkers.length;
 
-document.getElementById("route-daily-limit").textContent =
-  (dailyLimit * KM_PER_PIXEL).toFixed(1) + " км";
+    document.getElementById("route-daily-limit").textContent =
+      (dailyLimit * KM_PER_PIXEL).toFixed(1) + " км";
 
-document.getElementById("route-distance").textContent =
-  (totalLength * KM_PER_PIXEL).toFixed(1) + " км";
+    document.getElementById("route-distance").textContent =
+      (totalLength * KM_PER_PIXEL).toFixed(1) + " км";
 
     document.getElementById("route-days").textContent =
       days;
