@@ -509,6 +509,7 @@ routePoints = [partyMarker.getLatLng()];
 let routePoints = [];
 let routeLine = null;
 let routeRestMarkers = [];
+let routeEndMarker = null;
 
 // Состояние завершения маршрута
 let routeFinished = false;
@@ -644,6 +645,12 @@ function createRoutePanel() {
       border-color: #96534a;
     }
 
+    #party-route-panel .route-undo {
+      background: #393027;
+      color: #eee2c8;
+      border-color: #756044;
+    }
+
     #party-route-panel button:disabled {
       opacity: 0.4;
       cursor: not-allowed;
@@ -719,15 +726,19 @@ function createRoutePanel() {
       <div>Дней в путешествии: <b id="route-days">0</b></div>
     </div>
 
-    <div class="route-actions">
-      <button class="route-action route-confirm" id="route-confirm">
-        Подтвердить
-      </button>
+   <div class="route-actions">
+  <button class="route-action route-undo" id="route-undo">
+    Вернуть
+  </button>
 
-      <button class="route-action route-cancel" id="route-cancel">
-        Отменить
-      </button>
-    </div>
+  <button class="route-action route-confirm" id="route-confirm">
+    Подтвердить
+  </button>
+
+  <button class="route-action route-cancel" id="route-cancel">
+    Отменить
+  </button>
+</div>
   `;
 
   document.body.appendChild(routePanel);
@@ -766,6 +777,33 @@ map.doubleClickZoom.enable();
     routePanel.style.display = "none";
 
     console.log("Маршрут подтверждён:", window.confirmedPartyRoute);
+  });
+
+  // Возврат последнего отрезка маршрута
+  document.getElementById("route-undo").addEventListener("click", function() {
+
+    // Если ожидался одиночный клик, отменяем его
+    if (pendingRouteClickTimer) {
+      clearTimeout(pendingRouteClickTimer);
+      pendingRouteClickTimer = null;
+      pendingRouteClickPosition = null;
+    } else if (routePoints.length > 1) {
+      // Удаляем последнюю точку
+      routePoints.pop();
+    }
+
+    // Если маршрут был завершён, снова открываем его для редактирования
+    if (routeFinished) {
+      routeFinished = false;
+      window.routeMode = true;
+      map.doubleClickZoom.disable();
+    }
+
+    lastCursorPosition = null;
+
+    updateRouteLine();
+
+    console.log("Последняя точка маршрута возвращена");
   });
 
   // Отмена маршрута
@@ -852,6 +890,10 @@ function clearRouteDrawing() {
   });
 
   routeRestMarkers = [];
+  if (routeEndMarker) {
+  map.removeLayer(routeEndMarker);
+  routeEndMarker = null;
+}
 }
 
 // =====================================
@@ -898,6 +940,32 @@ function updateRouteLine(cursorPosition = null) {
 
       routeRestMarkers.push(restMarker);
     }
+  }
+
+// Флажок в конечной точке маршрута
+  if (routeFinished && routePoints.length >= 2) {
+    const endPoint = routePoints[routePoints.length - 1];
+
+    const flagIcon = L.divIcon({
+      className: "route-end-flag",
+      html: `
+        <div style="
+          font-size: 30px;
+          line-height: 30px;
+          color: #e6c77d;
+          text-shadow: 1px 2px 4px #000;
+        ">⚑</div>
+      `,
+      iconSize: [24, 30],
+      iconAnchor: [5, 28]
+    });
+
+    routeEndMarker = L.marker(endPoint, {
+      icon: flagIcon,
+      interactive: false,
+      keyboard: false,
+      zIndexOffset: 1200
+    }).addTo(map);
   }
 
 // Обновляем информацию в панели
@@ -1013,7 +1081,7 @@ window.handlePartyRouteClick = function(latlng) {
 
     pendingRouteClickTimer = null;
     pendingRouteClickPosition = null;
-  }, 300);
+  }, 200);
 };
 
 // Движение курсора на ПК
