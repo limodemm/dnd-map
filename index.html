@@ -1085,7 +1085,7 @@ function updateRouteLine(cursorPosition = null) {
   }
 
   // Расставляем символы отдыха
-  for (let distance = dailyLimit; distance < totalLength; distance += dailyLimit) {
+  for (let distance = dailyLimit; distance <= totalLength + 0.001; distance += dailyLimit) {
     const restPosition = getRoutePointAtDistance(
       pointsToDraw,
       distance
