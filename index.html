@@ -520,6 +520,7 @@ let pendingRouteClickTimer = null;
 let pendingRouteClickPosition = null;
 
 let routePace = "normal";
+let routeSpeedReduced = false;
 
 const routePaceLimits = {
   slow: 225,
@@ -608,6 +609,70 @@ function createRoutePanel() {
 
 #party-route-panel .route-speed-label {
   font-size: 12px;
+}
+
+/* Переключатель сниженной скорости */
+
+#party-route-panel .route-reduced-speed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 12px;
+  padding: 9px 11px;
+
+  color: #eee2c8;
+  background: #393027;
+  border: 1px solid #756044;
+  border-radius: 6px;
+
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+
+#party-route-panel .route-toggle {
+  position: relative;
+  width: 38px;
+  height: 20px;
+  flex-shrink: 0;
+
+  background: #211b16;
+  border: 1px solid #756044;
+  border-radius: 20px;
+
+  transition: background 0.2s, border-color 0.2s;
+}
+
+#party-route-panel .route-toggle::after {
+  content: "";
+  position: absolute;
+
+  width: 14px;
+  height: 14px;
+  left: 2px;
+  top: 2px;
+
+  background: #b9a98c;
+  border-radius: 50%;
+
+  transition: transform 0.2s, background 0.2s;
+}
+
+#party-route-panel .route-reduced-speed.active {
+  border-color: #e6c77d;
+  background: #4a3925;
+}
+
+#party-route-panel .route-reduced-speed.active .route-toggle {
+  background: #72572e;
+  border-color: #e6c77d;
+}
+
+#party-route-panel .route-reduced-speed.active .route-toggle::after {
+  transform: translateX(18px);
+  background: #e6c77d;
 }
 
     #party-route-panel .route-speed.active {
@@ -721,6 +786,11 @@ function createRoutePanel() {
   </button>
 </div>
 
+<button class="route-reduced-speed" id="route-reduced-speed" type="button">
+  <span>Сниженная скорость</span>
+  <span class="route-toggle"></span>
+</button>
+
     <div class="route-info">
       <div>Дневной лимит: <b id="route-daily-limit">38.6 км</b></div>
       <div>Длина маршрута: <b id="route-distance">0.0 км</b></div>
@@ -760,6 +830,19 @@ function createRoutePanel() {
     });
   });
 
+// Переключатель сниженной скорости
+const reducedSpeedButton = document.getElementById("route-reduced-speed");
+
+reducedSpeedButton.addEventListener("click", function() {
+  routeSpeedReduced = !routeSpeedReduced;
+
+  this.classList.toggle("active", routeSpeedReduced);
+
+  this.setAttribute("aria-pressed", routeSpeedReduced);
+
+  updateRouteLine(lastCursorPosition);
+});
+
   // Подтверждение маршрута
   routeConfirmButton.addEventListener("click", function() {
 if (!routeFinished) return;
@@ -793,7 +876,7 @@ window.routePendingConfirmation = false;
 
     // Определяем длину маршрута и последний пройденный привал
     const totalLength = getRouteLength(routePoints);
-    const dailyLimit = routePaceLimits[routePace];
+    const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
 
     const lastRestDistance =
       Math.max(0, Math.floor((totalLength - 0.001) / dailyLimit)) * dailyLimit;
@@ -1073,7 +1156,7 @@ function updateRouteLine(cursorPosition = null) {
   clearRouteDrawing();
 
   const totalLength = getRouteLength(pointsToDraw);
-  const dailyLimit = routePaceLimits[routePace];
+  const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
 
   if (pointsToDraw.length >= 2) {
     routeLine = L.polyline(createRouteDisplayPoints(pointsToDraw), {
