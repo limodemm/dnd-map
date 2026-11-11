@@ -584,17 +584,13 @@ function createRoutePanel() {
   gap: 3px;
 }
 
-#party-route-panel .route-speed-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 34px;
-  color: #eee2c8;
-  opacity: 0.9;
-}
-
-#party-route-panel .route-speed-icon svg {
+#party-route-panel .route-speed-image {
   display: block;
+  width: 100%;
+  max-width: 88px;
+  height: 88px;
+  object-fit: contain;
+  margin: 0 auto;
 }
 
 #party-route-panel .route-speed-label {
@@ -663,10 +659,10 @@ function createRoutePanel() {
         padding: 5px 2px;
       }
 
-      #party-route-panel .route-speed-icon {
-        font-size: 18px;
-      }
-
+      #party-route-panel .route-speed-image {
+  max-width: 74px;
+  height: 74px;
+}
       #party-route-panel .route-speed-label {
         font-size: 11px;
       }
@@ -694,49 +690,15 @@ function createRoutePanel() {
 
 <div class="route-speeds">
   <button class="route-speed" data-pace="slow">
-   <span class="route-speed-icon">
-  <svg viewBox="0 0 48 48" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M13 19 Q13 11 24 11 Q35 11 35 19 L38 27 Q36 34 24 34 Q12 34 10 27 Z"/>
-    <path d="M17 20 Q24 15 31 20 Q34 25 29 29 Q24 32 17 29 Q12 25 17 20Z"/>
-    <path d="M35 19 Q43 16 43 22 Q43 27 37 27"/>
-    <path d="M14 20 L8 16 L5 21 L10 27"/>
-    <path d="M16 32 L13 38 M31 32 L35 38"/>
-    <circle cx="41" cy="21" r="1" fill="currentColor" stroke="none"/>
-  </svg>
-</span>
-    <span class="route-speed-label">Медленный</span>
+    <img src="pace-slow.png" class="route-speed-image" alt="Медленный">
   </button>
 
   <button class="route-speed active" data-pace="normal">
-    <span class="route-speed-icon">
-  <svg viewBox="0 0 48 48" width="30" height="30" fill="currentColor">
-    <ellipse cx="14" cy="13" rx="4" ry="7" transform="rotate(-25 14 13)"/>
-    <circle cx="8" cy="5" r="2"/>
-    <circle cx="13" cy="3" r="2"/>
-    <circle cx="18" cy="5" r="2"/>
-    <circle cx="21" cy="9" r="2"/>
-    <ellipse cx="33" cy="34" rx="4" ry="7" transform="rotate(-25 33 34)"/>
-    <circle cx="27" cy="26" r="2"/>
-    <circle cx="32" cy="24" r="2"/>
-    <circle cx="37" cy="26" r="2"/>
-    <circle cx="40" cy="30" r="2"/>
-  </svg>
-</span>
-    <span class="route-speed-label">Обычный</span>
+    <img src="pace-normal.png" class="route-speed-image" alt="Обычный">
   </button>
 
   <button class="route-speed" data-pace="fast">
-    <span class="route-speed-icon">
-  <svg viewBox="0 0 48 48" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M17 18 Q8 9 12 3 Q17 1 21 17"/>
-    <path d="M23 16 Q21 4 27 3 Q33 5 29 19"/>
-    <path d="M15 20 Q8 25 12 33 Q17 39 29 35 Q38 32 36 25 Q34 18 25 17 Z"/>
-    <path d="M35 25 Q43 20 44 26 Q44 32 37 32"/>
-    <circle cx="29" cy="23" r="1" fill="currentColor" stroke="none"/>
-    <path d="M16 34 L12 39 M29 35 L32 40"/>
-  </svg>
-</span>
-    <span class="route-speed-label">Быстрый</span>
+    <img src="pace-fast.png" class="route-speed-image" alt="Быстрый">
   </button>
 </div>
 
