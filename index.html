@@ -290,9 +290,9 @@ map.on('click', function(e) {
   if (popupJustClosed) return; // ← ВОТ ЭТО ГЛАВНОЕ
 
   if (window.routeMode) {
-    window.addPartyRoutePoint(e.latlng);
-    return;
-  }
+  window.handlePartyRouteClick(e.latlng);
+  return;
+}
 
   currentLatLng = e.latlng;
   editId = null;
@@ -482,10 +482,14 @@ partyMarker.on("click", function() {
   // Если маршрут уже прокладывается, повторный клик ничего не делает
   if (window.routeMode) return;
 
-  window.routeMode = true;
+window.routeMode = true;
+routeFinished = false;
 
-  // Начинаем маршрут от текущего положения отряда
-  routePoints = [partyMarker.getLatLng()];
+// Отключаем двойной клик для приближения карты
+map.doubleClickZoom.disable();
+
+// Начинаем маршрут от текущего положения отряда
+routePoints = [partyMarker.getLatLng()];
 
   lastCursorPosition = null;
 
@@ -505,6 +509,13 @@ partyMarker.on("click", function() {
 let routePoints = [];
 let routeLine = null;
 let routeRestMarkers = [];
+
+// Состояние завершения маршрута
+let routeFinished = false;
+
+// Обработка одиночного и двойного клика
+let pendingRouteClickTimer = null;
+let pendingRouteClickPosition = null;
 
 let routePace = "normal";
 
@@ -739,9 +750,10 @@ function createRoutePanel() {
 
   // Подтверждение маршрута
   routeConfirmButton.addEventListener("click", function() {
-    if (routePoints.length < 2) return;
+if (!routeFinished) return;
 
-    window.routeMode = false;
+window.routeMode = false;
+map.doubleClickZoom.enable();
 
     window.confirmedPartyRoute = routePoints.map(point => ({
       lat: point.lat,
@@ -758,6 +770,15 @@ function createRoutePanel() {
 
   // Отмена маршрута
   document.getElementById("route-cancel").addEventListener("click", function() {
+    if (pendingRouteClickTimer) {
+  clearTimeout(pendingRouteClickTimer);
+}
+
+pendingRouteClickTimer = null;
+pendingRouteClickPosition = null;
+
+routeFinished = false;
+map.doubleClickZoom.enable();
     window.routeMode = false;
 
     routePoints = [];
@@ -892,7 +913,7 @@ function updateRouteLine(cursorPosition = null) {
     document.getElementById("route-days").textContent =
       days;
 
-    routeConfirmButton.disabled = routePoints.length < 2;
+    routeConfirmButton.disabled = !routeFinished;
   }
 
   console.log("Длина маршрута:", Math.round(totalLength));
@@ -909,6 +930,90 @@ window.addPartyRoutePoint = function(latlng) {
   updateRouteLine();
 
   console.log("Точки маршрута:", routePoints);
+};
+
+// =====================================
+// ОБРАБОТКА КЛИКОВ И ЗАВЕРШЕНИЕ МАРШРУТА
+// =====================================
+
+// Завершение построения маршрута
+function finishPartyRoute(latlng) {
+  // Добавляем последнюю точку, если она отличается от предыдущей
+  const lastPoint = routePoints[routePoints.length - 1];
+
+  if (
+    !lastPoint ||
+    map.latLngToContainerPoint(lastPoint)
+      .distanceTo(map.latLngToContainerPoint(latlng)) > 3
+  ) {
+    routePoints.push(latlng);
+  }
+
+  // Маршрут должен содержать хотя бы одну линию
+  if (routePoints.length < 2) {
+    console.log("Для завершения маршрута нужна хотя бы одна точка");
+    return;
+  }
+
+  routeFinished = true;
+  window.routeMode = false;
+
+  lastCursorPosition = null;
+
+  // Возвращаем обычное приближение двойным кликом
+  map.doubleClickZoom.enable();
+
+  updateRouteLine();
+
+  console.log("Маршрут завершён:", routePoints);
+}
+
+// Обработка одиночного и двойного клика
+window.handlePartyRouteClick = function(latlng) {
+  if (!window.routeMode || routeFinished) return;
+
+  // Если уже ожидается одиночный клик,
+  // проверяем, является ли новый клик вторым
+  if (pendingRouteClickTimer) {
+    const firstPoint = map.latLngToContainerPoint(
+      pendingRouteClickPosition
+    );
+
+    const secondPoint = map.latLngToContainerPoint(latlng);
+
+    const distance = firstPoint.distanceTo(secondPoint);
+
+    // Два клика рядом друг с другом — завершаем маршрут
+    if (distance <= 30) {
+      clearTimeout(pendingRouteClickTimer);
+
+      pendingRouteClickTimer = null;
+      pendingRouteClickPosition = null;
+
+      finishPartyRoute(latlng);
+      return;
+    }
+
+    // Если второй клик далеко — фиксируем предыдущий
+    clearTimeout(pendingRouteClickTimer);
+
+    window.addPartyRoutePoint(pendingRouteClickPosition);
+
+    pendingRouteClickTimer = null;
+    pendingRouteClickPosition = null;
+  }
+
+  // Запоминаем новый клик
+  pendingRouteClickPosition = latlng;
+
+  // Ждём 300 мс: если второго клика не будет,
+  // добавляем обычную точку маршрута
+  pendingRouteClickTimer = setTimeout(function() {
+    window.addPartyRoutePoint(pendingRouteClickPosition);
+
+    pendingRouteClickTimer = null;
+    pendingRouteClickPosition = null;
+  }, 300);
 };
 
 // Движение курсора на ПК
