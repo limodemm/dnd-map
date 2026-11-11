@@ -859,7 +859,7 @@ function createRouteDisplayPoints(points) {
   if (points.length < 3) return points;
 
   const roundedPoints = [];
-  const cornerRadius = 12;
+  const cornerRadius = 30;
 
   // Сначала скругляем углы маршрута
   roundedPoints.push(points[0]);
@@ -882,8 +882,8 @@ function createRouteDisplayPoints(points) {
       continue;
     }
 
-    const cut1 = Math.min(cornerRadius, len1 * 0.25);
-    const cut2 = Math.min(cornerRadius, len2 * 0.25);
+    const cut1 = Math.min(cornerRadius, len1 * 0.4);
+    const cut2 = Math.min(cornerRadius, len2 * 0.4);
 
     const before = L.latLng(
       corner.lat + dy1 / len1 * cut1,
@@ -935,7 +935,7 @@ function createRouteDisplayPoints(points) {
       continue;
     }
 
-    const steps = Math.floor(length / 30);
+    const steps = Math.floor(length / 20);
 
     for (let j = 1; j <= steps; j++) {
       const t = j / (steps + 1);
@@ -954,7 +954,7 @@ function createRouteDisplayPoints(points) {
 
       // Отклонение плавно уменьшается у концов отрезка
       const taper = Math.sin(Math.PI * t);
-      const offset = noise * 3.5 * taper;
+      const offset = noise * 8 * taper;
 
       result.push(L.latLng(
         start.lat + dy * t + (dx / length) * offset,
