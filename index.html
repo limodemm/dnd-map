@@ -513,7 +513,7 @@ const routePaceLimits = {
   normal: 300,
   fast: 375
 };
-
+const KM_PER_PIXEL = 38.6 / 300;
 let routePanel = null;
 let routeStatus = null;
 let routeConfirmButton = null;
@@ -570,15 +570,28 @@ function createRoutePanel() {
       font-family: inherit;
     }
 
-    #party-route-panel .route-speed {
-      flex: 1;
-      padding: 9px 3px;
-      color: #eee2c8;
-      background: #393027;
-      border: 1px solid #756044;
-      border-radius: 6px;
-      font-size: 12px;
-    }
+#party-route-panel .route-speed {
+  flex: 1;
+  padding: 7px 3px;
+  color: #eee2c8;
+  background: #393027;
+  border: 1px solid #756044;
+  border-radius: 6px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+#party-route-panel .route-speed-icon {
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+#party-route-panel .route-speed-label {
+  font-size: 12px;
+}
 
     #party-route-panel .route-speed.active {
       background: #72572e;
@@ -620,6 +633,47 @@ function createRoutePanel() {
       opacity: 0.4;
       cursor: not-allowed;
     }
+ @media max-width: 768px, (pointer: coarse) {
+      #party-route-panel {
+        width: 300px;
+        bottom: 8px;
+        padding: 9px;
+        border-width: 1px;
+      }
+
+      #party-route-panel .route-heading {
+        font-size: 14px;
+        margin-bottom: 7px;
+      }
+
+      #party-route-panel .route-speeds {
+        gap: 4px;
+        margin-bottom: 7px;
+      }
+
+      #party-route-panel .route-speed {
+        padding: 5px 2px;
+      }
+
+      #party-route-panel .route-speed-icon {
+        font-size: 18px;
+      }
+
+      #party-route-panel .route-speed-label {
+        font-size: 11px;
+      }
+
+      #party-route-panel .route-info {
+        font-size: 11px;
+        line-height: 1.45;
+        margin-bottom: 8px;
+      }
+
+      #party-route-panel .route-action {
+        padding: 8px 4px;
+        font-size: 12px;
+      }
+    }
   `;
 
   document.head.appendChild(style);
@@ -630,24 +684,27 @@ function createRoutePanel() {
   routePanel.innerHTML = `
     <div class="route-heading">Путешествие отряда</div>
 
-    <div class="route-speeds">
-      <button class="route-speed" data-pace="slow">
-        Медленный
-      </button>
+<div class="route-speeds">
+  <button class="route-speed" data-pace="slow">
+    <span class="route-speed-icon">🐢</span>
+    <span class="route-speed-label">Медленный</span>
+  </button>
 
-      <button class="route-speed active" data-pace="normal">
-        Обычный
-      </button>
+  <button class="route-speed active" data-pace="normal">
+    <span class="route-speed-icon">👣</span>
+    <span class="route-speed-label">Обычный</span>
+  </button>
 
-      <button class="route-speed" data-pace="fast">
-        Быстрый
-      </button>
-    </div>
+  <button class="route-speed" data-pace="fast">
+    <span class="route-speed-icon">🐇</span>
+    <span class="route-speed-label">Быстрый</span>
+  </button>
+</div>
 
     <div class="route-info">
       <div>Дневной лимит: <b id="route-daily-limit">300</b> px</div>
       <div>Длина маршрута: <b id="route-distance">0</b> px</div>
-      <div>Путешествие: <b id="route-days">0</b></div>
+      <div>Дней в путешествии: <b id="route-days">0</b></div>
     </div>
 
     <div class="route-actions">
@@ -822,16 +879,13 @@ function updateRouteLine(cursorPosition = null) {
   }
 
   // Обновляем информацию в панели
-  if (routePanel) {
-    const days = totalLength > 0
-      ? Math.ceil(totalLength / dailyLimit)
-      : 0;
+const days = routeRestMarkers.length;
 
-    document.getElementById("route-daily-limit").textContent =
-      dailyLimit;
+document.getElementById("route-daily-limit").textContent =
+  (dailyLimit * KM_PER_PIXEL).toFixed(1) + " км";
 
-    document.getElementById("route-distance").textContent =
-      Math.round(totalLength);
+document.getElementById("route-distance").textContent =
+  (totalLength * KM_PER_PIXEL).toFixed(1) + " км";
 
     document.getElementById("route-days").textContent =
       days;
