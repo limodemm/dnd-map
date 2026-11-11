@@ -851,6 +851,123 @@ function getRouteLength(points) {
   return total;
 }
 
+// =====================================
+// ВИЗУАЛЬНАЯ ОБРАБОТКА ЛИНИИ МАРШРУТА
+// =====================================
+
+function createRouteDisplayPoints(points) {
+  if (points.length < 3) return points;
+
+  const roundedPoints = [];
+  const cornerRadius = 12;
+
+  // Сначала скругляем углы маршрута
+  roundedPoints.push(points[0]);
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1];
+    const corner = points[i];
+    const next = points[i + 1];
+
+    const dx1 = prev.lng - corner.lng;
+    const dy1 = prev.lat - corner.lat;
+    const dx2 = next.lng - corner.lng;
+    const dy2 = next.lat - corner.lat;
+
+    const len1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
+    const len2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+
+    if (len1 < 1 || len2 < 1) {
+      roundedPoints.push(corner);
+      continue;
+    }
+
+    const cut1 = Math.min(cornerRadius, len1 * 0.25);
+    const cut2 = Math.min(cornerRadius, len2 * 0.25);
+
+    const before = L.latLng(
+      corner.lat + dy1 / len1 * cut1,
+      corner.lng + dx1 / len1 * cut1
+    );
+
+    const after = L.latLng(
+      corner.lat + dy2 / len2 * cut2,
+      corner.lng + dx2 / len2 * cut2
+    );
+
+    roundedPoints.push(before);
+
+    // Плавная кривая Безье вокруг угла
+    for (let j = 1; j <= 5; j++) {
+      const t = j / 6;
+      const oneMinusT = 1 - t;
+
+      roundedPoints.push(L.latLng(
+        oneMinusT * oneMinusT * before.lat +
+        2 * oneMinusT * t * corner.lat +
+        t * t * after.lat,
+
+        oneMinusT * oneMinusT * before.lng +
+        2 * oneMinusT * t * corner.lng +
+        t * t * after.lng
+      ));
+    }
+
+    roundedPoints.push(after);
+  }
+
+  roundedPoints.push(points[points.length - 1]);
+
+  // Теперь добавляем небольшую хаотичную неровность
+  const result = [roundedPoints[0]];
+
+  for (let i = 1; i < roundedPoints.length; i++) {
+    const start = roundedPoints[i - 1];
+    const end = roundedPoints[i];
+
+    const dx = end.lng - start.lng;
+    const dy = end.lat - start.lat;
+    const length = Math.sqrt(dx * dx + dy * dy);
+
+    // Короткие участки не изменяем
+    if (length < 60) {
+      result.push(end);
+      continue;
+    }
+
+    const steps = Math.floor(length / 30);
+
+    for (let j = 1; j <= steps; j++) {
+      const t = j / (steps + 1);
+
+      // Детерминированное псевдослучайное отклонение
+      const seed = (
+        start.lat * 12.9898 +
+        start.lng * 78.233 +
+        end.lat * 37.719 +
+        end.lng * 19.913 +
+        j * 53.117
+      );
+
+      const random = Math.sin(seed) * 43758.5453;
+      const noise = (random - Math.floor(random)) * 2 - 1;
+
+      // Отклонение плавно уменьшается у концов отрезка
+      const taper = Math.sin(Math.PI * t);
+      const offset = noise * 3.5 * taper;
+
+      result.push(L.latLng(
+        start.lat + dy * t + (dx / length) * offset,
+        start.lng + dx * t - (dy / length) * offset
+      ));
+    }
+
+    result.push(end);
+  }
+
+  return result;
+}
+
 // Получение координаты на определённом расстоянии пути
 function getRoutePointAtDistance(points, targetDistance) {
   let passed = 0;
@@ -917,7 +1034,7 @@ function updateRouteLine(cursorPosition = null) {
   const dailyLimit = routePaceLimits[routePace];
 
   if (pointsToDraw.length >= 2) {
-    routeLine = L.polyline(pointsToDraw, {
+    routeLine = L.polyline(createRouteDisplayPoints(pointsToDraw), {
       color: "#d6b46a",
       weight: 4,
       dashArray: "8, 10",
