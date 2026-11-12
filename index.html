@@ -980,6 +980,17 @@ function createRoutePanel() {
   justify-content: center;
 }
 
+/* Увеличиваем только крестик внутри объединённого маркера. */
+.route-exhaustion-cluster.route-exhaustion-clustered {
+  width: 56px;
+  height: 56px;
+}
+
+.route-exhaustion-cluster.route-exhaustion-clustered .route-exhaustion-glyph {
+  font-size: 56px;
+  line-height: 56px;
+}
+
 .route-exhaustion-count {
   position: absolute;
   left: 50%;
@@ -2110,9 +2121,9 @@ function updateRouteLine(cursorPosition = null) {
         className:
           "route-exhaustion-mark" +
           (exhaustionIsPreview ? " route-preview-marker" : ""),
-        html: `<div class="${exhaustionShouldAnimate ? "route-token-drop" : ""}" style="--route-animation-delay:-${exhaustionAnimationDelay || 0}ms;width:28px;height:28px;"><div class="route-exhaustion-cluster"><span class="route-exhaustion-glyph">×</span>${countBadge}</div></div>`,
-        iconSize: [28, 28],
-        iconAnchor: [14, 14]
+        html: `<div class="${exhaustionShouldAnimate ? "route-token-drop" : ""}" style="--route-animation-delay:-${exhaustionAnimationDelay || 0}ms;width:${cluster.count > 1 ? 56 : 28}px;height:${cluster.count > 1 ? 56 : 28}px;"><div class="route-exhaustion-cluster${cluster.count > 1 ? " route-exhaustion-clustered" : ""}"><span class="route-exhaustion-glyph">×</span>${countBadge}</div></div>`,
+        iconSize: cluster.count > 1 ? [56, 56] : [28, 28],
+        iconAnchor: cluster.count > 1 ? [28, 28] : [14, 14]
       });
       const marker = L.marker(cluster.position, {
         icon: exhaustionIcon,
