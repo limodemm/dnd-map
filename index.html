@@ -130,23 +130,23 @@ body {
 <div id="marker-form" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
 background:#1e1e1e; padding:20px; border-radius:8px; z-index:1000; color:white; width:300px;">
 
-  <h3 id="form-title">РќРѕРІР°СЏ РјРµС‚РєР°</h3>
+  <h3 id="form-title">Новая метка</h3>
 
-  <input id="marker-title" placeholder="РќР°Р·РІР°РЅРёРµ" style="width:100%; margin-bottom:10px;" />
+  <input id="marker-title" placeholder="Название" style="width:100%; margin-bottom:10px;" />
   
-  <textarea id="marker-desc" placeholder="РћРїРёСЃР°РЅРёРµ" style="width:100%; height:80px;"></textarea>
+  <textarea id="marker-desc" placeholder="Описание" style="width:100%; height:80px;"></textarea>
 
   <select id="marker-type" style="width:100%; margin-top:10px;">
-  <option value="note">рџ“њ Р—Р°РјРµС‚РєР°</option>
-  <option value="camp">рџЏ• Р›Р°РіРµСЂСЊ</option>
-  <option value="cave">рџ•і РџРµС‰РµСЂР°</option>
-  <option value="interest">вђ РРЅС‚РµСЂРµСЃРЅРѕРµ РјРµСЃС‚Рѕ</option>
-  <option value="quest">вќ“ РљРІРµСЃС‚</option>
+  <option value="note">📜 Заметка</option>
+  <option value="camp">🏕 Лагерь</option>
+  <option value="cave">🕳 Пещера</option>
+  <option value="interest">⭐ Интересное место</option>
+  <option value="quest">❓ Квест</option>
 </select>
   
   <div style="margin-top:10px; display:flex; justify-content:space-between;">
-    <button onclick="saveMarker()">РЎРѕС…СЂР°РЅРёС‚СЊ</button>
-    <button onclick="closeForm()">РћС‚РјРµРЅР°</button>
+    <button onclick="saveMarker()">Сохранить</button>
+    <button onclick="closeForm()">Отмена</button>
   </div>
 </div>
 
@@ -196,11 +196,11 @@ var icons = {
   })
 };
 
-// СЂР°Р·РјРµСЂС‹ С‚РІРѕРµР№ РєР°СЂС‚С‹ (РїРѕРєР° РѕСЃС‚Р°РІРёРј С‚Р°Рє)
+// размеры твоей карты (пока оставим так)
 var width = 7016;
 var height = 4960;
 
-// СЃРѕР·РґР°С‘Рј РєР°СЂС‚Сѓ
+// создаём карту
 var bounds = [[0,0], [height, width]];
 
 var map = L.map('map', {
@@ -212,7 +212,7 @@ var map = L.map('map', {
   attributionControl: false,
 });
 
-// Р·Р°РіСЂСѓР¶Р°РµРј РєР°СЂС‚РёРЅРєСѓ
+// загружаем картинку
 var imageUrl = 'map.jpg';
 
 var bounds = [[0,0], [height, width]];
@@ -239,25 +239,25 @@ function updateFrame() {
   var wrapper = document.getElementById('map-wrapper');
 
   if (map.getZoom() === map.getMinZoom()) {
-    // РјРёРЅРёРјР°Р»СЊРЅС‹Р№ Р·СѓРј
+    // минимальный зум
     wrapper.classList.remove("zoomed");
     mapEl.classList.remove("zoomed");
 
-    map.dragging.disable(); // в†ђ Р±Р»РѕРєРёСЂСѓРµРј
+    map.dragging.disable(); // ← блокируем
 
   } else {
-    // Р·СѓРј РµСЃС‚СЊ
+    // зум есть
     wrapper.classList.add("zoomed");
     mapEl.classList.add("zoomed");
 
-    map.dragging.enable(); // в†ђ Р’РћРў РРўРћ Р’РђР–РќРћ
+    map.dragging.enable(); // ← ВОТ ЭТО ВАЖНО
   }
 }
 
 updateFrame();
 map.on('zoomend', updateFrame);
 
-// --- Р—РђР“Р РЈР—РљРђ РЎРћРҐР РђРќРЃРќРќР«РҐ РњР•РўРћРљ ---
+// --- ЗАГРУЗКА СОХРАНЁННЫХ МЕТОК ---
 var savedMarkers = JSON.parse(localStorage.getItem("markers") || "[]");
 
 savedMarkers.forEach(function(m) {
@@ -277,8 +277,8 @@ function renderPopup() {
       <div class="marker-desc">${data.description}</div>
 
       <div class="marker-buttons">
-        <button onclick="editMarker(${data.id})">вњЏпёЏ</button>
-        <button onclick="deleteMarker(${data.id})">рџ—‘</button>
+        <button onclick="editMarker(${data.id})">✏️</button>
+        <button onclick="deleteMarker(${data.id})">🗑</button>
       </div>
     </div>
   `;
@@ -289,9 +289,9 @@ function renderPopup() {
   marker._customId = data.id;
 }
 
-// --- Р”РћР‘РђР’Р›Р•РќРР• РњР•РўРљР РџРћ РљР›РРљРЈ ---
+// --- ДОБАВЛЕНИЕ МЕТКИ ПО КЛИКУ ---
 map.on('click', function(e) {
-  if (popupJustClosed) return; // в†ђ Р’РћРў РРўРћ Р“Р›РђР’РќРћР•
+  if (popupJustClosed) return; // ← ВОТ ЭТО ГЛАВНОЕ
 
   if (window.routeMode) {
   window.handlePartyRouteClick(e.latlng);
@@ -302,7 +302,7 @@ map.on('click', function(e) {
   currentLatLng = e.latlng;
   editId = null;
 
-  document.getElementById("form-title").innerText = "РќРѕРІР°СЏ РјРµС‚РєР°";
+  document.getElementById("form-title").innerText = "Новая метка";
   document.getElementById("marker-title").value = "";
   document.getElementById("marker-desc").value = "";
 
@@ -310,14 +310,14 @@ map.on('click', function(e) {
 });
 
 function deleteMarker(id) {
-  var confirmDelete = confirm("РЈРґР°Р»РёС‚СЊ РјРµС‚РєСѓ?");
+  var confirmDelete = confirm("Удалить метку?");
   if (!confirmDelete) return;
 
-  // СѓРґР°Р»СЏРµРј РёР· РјР°СЃСЃРёРІР°
+  // удаляем из массива
   savedMarkers = savedMarkers.filter(m => m.id !== id);
   localStorage.setItem("markers", JSON.stringify(savedMarkers));
 
-  // СѓРґР°Р»СЏРµРј СЃ РєР°СЂС‚С‹ Р‘Р•Р— РїРµСЂРµР·Р°РіСЂСѓР·РєРё
+  // удаляем с карты БЕЗ перезагрузки
   map.eachLayer(function(layer) {
     if (layer instanceof L.Marker && layer._customId === id) {
       map.removeLayer(layer);
@@ -332,7 +332,7 @@ function editMarker(id) {
   editId = id;
   currentLatLng = { lat: marker.lat, lng: marker.lng };
 
-  document.getElementById("form-title").innerText = "Р РµРґР°РєС‚РёСЂРѕРІР°РЅРёРµ";
+  document.getElementById("form-title").innerText = "Редактирование";
   document.getElementById("marker-title").value = marker.title;
   document.getElementById("marker-desc").value = marker.description;
 
@@ -356,7 +356,7 @@ function saveMarker() {
     marker.description = desc;
     marker.type = type;
 
-    // РѕР±РЅРѕРІР»СЏРµРј popup Р‘Р•Р— reload
+    // обновляем popup БЕЗ reload
     map.eachLayer(function(layer) {
       if (layer instanceof L.Marker && layer._customId === editId) {
         layer.setIcon(icons[type]);
@@ -366,8 +366,8 @@ function saveMarker() {
             <div class="marker-desc">${desc}</div>
 
             <div class="marker-buttons">
-              <button onclick="editMarker(${editId})">вњЏпёЏ</button>
-              <button onclick="deleteMarker(${editId})">рџ—‘</button>
+              <button onclick="editMarker(${editId})">✏️</button>
+              <button onclick="deleteMarker(${editId})">🗑</button>
             </div>
           </div>
         `);
@@ -394,16 +394,16 @@ function saveMarker() {
 
 document.addEventListener("keydown", function(e) {
   if (e.key === "Escape") {
-    // Р’Рѕ РІСЂРµРјСЏ РїСЂРѕРєР»Р°РґРєРё РёР»Рё РїРѕРґС‚РІРµСЂР¶РґРµРЅРёСЏ РјР°СЂС€СЂСѓС‚Р° Escape
-    // РІС‹РїРѕР»РЅСЏРµС‚ С‚Рѕ Р¶Рµ РґРµР№СЃС‚РІРёРµ, С‡С‚Рѕ Рё РєРЅРѕРїРєР° В«РћС‚РјРµРЅРёС‚СЊВ».
+    // Во время прокладки или подтверждения маршрута Escape
+    // выполняет то же действие, что и кнопка «Отменить».
     if (window.routeMode || window.routePendingConfirmation) {
       e.preventDefault();
       e.stopImmediatePropagation();
 
       window.dispatchEvent(new Event("cancel-party-route"));
 
-      // РЈР±РёСЂР°РµРј РєР»Р°РІРёР°С‚СѓСЂРЅС‹Р№ С„РѕРєСѓСЃ СЃ РјР°СЂРєРµСЂР° РѕС‚СЂСЏРґР°,
-      // С‡С‚РѕР±С‹ Р±СЂР°СѓР·РµСЂ РЅРµ РѕСЃС‚Р°РІР»СЏР» РІРѕРєСЂСѓРі РЅРµРіРѕ СЂР°РјРєСѓ.
+      // Убираем клавиатурный фокус с маркера отряда,
+      // чтобы браузер не оставлял вокруг него рамку.
       if (document.activeElement && document.activeElement.blur) {
         document.activeElement.blur();
       }
@@ -422,7 +422,7 @@ document.addEventListener("keydown", function(e) {
   import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-auth.js";
   import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-database.js";
 
-  // РќР°СЃС‚СЂРѕР№РєРё Firebase
+  // Настройки Firebase
   const firebaseConfig = {
     apiKey: "AIzaSyAnH35p8TJPBOyE18omlEbMrdr1RedbNIc",
     authDomain: "dnd-map-b6d21.firebaseapp.com",
@@ -433,17 +433,17 @@ document.addEventListener("keydown", function(e) {
     appId: "1:1012046242037:web:7cb1db3ab10beaf66aa5bc"
   };
 
-  // РџРѕРґРєР»СЋС‡РµРЅРёРµ Firebase
+  // Подключение Firebase
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const database = getDatabase(app);
 
 // =====================================
-  // РЎРРЎРўР•РњРђ РћР‘Р©Р•Р“Рћ РњРђР РљР•Р Рђ РћРўР РЇР”Рђ
+  // СИСТЕМА ОБЩЕГО МАРКЕРА ОТРЯДА
   // =====================================
 
-  // РќР°С‡Р°Р»СЊРЅС‹Рµ РєРѕРѕСЂРґРёРЅР°С‚С‹ РѕС‚СЂСЏРґР°.
-  // РџРѕР·Р¶Рµ Р·Р°РјРµРЅРёРј РёС… РЅР° С‚РѕС‡РЅРѕРµ РјРµСЃС‚Рѕ РЅР° РєР°СЂС‚Рµ.
+  // Начальные координаты отряда.
+  // Позже заменим их на точное место на карте.
   const partyStartPosition = {
     lat: 2450,
     lng: 3200
@@ -453,14 +453,14 @@ let partyMarker = null;
 let partyListenerStarted = false;
 window.routeMode = false;
 
-  // Р’РЅРµС€РЅРёР№ РІРёРґ РјР°СЂРєРµСЂР° РѕС‚СЂСЏРґР°
+  // Внешний вид маркера отряда
  const partyIcon = L.icon({
   iconUrl: "party.png",
   iconSize: [48, 48],
   iconAnchor: [24, 24]
 });
 
-  // РџРѕРґРєР»СЋС‡РµРЅРёРµ РѕР±С‰РµРіРѕ РїРѕР»РѕР¶РµРЅРёСЏ РѕС‚СЂСЏРґР°
+  // Подключение общего положения отряда
   async function initializeParty() {
     if (partyListenerStarted) return;
     partyListenerStarted = true;
@@ -468,10 +468,10 @@ window.routeMode = false;
     const partyRef = ref(database, "party/state");
 
     try {
-      // РџСЂРѕРІРµСЂСЏРµРј, СЃСѓС‰РµСЃС‚РІСѓРµС‚ Р»Рё СѓР¶Рµ РѕС‚СЂСЏРґ РІ Р±Р°Р·Рµ
+      // Проверяем, существует ли уже отряд в базе
       const snapshot = await get(partyRef);
 
-      // Р•СЃР»Рё РѕС‚СЂСЏРґР° РµС‰С‘ РЅРµС‚ вЂ” СЃРѕР·РґР°С‘Рј РµРіРѕ
+      // Если отряда ещё нет — создаём его
       if (!snapshot.exists()) {
         await set(partyRef, {
           lat: partyStartPosition.lat,
@@ -479,7 +479,7 @@ window.routeMode = false;
         });
       }
 
-      // РЎР»РµРґРёРј Р·Р° РёР·РјРµРЅРµРЅРёСЏРјРё РїРѕР»РѕР¶РµРЅРёСЏ РѕС‚СЂСЏРґР°
+      // Следим за изменениями положения отряда
       onValue(partyRef, function(snapshot) {
         const position = snapshot.val();
 
@@ -490,7 +490,7 @@ window.routeMode = false;
           position.lng
         ];
 
-        // Р•СЃР»Рё РјР°СЂРєРµСЂР° РµС‰С‘ РЅРµС‚ вЂ” СЃРѕР·РґР°С‘Рј РµРіРѕ
+        // Если маркера ещё нет — создаём его
         if (!partyMarker) {
           partyMarker = L.marker(coordinates, {
   icon: partyIcon,
@@ -500,12 +500,12 @@ window.routeMode = false;
 
 partyMarker.on("click", function() {
 
-  // Р•СЃР»Рё РјР°СЂС€СЂСѓС‚ СѓР¶Рµ РїСЂРѕРєР»Р°РґС‹РІР°РµС‚СЃСЏ, РїРѕРІС‚РѕСЂРЅС‹Р№ РєР»РёРє РЅРёС‡РµРіРѕ РЅРµ РґРµР»Р°РµС‚
+  // Если маршрут уже прокладывается, повторный клик ничего не делает
   if (window.routeMode) return;
 
 window.routeMode = true;
 routeFinished = false;
-// РЎР±СЂР°СЃС‹РІР°РµРј СЃРѕСЃС‚РѕСЏРЅРёРµ С„РѕСЂСЃРёСЂРѕРІР°РЅРЅРѕРіРѕ РјР°СЂС€Р°
+// Сбрасываем состояние форсированного марша
 routeForcedMarch = false;
 routeForcedMarchStartDistance = 0;
 routeForcedMarchStartUnits = 0;
@@ -518,25 +518,25 @@ if (forcedButton) {
   forcedButton.setAttribute("aria-pressed", "false");
 }
 
-// РћС‚РєР»СЋС‡Р°РµРј РґРІРѕР№РЅРѕР№ РєР»РёРє РґР»СЏ РїСЂРёР±Р»РёР¶РµРЅРёСЏ РєР°СЂС‚С‹
+// Отключаем двойной клик для приближения карты
 map.doubleClickZoom.disable();
 
-// РќР°С‡РёРЅР°РµРј РјР°СЂС€СЂСѓС‚ РѕС‚ С‚РµРєСѓС‰РµРіРѕ РїРѕР»РѕР¶РµРЅРёСЏ РѕС‚СЂСЏРґР°
+// Начинаем маршрут от текущего положения отряда
 routePoints = [partyMarker.getLatLng()];
 
   lastCursorPosition = null;
 
-  // РџРѕРєР°Р·С‹РІР°РµРј РїР°РЅРµР»СЊ СѓРїСЂР°РІР»РµРЅРёСЏ
+  // Показываем панель управления
   createRoutePanel();
   routePanel.style.display = "block";
 
-  // РћС‚РѕР±СЂР°Р¶Р°РµРј РЅР°С‡Р°Р»СЊРЅС‹Рµ Р·РЅР°С‡РµРЅРёСЏ
+  // Отображаем начальные значения
   updateRouteLine();
 
-  console.log("Р РµР¶РёРј РїСЂРѕРєР»Р°РґРєРё РјР°СЂС€СЂСѓС‚Р° РІРєР»СЋС‡С‘РЅ");
+  console.log("Режим прокладки маршрута включён");
 });
 // =====================================
-// РџРћРЎРўР РћР•РќРР• РњРђР РЁР РЈРўРђ
+// ПОСТРОЕНИЕ МАРШРУТА
 // =====================================
 
 let routePoints = [];
@@ -544,10 +544,10 @@ let routeLine = null;
 let routeRestMarkers = [];
 let routeEndMarker = null;
 
-// РЎРѕСЃС‚РѕСЏРЅРёРµ Р·Р°РІРµСЂС€РµРЅРёСЏ РјР°СЂС€СЂСѓС‚Р°
+// Состояние завершения маршрута
 let routeFinished = false;
 
-// РћР±СЂР°Р±РѕС‚РєР° РѕРґРёРЅРѕС‡РЅРѕРіРѕ Рё РґРІРѕР№РЅРѕРіРѕ РєР»РёРєР°
+// Обработка одиночного и двойного клика
 let pendingRouteClickTimer = null;
 let pendingRouteClickPosition = null;
 
@@ -555,12 +555,12 @@ let routePace = "normal";
 let routeSpeedReduced = false;
 let routeForcedMarch = false;
 
-// Р—Р°РІРµСЂС€С‘РЅРЅС‹Рµ СѓС‡Р°СЃС‚РєРё С„РѕСЂСЃРёСЂРѕРІР°РЅРЅРѕРіРѕ РјР°СЂС€Р°: Р°Р±СЃРѕР»СЋС‚РЅС‹Рµ СЂР°СЃСЃС‚РѕСЏРЅРёСЏ РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ
-// РїР»СЋСЃ startUnits/lengthUnits РґР»СЏ РїРµСЂРµСЃС‡С‘С‚Р° РїСЂРё СЃРјРµРЅРµ РґРЅРµРІРЅРѕР№ РЅРѕСЂРјС‹.
+// Завершённые участки форсированного марша: абсолютные расстояния для отображения
+// плюс startUnits/lengthUnits для пересчёта при смене дневной нормы.
 let routeForcedSegments = [];
 
-// РќР°С‡Р°Р»Рѕ С„РѕСЂСЃРёСЂРѕРІР°РЅРЅРѕРіРѕ РјР°СЂС€Р° С…СЂР°РЅРёС‚СЃСЏ РІ РґРѕР»СЏС… РґРЅРµРІРЅРѕР№ РЅРѕСЂРјС‹,
-// С‡С‚РѕР±С‹ РѕРЅРѕ РїРµСЂРµРјРµС‰Р°Р»РѕСЃСЊ РІРјРµСЃС‚Рµ СЃ РїСЂРёРІР°Р»Р°РјРё РїСЂРё СЃРјРµРЅРµ С‚РµРјРїР°.
+// Начало форсированного марша хранится в долях дневной нормы,
+// чтобы оно перемещалось вместе с привалами при смене темпа.
 let routeForcedMarchStartDistance = 0;
 let routeForcedMarchStartUnits = 0;
 
@@ -575,8 +575,8 @@ let routeStatus = null;
 let routeConfirmButton = null;
 let lastCursorPosition = null;
 
-// РђРЅРёРјР°С†РёРё РЅРѕРІС‹С… Р¶РµС‚РѕРЅРѕРІ С…СЂР°РЅСЏС‚СЃСЏ РЅРµР·Р°РІРёСЃРёРјРѕ РґСЂСѓРі РѕС‚ РґСЂСѓРіР°.
-// РџРµСЂРµСЂРёСЃРѕРІРєР° РјР°СЂС€СЂСѓС‚Р° РЅРµ СЃР±СЂР°СЃС‹РІР°РµС‚ РёС… С…РѕРґ.
+// Анимации новых жетонов хранятся независимо друг от друга.
+// Перерисовка маршрута не сбрасывает их ход.
 let routeMarkerAnimations = [];
 const routeMarkerAnimationDuration = 420;
 
@@ -600,7 +600,7 @@ function beginRouteMarkerAnimation(startDistance, endDistance) {
 
   routeMarkerAnimations.push(animation);
 
-  // РЈР±РёСЂР°РµРј Р·Р°РІРµСЂС€РёРІС€СѓСЋСЃСЏ Р°РЅРёРјР°С†РёСЋ РїРѕСЃР»Рµ РµС‘ РїРѕР»РЅРѕРіРѕ РїСЂРѕРёРіСЂС‹РІР°РЅРёСЏ.
+  // Убираем завершившуюся анимацию после её полного проигрывания.
   animation.timer = setTimeout(function() {
     routeMarkerAnimations = routeMarkerAnimations.filter(
       item => item !== animation
@@ -613,14 +613,14 @@ function beginRouteMarkerAnimation(startDistance, endDistance) {
 function getRouteMarkerAnimation(distance) {
   const now = Date.now();
 
-  // Р•СЃР»Рё РЅРµСЃРєРѕР»СЊРєРѕ Р°РЅРёРјР°С†РёР№ РїРµСЂРµСЃРµРєР°СЋС‚СЃСЏ, РёСЃРїРѕР»СЊР·СѓРµРј СЃР°РјСѓСЋ РЅРѕРІСѓСЋ.
+  // Если несколько анимаций пересекаются, используем самую новую.
   let matchingAnimation = null;
 
   routeMarkerAnimations.forEach(animation => {
     const elapsed = now - animation.startedAt;
 
-    // РќР°С‡Р°Р»СЊРЅС‹Р№ РїСЂРёРІР°Р» РЅРµ Р°РЅРёРјРёСЂСѓРµРј: Р°РЅРёРјР°С†РёСЏ РѕС‚РЅРѕСЃРёС‚СЃСЏ С‚РѕР»СЊРєРѕ
-    // Рє Р¶РµС‚РѕРЅР°Рј, РїРѕСЏРІРёРІС€РёРјСЃСЏ РџРћРЎР›Р• С‚РѕС‡РєРё СЃС‚Р°СЂС‚Р° РЅРѕРІРѕРіРѕ СѓС‡Р°СЃС‚РєР°.
+    // Начальный привал не анимируем: анимация относится только
+    // к жетонам, появившимся ПОСЛЕ точки старта нового участка.
     const isInsideRange =
       distance > animation.start + 0.05 &&
       distance <= animation.end + 0.01;
@@ -648,13 +648,13 @@ function getRouteMarkerAnimationDelay(distance) {
   return Math.max(0, Date.now() - animation.startedAt);
 }
 
-// РћРїСЂРµРґРµР»СЏРµРј, РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ Р»Рё РџРљ СЃ РјС‹С€СЊСЋ
+// Определяем, используется ли ПК с мышью
 const hasMouse = window.matchMedia(
   "(hover: hover) and (pointer: fine)"
 ).matches;
 
 // =====================================
-// РџРђРќР•Р›Р¬ РЈРџР РђР’Р›Р•РќРРЇ
+// ПАНЕЛЬ УПРАВЛЕНИЯ
 // =====================================
 
 function createRoutePanel() {
@@ -726,7 +726,7 @@ function createRoutePanel() {
   font-size: 12px;
 }
 
-/* РџРµСЂРµРєР»СЋС‡Р°С‚РµР»СЊ СЃРЅРёР¶РµРЅРЅРѕР№ СЃРєРѕСЂРѕСЃС‚Рё */
+/* Переключатель сниженной скорости */
 
 #party-route-panel .route-reduced-speed {
   display: flex;
@@ -790,7 +790,7 @@ function createRoutePanel() {
   background: #e6c77d;
 }
 
-/* РџРµСЂРµРєР»СЋС‡Р°С‚РµР»СЊ С„РѕСЂСЃРёСЂРѕРІР°РЅРЅРѕРіРѕ РјР°СЂС€Р° */
+/* Переключатель форсированного марша */
 
 #party-route-panel .route-forced-march {
   display: flex;
@@ -873,23 +873,23 @@ function createRoutePanel() {
       cursor: not-allowed;
     }
 
-/* Р—РѕР»РѕС‚Р°СЏ Рё С‡С‘СЂРЅР°СЏ Р»РёРЅРёРё: С‡С‘С‚РєРёРµ, Р±РµР· С‚СЏР¶С‘Р»РѕР№ С‚РµРЅРё */
+/* Золотая и чёрная линии: чёткие, без тяжёлой тени */
 .leaflet-overlay-pane .route-line-raised {
   filter: drop-shadow(0px 1px 0px rgba(0, 0, 0, 0.65));
 }
 
-/* РћР±СЉС‘Рј РѕР±С‹С‡РЅС‹Рј РїСЂРёРІР°Р»Р°Рј */
+/* Объём обычным привалам */
 .leaflet-route-rest-pane .route-rest-raised {
   filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8));
 }
 
-/* РћР±СЉС‘Рј СЂР°Р·РґРµР»РёС‚РµР»СЊРЅРѕР№ С‡РµСЂС‚Рµ Рё РєСЂРµСЃС‚РёРєР°Рј */
+/* Объём разделительной черте и крестикам */
 .leaflet-marker-icon.route-march-boundary,
 .leaflet-marker-icon.route-exhaustion-mark {
   filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8));
 }
 
-/* РџСЂРµРґРїСЂРѕСЃРјРѕС‚СЂ РїСЂРёРіР»СѓС€С‘РЅ, РЅРѕ Р¶РµС‚РѕРЅС‹ РѕСЃС‚Р°СЋС‚СЃСЏ Р·Р°РјРµС‚РЅРµРµ Р»РёРЅРёР№ */
+/* Предпросмотр приглушён, но жетоны остаются заметнее линий */
 .leaflet-marker-icon.route-preview-marker {
   opacity: 0.58 !important;
   filter: none !important;
@@ -899,8 +899,8 @@ function createRoutePanel() {
   filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.65));
 }
 
-/* РџР°РґРµРЅРёРµ Р¶РµС‚РѕРЅРѕРІ: Р·Р°РјРµС‚РЅРѕРµ СЃРЅРёР¶РµРЅРёРµ, РєРѕСЂРѕС‚РєРѕРµ СЃР¶Р°С‚РёРµ РїСЂРё СѓРґР°СЂРµ,
-   Р·Р°С‚РµРј Р±С‹СЃС‚СЂРѕРµ Рё СЃРїРѕРєРѕР№РЅРѕРµ РѕРєРѕРЅС‡Р°С‚РµР»СЊРЅРѕРµ РїРѕР»РѕР¶РµРЅРёРµ. */
+/* Падение жетонов: заметное снижение, короткое сжатие при ударе,
+   затем быстрое и спокойное окончательное положение. */
 @keyframes route-token-drop {
   0% {
     transform: translateY(-34px) scale(0.88) rotate(-4deg);
@@ -1046,52 +1046,52 @@ function createRoutePanel() {
   routePanel.id = "party-route-panel";
 
   routePanel.innerHTML = `
-    <div class="route-heading">РџСѓС‚РµС€РµСЃС‚РІРёРµ РѕС‚СЂСЏРґР°</div>
+    <div class="route-heading">Путешествие отряда</div>
 
 <div class="route-speeds">
   <button class="route-speed" data-pace="slow">
-    <img src="pace-slow.png" class="route-speed-image" alt="РњРµРґР»РµРЅРЅС‹Р№">
-    <span class="route-speed-label">РњРµРґР»РµРЅРЅС‹Р№</span>
+    <img src="pace-slow.png" class="route-speed-image" alt="Медленный">
+    <span class="route-speed-label">Медленный</span>
   </button>
 
   <button class="route-speed active" data-pace="normal">
-    <img src="pace-normal.png" class="route-speed-image" alt="РћР±С‹С‡РЅС‹Р№">
-    <span class="route-speed-label">РћР±С‹С‡РЅС‹Р№</span>
+    <img src="pace-normal.png" class="route-speed-image" alt="Обычный">
+    <span class="route-speed-label">Обычный</span>
   </button>
 
   <button class="route-speed" data-pace="fast">
-    <img src="pace-fast.png" class="route-speed-image" alt="Р‘С‹СЃС‚СЂС‹Р№">
-    <span class="route-speed-label">Р‘С‹СЃС‚СЂС‹Р№</span>
+    <img src="pace-fast.png" class="route-speed-image" alt="Быстрый">
+    <span class="route-speed-label">Быстрый</span>
   </button>
 </div>
 
 <button class="route-reduced-speed" id="route-reduced-speed" type="button">
-  <span>РЎРЅРёР¶РµРЅРЅР°СЏ СЃРєРѕСЂРѕСЃС‚СЊ</span>
+  <span>Сниженная скорость</span>
   <span class="route-toggle"></span>
 </button>
 
 <button class="route-forced-march" id="route-forced-march" type="button">
-  <span>Р¤РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹Р№ РјР°СЂС€</span>
+  <span>Форсированный марш</span>
   <span class="route-toggle"></span>
 </button>
 
     <div class="route-info">
-      <div>Р”РЅРµРІРЅРѕР№ Р»РёРјРёС‚: <b id="route-daily-limit">38.6 РєРј</b></div>
-      <div>Р”Р»РёРЅР° РјР°СЂС€СЂСѓС‚Р°: <b id="route-distance">0.0 РєРј</b></div>
-      <div>Р”РЅРµР№ РІ РїСѓС‚РµС€РµСЃС‚РІРёРё: <b id="route-days">0</b></div>
+      <div>Дневной лимит: <b id="route-daily-limit">38.6 км</b></div>
+      <div>Длина маршрута: <b id="route-distance">0.0 км</b></div>
+      <div>Дней в путешествии: <b id="route-days">0</b></div>
     </div>
 
    <div class="route-actions">
   <button class="route-action route-undo" id="route-undo">
-    Р’РµСЂРЅСѓС‚СЊ
+    Вернуть
   </button>
 
   <button class="route-action route-confirm" id="route-confirm">
-    РџРѕРґС‚РІРµСЂРґРёС‚СЊ
+    Подтвердить
   </button>
 
   <button class="route-action route-cancel" id="route-cancel">
-    РћС‚РјРµРЅРёС‚СЊ
+    Отменить
   </button>
 </div>
   `;
@@ -1101,7 +1101,7 @@ function createRoutePanel() {
   routeStatus = routePanel.querySelector(".route-info");
   routeConfirmButton = document.getElementById("route-confirm");
 
-  // Р’С‹Р±РѕСЂ С‚РµРјРїР°
+  // Выбор темпа
   routePanel.querySelectorAll(".route-speed").forEach(button => {
     button.addEventListener("click", function() {
       routePace = this.dataset.pace;
@@ -1114,7 +1114,7 @@ function createRoutePanel() {
     });
   });
 
-// РџРµСЂРµРєР»СЋС‡Р°С‚РµР»СЊ СЃРЅРёР¶РµРЅРЅРѕР№ СЃРєРѕСЂРѕСЃС‚Рё
+// Переключатель сниженной скорости
 const reducedSpeedButton = document.getElementById("route-reduced-speed");
 
 reducedSpeedButton.addEventListener("click", function() {
@@ -1127,11 +1127,11 @@ reducedSpeedButton.addEventListener("click", function() {
   updateRouteLine(lastCursorPosition);
 });
 
-// РџРµСЂРµРєР»СЋС‡Р°С‚РµР»СЊ С„РѕСЂСЃРёСЂРѕРІР°РЅРЅРѕРіРѕ РјР°СЂС€Р°
+// Переключатель форсированного марша
 const forcedMarchButton = document.getElementById("route-forced-march");
 
 forcedMarchButton.addEventListener("click", function() {
-  // РџРѕСЃР»Рµ СѓСЃС‚Р°РЅРѕРІРєРё С„Р»Р°Р¶РєР° РїРµСЂРµРєР»СЋС‡Р°С‚РµР»СЊ РЅРµРґРѕСЃС‚СѓРїРµРЅ.
+  // После установки флажка переключатель недоступен.
   if (routeFinished || window.routePendingConfirmation) return;
 
   const fixedLength = getRouteLength(routePoints);
@@ -1141,13 +1141,13 @@ forcedMarchButton.addEventListener("click", function() {
   lastCursorPosition = null;
 
   if (!routeForcedMarch) {
-    // РќР°С‡РёРЅР°РµРј С„РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹Р№ РјР°СЂС€ РѕС‚ РїРѕСЃР»РµРґРЅРµРіРѕ РѕР±С‹С‡РЅРѕРіРѕ РїСЂРёРІР°Р»Р°.
+    // Начинаем форсированный марш от последнего обычного привала.
     const previousRests = getNormalRestDistances(fixedLength, dailyLimit);
     const lastRestDistance = previousRests.length
       ? previousRests[previousRests.length - 1]
       : 0;
 
-    // Р—РґРµСЃСЊ РјР°СЂС€СЂСѓС‚ РґРµР№СЃС‚РІРёС‚РµР»СЊРЅРѕ РѕС‚РєР°С‚С‹РІР°РµС‚СЃСЏ Рє РїРѕСЃР»РµРґРЅРµРјСѓ РїСЂРёРІР°Р»Сѓ.
+    // Здесь маршрут действительно откатывается к последнему привалу.
     routePoints = getRoutePointsUpToDistance(routePoints, lastRestDistance);
     routeForcedSegments = routeForcedSegments.filter(segment => {
       const recalculated = getForcedSegmentDistances(segment, dailyLimit);
@@ -1162,14 +1162,14 @@ forcedMarchButton.addEventListener("click", function() {
 
     this.classList.add("active");
     this.setAttribute("aria-pressed", "true");
-    console.log("Р¤РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹Р№ РјР°СЂС€ РІРєР»СЋС‡С‘РЅ");
+    console.log("Форсированный марш включён");
   } else {
-    // Р’С‹РєР»СЋС‡Р°РµРј С„РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹Р№ РјР°СЂС€.
+    // Выключаем форсированный марш.
     const forcedDistance = fixedLength - routeForcedMarchStartDistance;
 
     if (forcedDistance >= dailyLimit - 0.001) {
-      // Р’РµСЃСЊ С„РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹Р№ СѓС‡Р°СЃС‚РѕРє СЃС‡РёС‚Р°РµС‚СЃСЏ РѕРґРЅРёРј РґРЅС‘Рј,
-      // РЅРµР·Р°РІРёСЃРёРјРѕ РѕС‚ С‚РѕРіРѕ, СЃРєРѕР»СЊРєРѕ РЅРѕСЂРј РїСЂРѕР№РґРµРЅРѕ.
+      // Весь форсированный участок считается одним днём,
+      // независимо от того, сколько норм пройдено.
       routeForcedSegments.push({
         start: routeForcedMarchStartDistance,
         end: fixedLength,
@@ -1180,9 +1180,9 @@ forcedMarchButton.addEventListener("click", function() {
           ? forcedDistance / dailyLimit
           : 0
       });
-      console.log("Р¤РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹Р№ РјР°СЂС€ Р·Р°РІРµСЂС€С‘РЅ: СЃРѕР·РґР°РЅ РѕРґРёРЅ РїСЂРёРІР°Р»");
+      console.log("Форсированный марш завершён: создан один привал");
     } else {
-      // Р•СЃР»Рё РґРЅРµРІРЅР°СЏ С‡РµСЂС‚Р° РЅРµ РґРѕСЃС‚РёРіРЅСѓС‚Р° вЂ” РІРѕР·РІСЂР°С‰Р°РµРјСЃСЏ Рє РЅР°С‡Р°Р»Сѓ РјР°СЂС€Р°.
+      // Если дневная черта не достигнута — возвращаемся к началу марша.
       routePoints = getRoutePointsUpToDistance(
         routePoints,
         routeForcedMarchStartDistance
@@ -1191,7 +1191,7 @@ forcedMarchButton.addEventListener("click", function() {
         const recalculated = getForcedSegmentDistances(segment, dailyLimit);
         return recalculated.end <= routeForcedMarchStartDistance + 0.001;
       });
-      console.log("Р¤РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹Р№ РјР°СЂС€ РѕС‚РјРµРЅС‘РЅ: РјР°СЂС€СЂСѓС‚ РІРѕР·РІСЂР°С‰С‘РЅ Рє РїСЂРёРІР°Р»Сѓ");
+      console.log("Форсированный марш отменён: маршрут возвращён к привалу");
     }
 
     routeForcedMarch = false;
@@ -1204,7 +1204,7 @@ forcedMarchButton.addEventListener("click", function() {
   updateRouteLine();
 });
 
-  // РџРѕРґС‚РІРµСЂР¶РґРµРЅРёРµ РјР°СЂС€СЂСѓС‚Р°
+  // Подтверждение маршрута
   routeConfirmButton.addEventListener("click", function() {
 if (!routeFinished) return;
 
@@ -1222,13 +1222,13 @@ window.routePendingConfirmation = false;
 
     routePanel.style.display = "none";
 
-    console.log("РњР°СЂС€СЂСѓС‚ РїРѕРґС‚РІРµСЂР¶РґС‘РЅ:", window.confirmedPartyRoute);
+    console.log("Маршрут подтверждён:", window.confirmedPartyRoute);
   });
 
-  // Р’РѕР·РІСЂР°С‚ Рє РїСЂРµРґС‹РґСѓС‰РµРјСѓ РїСЂРёРІР°Р»Сѓ
+  // Возврат к предыдущему привалу
   document.getElementById("route-undo").addEventListener("click", function() {
-    // Р’РѕР·РІСЂР°С‚ РјРµРЅСЏРµС‚ РіРµРѕРјРµС‚СЂРёСЋ РјР°СЂС€СЂСѓС‚Р°: Р·Р°РІРµСЂС€Р°РµРј СЃС‚Р°СЂС‹Рµ Р°РЅРёРјР°С†РёРё,
-    // С‡С‚РѕР±С‹ РїСЂРёРІР°Р» РІРѕР·РІСЂР°С‚Р° РЅРµ РІРѕСЃРїСЂРёРЅРёРјР°Р»СЃСЏ РєР°Рє РЅРѕРІС‹Р№ Р¶РµС‚РѕРЅ.
+    // Возврат меняет геометрию маршрута: завершаем старые анимации,
+    // чтобы привал возврата не воспринимался как новый жетон.
     stopRouteMarkerAnimation();
 
     if (pendingRouteClickTimer) {
@@ -1244,7 +1244,7 @@ window.routePendingConfirmation = false;
     let targetDistance = 0;
 
     if (routeForcedMarch) {
-      // Р’Рѕ РІСЂРµРјСЏ С„РѕСЂСЃРёСЂРѕРІР°РЅРЅРѕРіРѕ РјР°СЂС€Р° РІРѕР·РІСЂР°С‰Р°РµРјСЃСЏ Рє РµРіРѕ РЅР°С‡Р°Р»Сѓ.
+      // Во время форсированного марша возвращаемся к его началу.
       targetDistance = routeForcedMarchStartDistance;
       routeForcedMarch = false;
       routeForcedMarchStartDistance = 0;
@@ -1255,7 +1255,7 @@ window.routePendingConfirmation = false;
         forcedButton.setAttribute("aria-pressed", "false");
       }
     } else {
-      // Р’С‹Р±РёСЂР°РµРј РїРѕСЃР»РµРґРЅРёР№ РїСЂРёРІР°Р» СЃС‚СЂРѕРіРѕ РїРµСЂРµРґ С‚РµРєСѓС‰РёРј РєРѕРЅС†РѕРј РјР°СЂС€СЂСѓС‚Р°.
+      // Выбираем последний привал строго перед текущим концом маршрута.
       const rests = getNormalRestDistances(totalLength, dailyLimit);
       for (let i = rests.length - 1; i >= 0; i--) {
         if (rests[i] < totalLength - 0.01) {
@@ -1267,8 +1267,8 @@ window.routePendingConfirmation = false;
 
     routePoints = getRoutePointsUpToDistance(routePoints, targetDistance);
 
-// РЎРёРЅС…СЂРѕРЅРёР·РёСЂСѓРµРј РёСЃС‚РѕСЂРёСЋ С„РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹С… РјР°СЂС€РµР№
-// СЃ С„Р°РєС‚РёС‡РµСЃРєРѕР№ РґР»РёРЅРѕР№ РѕР±СЂРµР·Р°РЅРЅРѕРіРѕ РјР°СЂС€СЂСѓС‚Р°.
+// Синхронизируем историю форсированных маршей
+// с фактической длиной обрезанного маршрута.
 const actualLength = getRouteLength(routePoints);
 
 routeForcedSegments = routeForcedSegments.filter(segment => {
@@ -1286,17 +1286,17 @@ routeForcedSegments = routeForcedSegments.filter(segment => {
 
     lastCursorPosition = null;
     updateRouteLine();
-    console.log("РњР°СЂС€СЂСѓС‚ РІРѕР·РІСЂР°С‰С‘РЅ Рє РїСЂРµРґС‹РґСѓС‰РµРјСѓ РїСЂРёРІР°Р»Сѓ");
+    console.log("Маршрут возвращён к предыдущему привалу");
   });
 
-  // РљРЅРѕРїРєР° Рё РєР»Р°РІРёС€Р° Escape РёСЃРїРѕР»СЊР·СѓСЋС‚ РѕРґРЅСѓ Рё С‚Сѓ Р¶Рµ РѕС‚РјРµРЅСѓ.
+  // Кнопка и клавиша Escape используют одну и ту же отмену.
   document.getElementById("route-cancel").addEventListener("click", cancelPartyRoute);
   window.addEventListener("cancel-party-route", cancelPartyRoute);
 
 }
 
 // =====================================
-// Р”Р›РРќРђ РњРђР РЁР РЈРўРђ
+// ДЛИНА МАРШРУТА
 // =====================================
 
 function getRouteLength(points) {
@@ -1313,7 +1313,7 @@ function getRouteLength(points) {
 }
 
 // =====================================
-// Р’РР—РЈРђР›Р¬РќРђРЇ РћР‘Р РђР‘РћРўРљРђ Р›РРќРР РњРђР РЁР РЈРўРђ
+// ВИЗУАЛЬНАЯ ОБРАБОТКА ЛИНИИ МАРШРУТА
 // =====================================
 
 function createRouteDisplayPoints(points, protectedDistances = []) {
@@ -1322,7 +1322,7 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
   const roundedPoints = [];
   const cornerRadius = 30;
 
-  // РЎРєСЂСѓРіР»СЏРµРј СѓРіР»С‹, С‚РѕР»СЊРєРѕ РµСЃР»Рё РІ РјР°СЂС€СЂСѓС‚Рµ РµСЃС‚СЊ С…РѕС‚СЏ Р±С‹ 3 С‚РѕС‡РєРё
+  // Скругляем углы, только если в маршруте есть хотя бы 3 точки
   roundedPoints.push(points[0]);
 
   if (points.length >= 3) {
@@ -1331,15 +1331,15 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
       const corner = points[i];
       const next = points[i + 1];
 
-      // РќРµ СЃРєСЂСѓРіР»СЏРµРј РІРµСЂС€РёРЅСѓ, РµСЃР»Рё РЅР° РЅРµР№ СЂР°СЃРїРѕР»РѕР¶РµРЅ РїСЂРёРІР°Р» РёР»Рё РґСЂСѓРіРѕР№ РјР°СЂРєРµСЂ.
+      // Не скругляем вершину, если на ней расположен привал или другой маркер.
       let cornerDistance = 0;
       for (let k = 1; k <= i; k++) {
         const dy = points[k].lat - points[k - 1].lat;
         const dx = points[k].lng - points[k - 1].lng;
         cornerDistance += Math.sqrt(dx * dx + dy * dy);
       }
-      // РќРµ СЃРіР»Р°Р¶РёРІР°РµРј РїРѕРІРѕСЂРѕС‚С‹ СЂСЏРґРѕРј СЃ РїСЂРёРІР°Р»РѕРј/РјР°СЂРєРµСЂРѕРј: РёРЅР°С‡Рµ
-      // СЃР»РµРґСѓСЋС‰РёР№ СЂРµР·РєРёР№ РёР·РіРёР± РјРѕР¶РµС‚ РІРёР·СѓР°Р»СЊРЅРѕ СѓС‚СЏРЅСѓС‚СЊ Р»РёРЅРёСЋ РѕС‚ С‚РѕС‡РєРё РїСЂРёРІР°Р»Р°.
+      // Не сглаживаем повороты рядом с привалом/маркером: иначе
+      // следующий резкий изгиб может визуально утянуть линию от точки привала.
       const isProtectedCorner = protectedDistances.some(
         distance => Math.abs(distance - cornerDistance) <= cornerRadius * 2
       );
@@ -1376,7 +1376,7 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
 
       roundedPoints.push(before);
 
-      // РџР»Р°РІРЅР°СЏ РєСЂРёРІР°СЏ Р‘РµР·СЊРµ РІРѕРєСЂСѓРі СѓРіР»Р°
+      // Плавная кривая Безье вокруг угла
       for (let j = 1; j <= 5; j++) {
         const t = j / 6;
         const oneMinusT = 1 - t;
@@ -1398,7 +1398,7 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
 
   roundedPoints.push(points[points.length - 1]);
 
-  // Р”РѕР±Р°РІР»СЏРµРј РЅРµР±РѕР»СЊС€СѓСЋ С…Р°РѕС‚РёС‡РЅСѓСЋ РЅРµСЂРѕРІРЅРѕСЃС‚СЊ
+  // Добавляем небольшую хаотичную неровность
   const result = [roundedPoints[0]];
 
   for (let i = 1; i < roundedPoints.length; i++) {
@@ -1409,7 +1409,7 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
     const dy = end.lat - start.lat;
     const length = Math.sqrt(dx * dx + dy * dy);
 
-    // РљРѕСЂРѕС‚РєРёРµ СѓС‡Р°СЃС‚РєРё РЅРµ РёР·РјРµРЅСЏРµРј
+    // Короткие участки не изменяем
     if (length < 60) {
       result.push(end);
       continue;
@@ -1420,7 +1420,7 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
     for (let j = 1; j <= steps; j++) {
       const t = j / (steps + 1);
 
-      // Р”РµС‚РµСЂРјРёРЅРёСЂРѕРІР°РЅРЅРѕРµ РїСЃРµРІРґРѕСЃР»СѓС‡Р°Р№РЅРѕРµ РѕС‚РєР»РѕРЅРµРЅРёРµ
+      // Детерминированное псевдослучайное отклонение
       const seed = (
         start.lat * 12.9898 +
         start.lng * 78.233 +
@@ -1432,7 +1432,7 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
       const random = Math.sin(seed) * 43758.5453;
       const noise = (random - Math.floor(random)) * 2 - 1;
 
-      // РћС‚РєР»РѕРЅРµРЅРёРµ РїР»Р°РІРЅРѕ СѓРјРµРЅСЊС€Р°РµС‚СЃСЏ Сѓ РєРѕРЅС†РѕРІ РѕС‚СЂРµР·РєР°
+      // Отклонение плавно уменьшается у концов отрезка
       const taper = Math.sin(Math.PI * t);
       const offset = noise * 8 * taper;
 
@@ -1448,7 +1448,7 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
   return result;
 }
 
-// РџРѕР»СѓС‡РµРЅРёРµ РєРѕРѕСЂРґРёРЅР°С‚С‹ РЅР° РѕРїСЂРµРґРµР»С‘РЅРЅРѕРј СЂР°СЃСЃС‚РѕСЏРЅРёРё РїСѓС‚Рё
+// Получение координаты на определённом расстоянии пути
 function getRoutePointAtDistance(points, targetDistance) {
   let passed = 0;
 
@@ -1461,7 +1461,7 @@ function getRoutePointAtDistance(points, targetDistance) {
 
     const segmentLength = Math.sqrt(dx * dx + dy * dy);
 
-    // РџСЂРѕРїСѓСЃРєР°РµРј РЅСѓР»РµРІС‹Рµ РѕС‚СЂРµР·РєРё, С‡С‚РѕР±С‹ РЅРµ РїРѕР»СѓС‡РёС‚СЊ РґРµР»РµРЅРёРµ РЅР° РЅРѕР»СЊ.
+    // Пропускаем нулевые отрезки, чтобы не получить деление на ноль.
     if (segmentLength < 0.001) continue;
 
     if (passed + segmentLength >= targetDistance) {
@@ -1479,7 +1479,7 @@ function getRoutePointAtDistance(points, targetDistance) {
   return null;
 }
 
-// Р’РѕР·РІСЂР°С‰Р°РµС‚ С‡Р°СЃС‚СЊ РјР°СЂС€СЂСѓС‚Р° РґРѕ СѓРєР°Р·Р°РЅРЅРѕРіРѕ СЂР°СЃСЃС‚РѕСЏРЅРёСЏ
+// Возвращает часть маршрута до указанного расстояния
 function getRoutePointsUpToDistance(points, targetDistance) {
   if (!points.length) return [];
 
@@ -1530,8 +1530,8 @@ function getRoutePointsUpToDistance(points, targetDistance) {
   return result;
 }
 
-// Р’СЃС‚Р°РІР»СЏРµС‚ РІ РіРµРѕРјРµС‚СЂРёСЋ С‚РѕС‡РЅС‹Рµ С‚РѕС‡РєРё РЅР° Р·Р°РґР°РЅРЅС‹С… СЂР°СЃСЃС‚РѕСЏРЅРёСЏС….
-// РС‚Рѕ РіР°СЂР°РЅС‚РёСЂСѓРµС‚, С‡С‚Рѕ РїСЂРёРІР°Р»С‹, С‡РµСЂС‚С‹ Рё РєСЂРµСЃС‚РёРєРё Р»РµР¶Р°С‚ РЅРµРїРѕСЃСЂРµРґСЃС‚РІРµРЅРЅРѕ РЅР° Р»РёРЅРёРё.
+// Вставляет в геометрию точные точки на заданных расстояниях.
+// Это гарантирует, что привалы, черты и крестики лежат непосредственно на линии.
 function getRoutePointsWithDistanceAnchors(points, distances) {
   if (points.length < 2) return [...points];
 
@@ -1564,7 +1564,7 @@ function getRoutePointsWithDistanceAnchors(points, distances) {
   return result;
 }
 
-// Р’РѕР·РІСЂР°С‰Р°РµС‚ РёСЃС…РѕРґРЅСѓСЋ РіРµРѕРјРµС‚СЂРёСЋ РјР°СЂС€СЂСѓС‚Р° РјРµР¶РґСѓ РґРІСѓРјСЏ СЂР°СЃСЃС‚РѕСЏРЅРёСЏРјРё.
+// Возвращает исходную геометрию маршрута между двумя расстояниями.
 function getRoutePointsBetweenDistances(points, startDistance, endDistance) {
   const totalLength = getRouteLength(points);
   const start = Math.max(0, Math.min(totalLength, startDistance));
@@ -1583,7 +1583,7 @@ function getRoutePointsBetweenDistances(points, startDistance, endDistance) {
   return result;
 }
 
-// РЈРіРѕР» РїРѕРїРµСЂРµС‡РЅРѕР№ С‡РµСЂС‚С‹ РІ СЌРєСЂР°РЅРЅС‹С… РєРѕРѕСЂРґРёРЅР°С‚Р°С… РєР°СЂС‚С‹.
+// Угол поперечной черты в экранных координатах карты.
 function getPerpendicularRouteAngle(points, targetDistance) {
   let passed = 0;
   for (let i = 1; i < points.length; i++) {
@@ -1596,8 +1596,8 @@ function getPerpendicularRouteAngle(points, targetDistance) {
     if (routeLength < 0.001) continue;
 
     if (passed + routeLength >= targetDistance - 0.001) {
-      // Р”Р»СЏ РЅР°РїСЂР°РІР»РµРЅРёСЏ РёСЃРїРѕР»СЊР·СѓРµРј СЌРєСЂР°РЅРЅС‹Рµ РєРѕРѕСЂРґРёРЅР°С‚С‹, Р° РґР»СЏ РїРѕРёСЃРєР°
-      // РЅСѓР¶РЅРѕРіРѕ СЃРµРіРјРµРЅС‚Р° вЂ” С‚Рµ Р¶Рµ РєРѕРѕСЂРґРёРЅР°С‚РЅС‹Рµ РµРґРёРЅРёС†С‹, С‡С‚Рѕ Рё РґР»РёРЅР° РјР°СЂС€СЂСѓС‚Р°.
+      // Для направления используем экранные координаты, а для поиска
+      // нужного сегмента — те же координатные единицы, что и длина маршрута.
       const a = map.latLngToLayerPoint(previous);
       const b = map.latLngToLayerPoint(current);
       const dx = b.x - a.x;
@@ -1609,8 +1609,8 @@ function getPerpendicularRouteAngle(points, targetDistance) {
   return 90;
 }
 
-// РџРµСЂРµРІРѕРґРёС‚ СЃРѕС…СЂР°РЅС‘РЅРЅС‹Р№ С„РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹Р№ СѓС‡Р°СЃС‚РѕРє РІ СЂР°СЃСЃС‚РѕСЏРЅРёСЏ
-// РґР»СЏ С‚РµРєСѓС‰РµР№ РґРЅРµРІРЅРѕР№ РЅРѕСЂРјС‹. startUnits Рё lengthUnits вЂ” РґРѕР»Рё РґРЅРµРІРЅРѕРіРѕ РїСѓС‚Рё.
+// Переводит сохранённый форсированный участок в расстояния
+// для текущей дневной нормы. startUnits и lengthUnits — доли дневного пути.
 function getForcedSegmentDistances(segment, dailyLimit) {
   const start = Number.isFinite(segment.startUnits)
     ? segment.startUnits * dailyLimit
@@ -1625,8 +1625,8 @@ function getForcedSegmentDistances(segment, dailyLimit) {
   };
 }
 
-// РџРµСЂРµСЃС‡РёС‚С‹РІР°РµС‚ РІСЃРµ РїСЂРёРІР°Р»С‹ РґР»СЏ С‚РµРєСѓС‰РµР№ РґРЅРµРІРЅРѕР№ РЅРѕСЂРјС‹.
-// Р—Р°РІРµСЂС€С‘РЅРЅС‹Р№ С„РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹Р№ СѓС‡Р°СЃС‚РѕРє СЃС‡РёС‚Р°РµС‚СЃСЏ СЂРѕРІРЅРѕ РѕРґРЅРёРј РґРЅС‘Рј.
+// Пересчитывает все привалы для текущей дневной нормы.
+// Завершённый форсированный участок считается ровно одним днём.
 function getNormalRestDistances(totalLength, dailyLimit) {
   const result = [];
   const segments = routeForcedSegments
@@ -1639,8 +1639,8 @@ function getNormalRestDistances(totalLength, dailyLimit) {
   function addRest(distance) {
   if (distance <= 0.001) return;
 
-  // Р•СЃР»Рё РїСЂРёРІР°Р» РїСЂР°РєС‚РёС‡РµСЃРєРё СЃРѕРІРїР°РґР°РµС‚ СЃ РєРѕРЅС†РѕРј РјР°СЂС€СЂСѓС‚Р°,
-  // РїСЂРёРІСЏР·С‹РІР°РµРј РµРіРѕ РЅРµРїРѕСЃСЂРµРґСЃС‚РІРµРЅРЅРѕ Рє РєРѕРЅС†Сѓ.
+  // Если привал практически совпадает с концом маршрута,
+  // привязываем его непосредственно к концу.
   if (distance > totalLength && distance - totalLength <= 0.05) {
     distance = totalLength;
   }
@@ -1651,27 +1651,27 @@ function getNormalRestDistances(totalLength, dailyLimit) {
 }
 
   segments.forEach(segment => {
-    // РћР±С‹С‡РЅС‹Рµ РґРЅРµРІРЅС‹Рµ РїСЂРёРІР°Р»С‹ РґРѕ РЅР°С‡Р°Р»Р° С„РѕСЂСЃРёСЂРѕРІР°РЅРЅРѕРіРѕ СѓС‡Р°СЃС‚РєР°.
+    // Обычные дневные привалы до начала форсированного участка.
     let nextRest = previousAnchor + dailyLimit;
     while (nextRest < segment.start - 0.001) {
       addRest(nextRest);
       nextRest += dailyLimit;
     }
 
-    // РўРѕС‡РєР° РЅР°С‡Р°Р»Р° РјР°СЂС€Р° вЂ” РїСЂРёРІР°Р», РѕС‚ РєРѕС‚РѕСЂРѕРіРѕ РѕРЅ Р±С‹Р» РЅР°С‡Р°С‚.
+    // Точка начала марша — привал, от которого он был начат.
     if (segment.start > previousAnchor + 0.001) {
       addRest(segment.start);
     }
 
-    // РљРѕРЅРµС† С„РѕСЂСЃРёСЂРѕРІР°РЅРЅРѕРіРѕ СѓС‡Р°СЃС‚РєР° вЂ” СЃР»РµРґСѓСЋС‰РёР№ РїСЂРёРІР°Р», РµСЃР»Рё РѕРЅ
-    // РµС‰С‘ РЅР°С…РѕРґРёС‚СЃСЏ РІ РїСЂРµРґРµР»Р°С… РїСЂРѕР»РѕР¶РµРЅРЅРѕРіРѕ РјР°СЂС€СЂСѓС‚Р°.
+    // Конец форсированного участка — следующий привал, если он
+    // ещё находится в пределах проложенного маршрута.
     if (segment.end <= totalLength + 0.05) {
       addRest(segment.end);
     }
     previousAnchor = segment.end;
   });
 
-  // РћР±С‹С‡РЅС‹Рµ РґРЅРё РїРѕСЃР»Рµ РїРѕСЃР»РµРґРЅРµРіРѕ Р·Р°РІРµСЂС€С‘РЅРЅРѕРіРѕ С„РѕСЂСЃРёСЂРѕРІР°РЅРЅРѕРіРѕ СѓС‡Р°СЃС‚РєР°.
+  // Обычные дни после последнего завершённого форсированного участка.
   let nextRest = previousAnchor + dailyLimit;
   while (nextRest <= totalLength + 0.05) {
     addRest(nextRest);
@@ -1682,7 +1682,7 @@ function getNormalRestDistances(totalLength, dailyLimit) {
 }
 
 // =====================================
-// РћР§РРЎРўРљРђ Р›РРќРР Р РџР РР’РђР›РћР’
+// ОЧИСТКА ЛИНИИ И ПРИВАЛОВ
 // =====================================
 
 function clearRouteDrawing() {
@@ -1702,7 +1702,7 @@ function clearRouteDrawing() {
 }
 }
 
-// Р•РґРёРЅР°СЏ РѕС‚РјРµРЅР° РјР°СЂС€СЂСѓС‚Р°: РІС‹Р·С‹РІР°РµС‚СЃСЏ РєРЅРѕРїРєРѕР№ Рё РєР»Р°РІРёС€РµР№ Escape.
+// Единая отмена маршрута: вызывается кнопкой и клавишей Escape.
 function cancelPartyRoute() {
   if (pendingRouteClickTimer) {
     clearTimeout(pendingRouteClickTimer);
@@ -1740,14 +1740,14 @@ function cancelPartyRoute() {
     document.activeElement.blur();
   }
 
-  console.log("РџСЂРѕРєР»Р°РґРєР° РјР°СЂС€СЂСѓС‚Р° РѕС‚РјРµРЅРµРЅР°");
+  console.log("Прокладка маршрута отменена");
 }
 
 // =====================================
-// РћР‘РќРћР’Р›Р•РќРР• Р РћРўР РРЎРћР’РљРђ РњРђР РЁР РЈРўРђ
+// ОБНОВЛЕНИЕ И ОТРИСОВКА МАРШРУТА
 // =====================================
 
-// РЎР»РѕРё Р·Р°РґР°СЋС‚ СЃС‚СЂРѕРіРёР№ РїРѕСЂСЏРґРѕРє: Р»РёРЅРёРё < РєСЂРµСЃС‚РёРєРё < РїСЂРёРІР°Р»С‹ < С„Р»Р°Р¶РѕРє.
+// Слои задают строгий порядок: линии < крестики < привалы < флажок.
 function ensureRouteMarkerPanes() {
   let restPane = map.getPane("route-rest-pane");
   if (!restPane) restPane = map.createPane("route-rest-pane");
@@ -1758,8 +1758,8 @@ function ensureRouteMarkerPanes() {
   flagPane.style.zIndex = "700";
 }
 
-// РћР±СЉРµРґРёРЅСЏРµРј РєСЂРµСЃС‚РёРєРё, РєРѕС‚РѕСЂС‹Рµ РЅР° С‚РµРєСѓС‰РµРј РјР°СЃС€С‚Р°Р±Рµ РѕРєР°Р·Р°Р»РёСЃСЊ СЃР»РёС€РєРѕРј Р±Р»РёР·РєРѕ.
-// РќР° РєР°СЂС‚Рµ РѕСЃС‚Р°С‘С‚СЃСЏ РѕРґРёРЅ С‡РёС‚Р°РµРјС‹Р№ Р·РЅР°Рє СЃ С‡РёСЃР»РѕРј РѕР±СЉРµРґРёРЅС‘РЅРЅС‹С… РѕС‚РјРµС‚РѕРє.
+// Объединяем крестики, которые на текущем масштабе оказались слишком близко.
+// На карте остаётся один читаемый знак с числом объединённых отметок.
 function getExhaustionMarkerClusters(markers, minSpacing = 18) {
   const clusters = [];
 
@@ -1805,12 +1805,12 @@ function getExhaustionMarkerClusters(markers, minSpacing = 18) {
 }
 
 function updateRouteLine(cursorPosition = null) {
-  // РџРµСЂРµСЂРёСЃРѕРІРєР° РєР°СЂС‚С‹ РЅРµ РѕС‚РјРµРЅСЏРµС‚ Рё РЅРµ РїРµСЂРµР·Р°РїСѓСЃРєР°РµС‚ Р°РЅРёРјР°С†РёСЋ Р¶РµС‚РѕРЅРѕРІ.
-  // Р’СЂРµРјСЏ Р°РЅРёРјР°С†РёРё СѓС‡РёС‚С‹РІР°РµС‚СЃСЏ РїСЂРё СЃРѕР·РґР°РЅРёРё РєР°Р¶РґРѕРіРѕ РЅРѕРІРѕРіРѕ DOM-СЌР»РµРјРµРЅС‚Р°.
+  // Перерисовка карты не отменяет и не перезапускает анимацию жетонов.
+  // Время анимации учитывается при создании каждого нового DOM-элемента.
   ensureRouteMarkerPanes();
 
-  // Р”Р»СЏ preview РёСЃРїРѕР»СЊР·СѓРµРј С‚Рµ Р¶Рµ СЂР°СЃС‡С‘С‚С‹, С‡С‚Рѕ Рё РґР»СЏ Р·Р°С„РёРєСЃРёСЂРѕРІР°РЅРЅРѕРіРѕ РјР°СЂС€СЂСѓС‚Р°,
-  // РЅРѕ РЅРёС‡РµРіРѕ РЅРµ Р·Р°РїРёСЃС‹РІР°РµРј РІ СЃРѕСЃС‚РѕСЏРЅРёРµ РґРѕ РєР»РёРєР°.
+  // Для preview используем те же расчёты, что и для зафиксированного маршрута,
+  // но ничего не записываем в состояние до клика.
   const pointsToDraw = [...routePoints];
   if (cursorPosition && hasMouse && window.routeMode) {
     pointsToDraw.push(cursorPosition);
@@ -1822,9 +1822,9 @@ function updateRouteLine(cursorPosition = null) {
   const dailyLimit =
     routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
 
-  // РђРєС‚РёРІРЅС‹Р№ РјР°СЂС€ С‚Р°РєР¶Рµ РїСЂРёРІСЏР·Р°РЅ Рє С‚РµРєСѓС‰РµР№ РґРЅРµРІРЅРѕР№ РЅРѕСЂРјРµ.
-  // Р•СЃР»Рё РЅРѕРІР°СЏ С‚РѕС‡РєР° РЅР°С‡Р°Р»Р° РїРѕРєР° РґР°Р»СЊС€Рµ РїСЂРѕР»РѕР¶РµРЅРЅРѕРіРѕ РїСѓС‚Рё, РѕРЅР° РїСЂРѕСЏРІРёС‚СЃСЏ
-  // РїРѕ РјРµСЂРµ РґР°Р»СЊРЅРµР№С€РµРіРѕ РїРѕСЃС‚СЂРѕРµРЅРёСЏ РјР°СЂС€СЂСѓС‚Р°.
+  // Активный марш также привязан к текущей дневной норме.
+  // Если новая точка начала пока дальше проложенного пути, она проявится
+  // по мере дальнейшего построения маршрута.
   if (routeForcedMarch) {
     routeForcedMarchStartDistance = routeForcedMarchStartUnits * dailyLimit;
   }
@@ -1837,15 +1837,15 @@ function updateRouteLine(cursorPosition = null) {
     dailyLimit
   );
 
-  // РџРѕРґРіРѕС‚РѕРІРёРј РёСЃС‚РѕСЂРёСЋ Р·Р°РІРµСЂС€С‘РЅРЅС‹С… РјР°СЂС€РµР№ Рё С‚РµРєСѓС‰РёР№ Р°РєС‚РёРІРЅС‹Р№ РјР°СЂС€.
+  // Подготовим историю завершённых маршей и текущий активный марш.
   const forcedVisualSegments = routeForcedSegments
     .map(segment => getForcedSegmentDistances(segment, dailyLimit))
     .filter(segment => segment.start < totalLength + 0.01)
     .map(segment => ({
       start: segment.start,
       end: Math.min(segment.end, totalLength),
-      // Р§РµСЂС‚Р° Рё РёРЅС‚РµСЂРІР°Р»С‹ РєСЂРµСЃС‚РёРєРѕРІ РІСЃРµРіРґР° РїРµСЂРµСЃС‡РёС‚С‹РІР°СЋС‚СЃСЏ
-      // РїРѕ С‚РµРєСѓС‰РµРјСѓ С‚РµРјРїСѓ, Р° РЅРµ РїРѕ С‚РµРјРїСѓ РІ РјРѕРјРµРЅС‚ РІС‹РєР»СЋС‡РµРЅРёСЏ РјР°СЂС€Р°.
+      // Черта и интервалы крестиков всегда пересчитываются
+      // по текущему темпу, а не по темпу в момент выключения марша.
       dailyLimit: dailyLimit
     }));
 
@@ -1869,15 +1869,15 @@ function updateRouteLine(cursorPosition = null) {
     protectedDistances.push(segment.end);
   });
 
-  // Р’СЃС‚Р°РІР»СЏРµРј СЂРµР°Р»СЊРЅС‹Рµ С‚РѕС‡РєРё РїСЂРёРІР°Р»РѕРІ Рё РѕС‚РјРµС‚РѕРє РІ РёСЃС…РѕРґРЅСѓСЋ РіРµРѕРјРµС‚СЂРёСЋ.
+  // Вставляем реальные точки привалов и отметок в исходную геометрию.
   const anchoredPoints = getRoutePointsWithDistanceAnchors(
     pointsToDraw,
     protectedDistances
   );
 
-  // РћСЃРЅРѕРІРЅР°СЏ Р»РёРЅРёСЏ РјР°СЂС€СЂСѓС‚Р°.
-  // Р Р°Р·РґРµР»СЏРµРј РјР°СЂС€СЂСѓС‚ РЅР° Р·РѕР»РѕС‚С‹Рµ Рё С‡С‘СЂРЅС‹Рµ СѓС‡Р°СЃС‚РєРё.
-  // Р—РѕР»РѕС‚Р°СЏ Р»РёРЅРёСЏ РЅРµ СЂРёСЃСѓРµС‚СЃСЏ С‚Р°Рј, РіРґРµ РґРѕР»Р¶РµРЅ РёРґС‚Рё С„РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹Р№ РјР°СЂС€.
+  // Основная линия маршрута.
+  // Разделяем маршрут на золотые и чёрные участки.
+  // Золотая линия не рисуется там, где должен идти форсированный марш.
 
   const blackIntervals = forcedVisualSegments
     .map(segment => ({
@@ -1887,7 +1887,7 @@ function updateRouteLine(cursorPosition = null) {
     .filter(interval => interval.end > interval.start + 0.001)
     .sort((a, b) => a.start - b.start);
 
-  // РћР±СЉРµРґРёРЅСЏРµРј РїРµСЂРµСЃРµРєР°СЋС‰РёРµСЃСЏ С‡С‘СЂРЅС‹Рµ СѓС‡Р°СЃС‚РєРё.
+  // Объединяем пересекающиеся чёрные участки.
   const mergedBlackIntervals = [];
 
   blackIntervals.forEach(interval => {
@@ -1903,14 +1903,14 @@ function updateRouteLine(cursorPosition = null) {
     }
   });
 
-  // РџСЂРё РґРІРёР¶РµРЅРёРё РјС‹С€Рё РѕС‚РґРµР»СЏРµРј СѓР¶Рµ Р·Р°С„РёРєСЃРёСЂРѕРІР°РЅРЅС‹Р№ РјР°СЂС€СЂСѓС‚
-  // РѕС‚ РїРѕР»СѓРїСЂРѕР·СЂР°С‡РЅРѕРіРѕ РїСЂРµРґРїСЂРѕСЃРјРѕС‚СЂР°.
+  // При движении мыши отделяем уже зафиксированный маршрут
+  // от полупрозрачного предпросмотра.
   const previewIsActive =
     Boolean(cursorPosition && hasMouse && window.routeMode);
 
   const committedLength = getRouteLength(routePoints);
 
-  // РЈРЅРёРІРµСЂСЃР°Р»СЊРЅРѕРµ СЃРѕР·РґР°РЅРёРµ РѕС‚СЂРµР·РєР° РјР°СЂС€СЂСѓС‚Р°.
+  // Универсальное создание отрезка маршрута.
   function drawRoutePiece(
     startDistance,
     endDistance,
@@ -1962,24 +1962,24 @@ function updateRouteLine(cursorPosition = null) {
       return;
     }
 
-    // Р’РµСЃСЊ РѕС‚СЂРµР·РѕРє СѓР¶Рµ Р·Р°С„РёРєСЃРёСЂРѕРІР°РЅ.
+    // Весь отрезок уже зафиксирован.
     if (endDistance <= committedLength + 0.001) {
       addPiece(startDistance, endDistance, committedOpacity);
       return;
     }
 
-    // Р’РµСЃСЊ РѕС‚СЂРµР·РѕРє РѕС‚РЅРѕСЃРёС‚СЃСЏ Рє РїСЂРµРґРїСЂРѕСЃРјРѕС‚СЂСѓ.
+    // Весь отрезок относится к предпросмотру.
     if (startDistance >= committedLength - 0.001) {
       addPiece(startDistance, endDistance, previewOpacity);
       return;
     }
 
-    // РћС‚СЂРµР·РѕРє РїРµСЂРµСЃРµРєР°РµС‚ РіСЂР°РЅРёС†Сѓ РјРµР¶РґСѓ РјР°СЂС€СЂСѓС‚РѕРј Рё РїСЂРµРґРїСЂРѕСЃРјРѕС‚СЂРѕРј.
+    // Отрезок пересекает границу между маршрутом и предпросмотром.
     addPiece(startDistance, committedLength, committedOpacity);
     addPiece(committedLength, endDistance, previewOpacity);
   }
 
-  // Р РёСЃСѓРµРј Р·РѕР»РѕС‚С‹Рµ СѓС‡Р°СЃС‚РєРё, РїСЂРѕРїСѓСЃРєР°СЏ РІСЃРµ С‡С‘СЂРЅС‹Рµ РёРЅС‚РµСЂРІР°Р»С‹.
+  // Рисуем золотые участки, пропуская все чёрные интервалы.
   let goldStart = 0;
 
   mergedBlackIntervals.forEach(interval => {
@@ -1996,7 +1996,7 @@ function updateRouteLine(cursorPosition = null) {
     goldStart = Math.max(goldStart, interval.end);
   });
 
-  // РџРѕСЃР»РµРґРЅРёР№ Р·РѕР»РѕС‚РѕР№ СѓС‡Р°СЃС‚РѕРє РїРѕСЃР»Рµ РІСЃРµС… С„РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹С… РјР°СЂС€РµР№.
+  // Последний золотой участок после всех форсированных маршей.
   if (goldStart < totalLength - 0.001) {
     drawRoutePiece(
       goldStart,
@@ -2007,7 +2007,7 @@ function updateRouteLine(cursorPosition = null) {
     );
   }
 
-  // Р’РёР·СѓР°Р» С„РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹С… РјР°СЂС€РµР№ РѕСЃС‚Р°С‘С‚СЃСЏ РЅР° РєР°СЂС‚Рµ Рё РїРѕСЃР»Рµ РёС… Р·Р°РІРµСЂС€РµРЅРёСЏ.
+  // Визуал форсированных маршей остаётся на карте и после их завершения.
   forcedVisualSegments.forEach(segment => {
     const boundaryDistance = segment.start + segment.dailyLimit;
     if (boundaryDistance > segment.end + 0.01) return;
@@ -2015,8 +2015,8 @@ function updateRouteLine(cursorPosition = null) {
     const boundaryPosition = getRoutePointAtDistance(pointsToDraw, boundaryDistance);
     if (!boundaryPosition) return;
 
-    // Р§С‘СЂРЅР°СЏ Р»РёРЅРёСЏ РїРѕСЃР»Рµ СЂР°Р·РґРµР»РёС‚РµР»СЊРЅРѕР№ С‡РµСЂС‚С‹ вЂ”
-    // РґРѕ РїСЂРёРІР°Р»Р°, РєРѕС‚РѕСЂС‹Рј Р·Р°РІРµСЂС€РёР»СЃСЏ С„РѕСЂСЃРёСЂРѕРІР°РЅРЅС‹Р№ РјР°СЂС€.
+    // Чёрная линия после разделительной черты —
+    // до привала, которым завершился форсированный марш.
     drawRoutePiece(
       boundaryDistance,
       segment.end,
@@ -2025,7 +2025,7 @@ function updateRouteLine(cursorPosition = null) {
       0.26
     );
 
-    // РќР°РїСЂР°РІР»РµРЅРёРµ С‡РµСЂС‚С‹ РІСЃРµРіРґР° РїРµСЂРїРµРЅРґРёРєСѓР»СЏСЂРЅРѕ РєР°СЃР°С‚РµР»СЊРЅРѕР№ РјР°СЂС€СЂСѓС‚Р°.
+    // Направление черты всегда перпендикулярно касательной маршрута.
     const angle = getPerpendicularRouteAngle(pointsToDraw, boundaryDistance);
     const boundaryIsPreview =
       previewIsActive && boundaryDistance > committedLength + 0.001;
@@ -2049,7 +2049,7 @@ function updateRouteLine(cursorPosition = null) {
     }).addTo(map);
     routeRestMarkers.push(boundaryMarker);
 
-    // РљСЂРµСЃС‚РёРєРё РёСЃС‚РѕС‰РµРЅРёСЏ вЂ” РєР°Р¶РґС‹Рµ 1/8 РґРЅРµРІРЅРѕР№ РЅРѕСЂРјС‹ РїРѕСЃР»Рµ С‡РµСЂС‚С‹.
+    // Крестики истощения — каждые 1/8 дневной нормы после черты.
     const interval = segment.dailyLimit / 8;
     const exhaustionPositions = [];
 
@@ -2060,7 +2060,7 @@ function updateRouteLine(cursorPosition = null) {
       if (position) exhaustionPositions.push({ distance, position });
     }
 
-    // Р•СЃР»Рё РїСЂРё РѕС‚РґР°Р»РµРЅРёРё РєР°СЂС‚С‹ РєСЂРµСЃС‚РёРєРё СЃР±Р»РёР·РёР»РёСЃСЊ, РѕР±СЉРµРґРёРЅСЏРµРј РёС….
+    // Если при отдалении карты крестики сблизились, объединяем их.
     const exhaustionClusters = getExhaustionMarkerClusters(
       exhaustionPositions,
       18
@@ -2088,7 +2088,7 @@ function updateRouteLine(cursorPosition = null) {
         className:
           "route-exhaustion-mark" +
           (exhaustionIsPreview ? " route-preview-marker" : ""),
-        html: `<div class="${exhaustionShouldAnimate ? "route-token-drop" : ""}" style="--route-animation-delay:-${exhaustionAnimationDelay || 0}ms;width:28px;height:28px;"><div class="route-exhaustion-cluster"><span class="route-exhaustion-glyph">Г—</span>${countBadge}</div></div>`,
+        html: `<div class="${exhaustionShouldAnimate ? "route-token-drop" : ""}" style="--route-animation-delay:-${exhaustionAnimationDelay || 0}ms;width:28px;height:28px;"><div class="route-exhaustion-cluster"><span class="route-exhaustion-glyph">×</span>${countBadge}</div></div>`,
         iconSize: [28, 28],
         iconAnchor: [14, 14]
       });
@@ -2102,8 +2102,8 @@ function updateRouteLine(cursorPosition = null) {
     });
   });
 
-  // РћР±С‹С‡РЅС‹Рµ РїСЂРёРІР°Р»С‹ СЂРёСЃСѓРµРј РїРѕСЃР»Рµ РІСЃРµС… Р»РёРЅРёР№ Рё РѕС‚РјРµС‚РѕРє,
-  // С‡С‚РѕР±С‹ РѕРЅРё РІСЃРµРіРґР° РѕСЃС‚Р°РІР°Р»РёСЃСЊ РїРѕРІРµСЂС… РјР°СЂС€СЂСѓС‚Р°.
+  // Обычные привалы рисуем после всех линий и отметок,
+  // чтобы они всегда оставались поверх маршрута.
   restDistancesToDraw.forEach(distance => {
     if (distance > totalLength + 0.01) return;
 
@@ -2137,17 +2137,17 @@ function updateRouteLine(cursorPosition = null) {
       }
     }
 
-    // РџСЂРёРІР°Р» РЅР°С…РѕРґРёС‚СЃСЏ РІ РѕС‚РґРµР»СЊРЅРѕРј СЃР»РѕРµ РІС‹С€Рµ РєСЂРµСЃС‚РёРєРѕРІ.
+    // Привал находится в отдельном слое выше крестиков.
     marker.bringToFront();
     routeRestMarkers.push(marker);
   });
 
-  // Р¤Р»Р°Р¶РѕРє РєРѕРЅРµС‡РЅРѕР№ С‚РѕС‡РєРё.
+  // Флажок конечной точки.
   if (routeFinished && routePoints.length >= 2) {
     const endPoint = routePoints[routePoints.length - 1];
     const flagIcon = L.divIcon({
       className: "route-end-flag",
-      html: `<div style="font-size:30px;line-height:30px;color:#e6c77d;text-shadow:1px 2px 4px #000;">вљ‘</div>`,
+      html: `<div style="font-size:30px;line-height:30px;color:#e6c77d;text-shadow:1px 2px 4px #000;">⚑</div>`,
       iconSize: [24, 30],
       iconAnchor: [5, 28]
     });
@@ -2160,12 +2160,12 @@ function updateRouteLine(cursorPosition = null) {
     }).addTo(map);
   }
 
-  // РРЅС„РѕСЂРјР°С†РёСЏ РІ РїР°РЅРµР»Рё.
+  // Информация в панели.
   if (routePanel) {
     document.getElementById("route-daily-limit").textContent =
-      (dailyLimit * KM_PER_PIXEL).toFixed(1) + " РєРј";
+      (dailyLimit * KM_PER_PIXEL).toFixed(1) + " км";
     document.getElementById("route-distance").textContent =
-      (totalLength * KM_PER_PIXEL).toFixed(1) + " РєРј";
+      (totalLength * KM_PER_PIXEL).toFixed(1) + " км";
 
     const completedDays = routeForcedMarch
       ? getNormalRestDistances(routeForcedMarchStartDistance, dailyLimit).length
@@ -2182,11 +2182,11 @@ function updateRouteLine(cursorPosition = null) {
     document.getElementById("route-undo").disabled = routePoints.length <= 1;
   }
 
-  console.log("Р”Р»РёРЅР° РјР°СЂС€СЂСѓС‚Р°:", Math.round(totalLength));
+  console.log("Длина маршрута:", Math.round(totalLength));
 }
 
 // =====================================
-// Р”РћР‘РђР’Р›Р•РќРР• РўРћР§РљР РњРђР РЁР РЈРўРђ
+// ДОБАВЛЕНИЕ ТОЧКИ МАРШРУТА
 // =====================================
 
 window.addPartyRoutePoint = function(latlng) {
@@ -2201,18 +2201,18 @@ window.addPartyRoutePoint = function(latlng) {
   lastCursorPosition = null;
   updateRouteLine(null, true);
 
-  console.log("РўРѕС‡РєРё РјР°СЂС€СЂСѓС‚Р°:", routePoints);
+  console.log("Точки маршрута:", routePoints);
 };
 
 // =====================================
-// РћР‘Р РђР‘РћРўРљРђ РљР›РРљРћР’ Р Р—РђР’Р•Р РЁР•РќРР• РњРђР РЁР РЈРўРђ
+// ОБРАБОТКА КЛИКОВ И ЗАВЕРШЕНИЕ МАРШРУТА
 // =====================================
 
-// Р—Р°РІРµСЂС€РµРЅРёРµ РїРѕСЃС‚СЂРѕРµРЅРёСЏ РјР°СЂС€СЂСѓС‚Р°
+// Завершение построения маршрута
 function finishPartyRoute(latlng) {
   const previousLength = getRouteLength(routePoints);
 
-  // Р”РѕР±Р°РІР»СЏРµРј РїРѕСЃР»РµРґРЅСЋСЋ С‚РѕС‡РєСѓ, РµСЃР»Рё РѕРЅР° РѕС‚Р»РёС‡Р°РµС‚СЃСЏ РѕС‚ РїСЂРµРґС‹РґСѓС‰РµР№
+  // Добавляем последнюю точку, если она отличается от предыдущей
   const lastPoint = routePoints[routePoints.length - 1];
 
   if (
@@ -2223,9 +2223,9 @@ function finishPartyRoute(latlng) {
     routePoints.push(latlng);
   }
 
-  // РњР°СЂС€СЂСѓС‚ РґРѕР»Р¶РµРЅ СЃРѕРґРµСЂР¶Р°С‚СЊ С…РѕС‚СЏ Р±С‹ РѕРґРЅСѓ Р»РёРЅРёСЋ
+  // Маршрут должен содержать хотя бы одну линию
   if (routePoints.length < 2) {
-    console.log("Р”Р»СЏ Р·Р°РІРµСЂС€РµРЅРёСЏ РјР°СЂС€СЂСѓС‚Р° РЅСѓР¶РЅР° С…РѕС‚СЏ Р±С‹ РѕРґРЅР° С‚РѕС‡РєР°");
+    console.log("Для завершения маршрута нужна хотя бы одна точка");
     return;
   }
 
@@ -2240,20 +2240,20 @@ function finishPartyRoute(latlng) {
 
   lastCursorPosition = null;
 
-  // Р’РѕР·РІСЂР°С‰Р°РµРј РѕР±С‹С‡РЅРѕРµ РїСЂРёР±Р»РёР¶РµРЅРёРµ РґРІРѕР№РЅС‹Рј РєР»РёРєРѕРј
+  // Возвращаем обычное приближение двойным кликом
   map.doubleClickZoom.enable();
 
   updateRouteLine(null, true);
 
-  console.log("РњР°СЂС€СЂСѓС‚ Р·Р°РІРµСЂС€С‘РЅ:", routePoints);
+  console.log("Маршрут завершён:", routePoints);
 }
 
-// РћР±СЂР°Р±РѕС‚РєР° РѕРґРёРЅРѕС‡РЅРѕРіРѕ Рё РґРІРѕР№РЅРѕРіРѕ РєР»РёРєР°
+// Обработка одиночного и двойного клика
 window.handlePartyRouteClick = function(latlng) {
   if (!window.routeMode || routeFinished) return;
 
-  // Р•СЃР»Рё СѓР¶Рµ РѕР¶РёРґР°РµС‚СЃСЏ РѕРґРёРЅРѕС‡РЅС‹Р№ РєР»РёРє,
-  // РїСЂРѕРІРµСЂСЏРµРј, СЏРІР»СЏРµС‚СЃСЏ Р»Рё РЅРѕРІС‹Р№ РєР»РёРє РІС‚РѕСЂС‹Рј
+  // Если уже ожидается одиночный клик,
+  // проверяем, является ли новый клик вторым
   if (pendingRouteClickTimer) {
     const firstPoint = map.latLngToContainerPoint(
       pendingRouteClickPosition
@@ -2263,7 +2263,7 @@ window.handlePartyRouteClick = function(latlng) {
 
     const distance = firstPoint.distanceTo(secondPoint);
 
-    // Р”РІР° РєР»РёРєР° СЂСЏРґРѕРј РґСЂСѓРі СЃ РґСЂСѓРіРѕРј вЂ” Р·Р°РІРµСЂС€Р°РµРј РјР°СЂС€СЂСѓС‚
+    // Два клика рядом друг с другом — завершаем маршрут
     if (distance <= 30) {
       clearTimeout(pendingRouteClickTimer);
 
@@ -2274,7 +2274,7 @@ window.handlePartyRouteClick = function(latlng) {
       return;
     }
 
-    // Р•СЃР»Рё РІС‚РѕСЂРѕР№ РєР»РёРє РґР°Р»РµРєРѕ вЂ” С„РёРєСЃРёСЂСѓРµРј РїСЂРµРґС‹РґСѓС‰РёР№
+    // Если второй клик далеко — фиксируем предыдущий
     clearTimeout(pendingRouteClickTimer);
 
     window.addPartyRoutePoint(pendingRouteClickPosition);
@@ -2283,11 +2283,11 @@ window.handlePartyRouteClick = function(latlng) {
     pendingRouteClickPosition = null;
   }
 
-  // Р—Р°РїРѕРјРёРЅР°РµРј РЅРѕРІС‹Р№ РєР»РёРє
+  // Запоминаем новый клик
   pendingRouteClickPosition = latlng;
 
-  // Р–РґС‘Рј 300 РјСЃ: РµСЃР»Рё РІС‚РѕСЂРѕРіРѕ РєР»РёРєР° РЅРµ Р±СѓРґРµС‚,
-  // РґРѕР±Р°РІР»СЏРµРј РѕР±С‹С‡РЅСѓСЋ С‚РѕС‡РєСѓ РјР°СЂС€СЂСѓС‚Р°
+  // Ждём 300 мс: если второго клика не будет,
+  // добавляем обычную точку маршрута
   pendingRouteClickTimer = setTimeout(function() {
     window.addPartyRoutePoint(pendingRouteClickPosition);
 
@@ -2296,7 +2296,7 @@ window.handlePartyRouteClick = function(latlng) {
   }, 180);
 };
 
-// Р”РІРёР¶РµРЅРёРµ РєСѓСЂСЃРѕСЂР° РЅР° РџРљ
+// Движение курсора на ПК
 map.on("mousemove", function(e) {
   if (!window.routeMode || !hasMouse) return;
 
@@ -2305,8 +2305,8 @@ map.on("mousemove", function(e) {
   updateRouteLine(e.latlng);
 });
 
-// РџСЂРё РёР·РјРµРЅРµРЅРёРё РјР°СЃС€С‚Р°Р±Р° РїРµСЂРµСЃРѕР±РёСЂР°РµРј РіСЂСѓРїРїС‹ РєСЂРµСЃС‚РёРєРѕРІ,
-// С‡С‚РѕР±С‹ РѕРЅРё РЅРµ РЅР°РєР»Р°РґС‹РІР°Р»РёСЃСЊ РґСЂСѓРі РЅР° РґСЂСѓРіР°.
+// При изменении масштаба пересобираем группы крестиков,
+// чтобы они не накладывались друг на друга.
 map.on("zoomend", function() {
   if (routePoints.length >= 2 || window.routeMode) {
     updateRouteLine(lastCursorPosition);
@@ -2314,39 +2314,39 @@ map.on("zoomend", function() {
 });
 
         } else {
-          // Р•СЃР»Рё РјР°СЂРєРµСЂ СѓР¶Рµ РµСЃС‚СЊ вЂ” РјРµРЅСЏРµРј РµРіРѕ РїРѕР»РѕР¶РµРЅРёРµ
+          // Если маркер уже есть — меняем его положение
           partyMarker.setLatLng(coordinates);
         }
 
-        console.log("РџРѕР»РѕР¶РµРЅРёРµ РѕС‚СЂСЏРґР°:", coordinates);
+        console.log("Положение отряда:", coordinates);
       });
 
     } catch (error) {
-      console.error("РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё РѕС‚СЂСЏРґР°:", error);
+      console.error("Ошибка загрузки отряда:", error);
     }
   }
 
- // РўРµСЃС‚РѕРІР°СЏ РїСЂРѕРІРµСЂРєР° РѕР±С‰РµР№ Р±Р°Р·С‹
+ // Тестовая проверка общей базы
   window.testFirebase = async function() {
     const testRef = ref(database, "connectionTest");
 
     try {
       await set(testRef, {
-        message: "РЎРІСЏР·СЊ СЂР°Р±РѕС‚Р°РµС‚!",
+        message: "Связь работает!",
         updatedAt: Date.now()
       });
 
       const snapshot = await get(testRef);
 
-      console.log("РџСЂРѕРІРµСЂРєР° Firebase:", snapshot.val());
-      alert("РЈСЃРїРµС€РЅРѕ! Firebase Р·Р°РїРёСЃС‹РІР°РµС‚ Рё С‡РёС‚Р°РµС‚ РґР°РЅРЅС‹Рµ.");
+      console.log("Проверка Firebase:", snapshot.val());
+      alert("Успешно! Firebase записывает и читает данные.");
     } catch (error) {
-      console.error("РћС€РёР±РєР° Firebase:", error);
-      alert("РћС€РёР±РєР° Firebase: " + error.message);
+      console.error("Ошибка Firebase:", error);
+      alert("Ошибка Firebase: " + error.message);
     }
   };
 
-  // Р”РµР»Р°РµРј Firebase РґРѕСЃС‚СѓРїРЅС‹Рј РґР»СЏ СЃР»РµРґСѓСЋС‰РёС… С‡Р°СЃС‚РµР№ РЅР°С€РµР№ СЃРёСЃС‚РµРјС‹
+  // Делаем Firebase доступным для следующих частей нашей системы
   window.dndFirebase = {
     app: app,
     auth: auth,
@@ -2355,7 +2355,7 @@ map.on("zoomend", function() {
     ready: false
   };
 
-  // РРЅРґРёРєР°С‚РѕСЂ РїРѕРґРєР»СЋС‡РµРЅРёСЏ РЅР° СЌРєСЂР°РЅРµ
+  // Индикатор подключения на экране
   const status = document.createElement("div");
 
   status.style.cssText = `
@@ -2370,28 +2370,28 @@ map.on("zoomend", function() {
     font: 13px sans-serif;
   `;
 
-  status.textContent = "Firebase: РїРѕРґРєР»СЋС‡РµРЅРёРµ...";
+  status.textContent = "Firebase: подключение...";
   document.body.appendChild(status);
 
-  // РђРЅРѕРЅРёРјРЅР°СЏ Р°РІС‚РѕСЂРёР·Р°С†РёСЏ РёРіСЂРѕРєР°
+  // Анонимная авторизация игрока
   onAuthStateChanged(auth, function(user) {
     if (user) {
       window.dndFirebase.uid = user.uid;
       window.dndFirebase.ready = true;
 
-      status.textContent = "Firebase: Р°РІС‚РѕСЂРёР·Р°С†РёСЏ РІС‹РїРѕР»РЅРµРЅР°";
+      status.textContent = "Firebase: авторизация выполнена";
       status.style.background = "#245c32";
 
-      console.log("Firebase РіРѕС‚РѕРІ. UID:", user.uid);
+      console.log("Firebase готов. UID:", user.uid);
       initializeParty();
     } else {
       window.dndFirebase.ready = false;
-      status.textContent = "Firebase: РІС‹РїРѕР»РЅСЏРµС‚СЃСЏ РІС…РѕРґ...";
+      status.textContent = "Firebase: выполняется вход...";
 
       signInAnonymously(auth).catch(function(error) {
-        console.error("РћС€РёР±РєР° Р°РІС‚РѕСЂРёР·Р°С†РёРё Firebase:", error);
+        console.error("Ошибка авторизации Firebase:", error);
 
-        status.textContent = "Firebase: РѕС€РёР±РєР° Р°РІС‚РѕСЂРёР·Р°С†РёРё";
+        status.textContent = "Firebase: ошибка авторизации";
         status.style.background = "#8b2222";
       });
     }
