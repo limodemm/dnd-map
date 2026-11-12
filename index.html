@@ -578,7 +578,7 @@ let lastCursorPosition = null;
 // Анимации новых жетонов хранятся независимо друг от друга.
 // Перерисовка маршрута не сбрасывает их ход.
 let routeMarkerAnimations = [];
-const routeMarkerAnimationDuration = 560;
+const routeMarkerAnimationDuration = 420;
 
 function stopRouteMarkerAnimation() {
   routeMarkerAnimations.forEach(animation => {
@@ -880,8 +880,8 @@ function createRoutePanel() {
 
 /* Привалы, крестики и разделительная черта без тяжёлых теней. */
 .leaflet-route-rest-pane .route-rest-raised,
-.leaflet-marker-icon.route-exhaustion-mark,
-.leaflet-marker-icon.route-march-boundary {
+.leaflet-marker-icon.route-march-boundary,
+.leaflet-marker-icon.route-exhaustion-mark {
   filter: none !important;
 }
 
@@ -891,39 +891,36 @@ function createRoutePanel() {
   filter: none !important;
 }
 
-/*
-  Падение жетона: он появляется немного в стороне и выше своей точки,
-  касается поверхности, слегка отскакивает и делает короткое покачивание.
-  Тени под летящими жетонами нет.
-*/
+/* Падение жетона: небольшое смещение, касание, отскок и короткое покачивание. */
 @keyframes route-token-drop {
-  0% {
-    transform: translate(6px, -38px) rotateX(24deg) rotateZ(9deg) scale(0.94);
-  }
-  58% {
-    transform: translate(0, 0) rotateX(-5deg) rotateZ(-5deg) scale(1.02, 0.96);
-  }
-  70% {
-    transform: translate(0, -5px) rotateX(3deg) rotateZ(3deg) scale(0.99, 1.02);
-  }
-  83% {
-    transform: translate(0, 1px) rotateX(-2deg) rotateZ(-1.8deg) scale(1.01, 0.99);
-  }
-  93% {
-    transform: translate(0, 0) rotateX(1deg) rotateZ(1deg) scale(0.998, 1.003);
-  }
-  100% {
-    transform: translate(0, 0) rotateX(0) rotateZ(0) scale(1, 1);
-  }
+  0% { transform: translate(6px, -38px) rotate(-7deg) scale(0.94); }
+  58% { transform: translate(0, 0) rotate(5deg) scale(1.03, 0.96); }
+  70% { transform: translate(0, -5px) rotate(-3deg) scale(0.99, 1.02); }
+  83% { transform: translate(0, 1px) rotate(1.8deg) scale(1.01, 0.99); }
+  93% { transform: translate(0, 0) rotate(-1deg) scale(0.998, 1.003); }
+  100% { transform: translate(0, 0) rotate(0) scale(1, 1); }
 }
 
 .route-token-drop {
   position: relative;
   transform-origin: center center;
-  perspective: 300px;
   animation: route-token-drop 560ms cubic-bezier(0.2, 0.72, 0.24, 1) both;
   animation-delay: var(--route-animation-delay, 0ms);
   will-change: transform;
+}
+
+@keyframes route-rest-drop {
+  0% { transform: translate(5px, -30px) rotate(-6deg) scale(0.94); }
+  58% { transform: translate(0, 0) rotate(4deg) scale(1.04, 0.95); }
+  70% { transform: translate(0, -4px) rotate(-2.5deg) scale(0.99, 1.02); }
+  84% { transform: translate(0, 1px) rotate(1.5deg) scale(1.01, 0.99); }
+  100% { transform: translate(0, 0) rotate(0) scale(1, 1); }
+}
+
+.leaflet-route-rest-pane .route-rest-raised.route-marker-appear {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: route-rest-drop 560ms cubic-bezier(0.2, 0.72, 0.24, 1) both;
 }
 
 .route-exhaustion-glyph {
@@ -944,7 +941,7 @@ function createRoutePanel() {
   align-items: center;
   justify-content: center;
 }
-    
+
  @media (max-width: 768px), (pointer: coarse) {
       #party-route-panel {
         width: 300px;
@@ -1964,13 +1961,11 @@ function updateRouteLine(cursorPosition = null) {
       if (position) exhaustionPositions.push({ distance, position });
     }
 
-    // Каждый крестик остаётся отдельным знаком; размер немного уменьшен.
+    // Каждый крестик остаётся отдельным и имеет постоянный размер на экране.
     exhaustionPositions.forEach(item => {
       const exhaustionIsPreview =
         previewIsActive && item.distance > committedLength + 0.001;
-
-      const exhaustionAnimationDelay =
-        getRouteMarkerAnimationDelay(item.distance);
+      const exhaustionAnimationDelay = getRouteMarkerAnimationDelay(item.distance);
       const exhaustionShouldAnimate = exhaustionAnimationDelay !== null;
 
       const exhaustionIcon = L.divIcon({
@@ -2004,26 +1999,29 @@ function updateRouteLine(cursorPosition = null) {
     const restAnimationDelay = getRouteMarkerAnimationDelay(distance);
     const restShouldAnimate = restAnimationDelay !== null;
 
-    const restIcon = L.divIcon({
-      className: "route-rest-token",
-      html: `<div class="${restShouldAnimate ? "route-token-drop" : ""}" style="--route-animation-delay:-${restAnimationDelay || 0}ms;width:18px;height:18px;display:flex;align-items:center;justify-content:center;"><div style="width:16px;height:16px;box-sizing:border-box;border:2px solid #211b16;border-radius:50%;background:#e6c77d;opacity:${restIsPreview ? 0.72 : 1};"></div></div>`,
-      iconSize: [18, 18],
-      iconAnchor: [9, 9]
-    });
-
-    const marker = L.marker(position, {
+    const marker = L.circleMarker(position, {
       pane: "route-rest-pane",
-      icon: restIcon,
+      radius: 7,
+      color: "#211b16",
+      weight: 2,
+      fillColor: "#e6c77d",
+      fillOpacity: restIsPreview ? 0.72 : 1,
+      opacity: restIsPreview ? 0.78 : 1,
       interactive: false,
-      keyboard: false,
-      zIndexOffset: 0
+      className:
+        "route-rest-raised" +
+        (restIsPreview ? " route-preview-marker" : "") +
+        (restShouldAnimate ? " route-marker-appear" : "")
     }).addTo(map);
 
-    if (restIsPreview) {
+    if (restShouldAnimate) {
       const element = marker.getElement();
-      if (element) element.style.opacity = "0.78";
+      if (element) {
+        element.style.animationDelay = `-${restAnimationDelay}ms`;
+      }
     }
 
+    // Привал находится в отдельном слое выше крестиков.
     marker.bringToFront();
     routeRestMarkers.push(marker);
   });
