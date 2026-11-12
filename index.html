@@ -982,19 +982,20 @@ function createRoutePanel() {
 
 .route-exhaustion-count {
   position: absolute;
-  top: -2px;
-  right: -3px;
-  min-width: 12px;
-  height: 12px;
+  left: 50%;
+  top: 50%;
+  min-width: 14px;
+  height: 14px;
   padding: 0 2px;
   box-sizing: border-box;
   border: 1px solid #211b16;
   border-radius: 8px;
   background: #e6c77d;
   color: #211b16;
-  font: 900 9px/10px Arial, sans-serif;
+  font: 900 9px/12px Arial, sans-serif;
   text-align: center;
   box-shadow: 0 1px 3px #000;
+  transform: translate(-50%, -50%);
 }
     
  @media (max-width: 768px), (pointer: coarse) {
@@ -1758,48 +1759,69 @@ function ensureRouteMarkerPanes() {
   flagPane.style.zIndex = "700";
 }
 
-// Объединяем крестики, которые на текущем масштабе оказались слишком близко.
-// На карте остаётся один читаемый знак с числом объединённых отметок.
-function getExhaustionMarkerClusters(markers, minSpacing = 18) {
-  const clusters = [];
+// Объединяем крестики только тогда, когда их экранные области 28x28 px
+// действительно пересекаются. Если пересекаются соседние группы, они тоже
+// объединяются: A-B и B-C превращаются в одну группу A-B-C.
+function getExhaustionMarkerClusters(markers, markerSize = 28) {
+  const points = markers.map(item => ({
+    item,
+    point: map.latLngToContainerPoint(item.position)
+  }));
+  const parents = points.map((_, index) => index);
 
-  markers.forEach(item => {
-    const screenPoint = map.latLngToContainerPoint(item.position);
-
-    let targetCluster = null;
-    for (const cluster of clusters) {
-      if (screenPoint.distanceTo(cluster.center) < minSpacing) {
-        targetCluster = cluster;
-        break;
-      }
+  function find(index) {
+    while (parents[index] !== index) {
+      parents[index] = parents[parents[index]];
+      index = parents[index];
     }
+    return index;
+  }
 
-    if (!targetCluster) {
-      clusters.push({
-        items: [item],
-        screenPoints: [screenPoint],
-        center: screenPoint
-      });
-      return;
+  function unite(a, b) {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) parents[rootB] = rootA;
+  }
+
+  // Для одинаковых квадратных значков пересечение есть, пока разница
+  // по каждой оси меньше размера значка. Касание по краю не объединяем.
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      const dx = Math.abs(points[i].point.x - points[j].point.x);
+      const dy = Math.abs(points[i].point.y - points[j].point.y);
+      if (dx < markerSize && dy < markerSize) unite(i, j);
     }
+  }
 
-    targetCluster.items.push(item);
-    targetCluster.screenPoints.push(screenPoint);
-
-    const total = targetCluster.screenPoints.length;
-    const sumX = targetCluster.screenPoints.reduce((sum, point) => sum + point.x, 0);
-    const sumY = targetCluster.screenPoints.reduce((sum, point) => sum + point.y, 0);
-
-    targetCluster.center = L.point(sumX / total, sumY / total);
+  const groups = new Map();
+  points.forEach((entry, index) => {
+    const root = find(index);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(entry);
   });
 
-  return clusters.map(cluster => {
-    const middleItem = cluster.items[Math.floor(cluster.items.length / 2)];
+  return Array.from(groups.values()).map(group => {
+    const items = group.map(entry => entry.item);
+
+    if (items.length === 1) {
+      return {
+        position: items[0].position,
+        count: 1,
+        distances: [items[0].distance]
+      };
+    }
+
+    // Ставим общий маркер в геометрическую середину группы на экране.
+    const minX = Math.min(...group.map(entry => entry.point.x));
+    const maxX = Math.max(...group.map(entry => entry.point.x));
+    const minY = Math.min(...group.map(entry => entry.point.y));
+    const maxY = Math.max(...group.map(entry => entry.point.y));
+    const center = L.point((minX + maxX) / 2, (minY + maxY) / 2);
 
     return {
-      position: middleItem.position,
-      count: cluster.items.length,
-      distances: cluster.items.map(item => item.distance)
+      position: map.containerPointToLatLng(center),
+      count: items.length,
+      distances: items.map(item => item.distance)
     };
   });
 }
@@ -2063,7 +2085,7 @@ function updateRouteLine(cursorPosition = null) {
     // Если при отдалении карты крестики сблизились, объединяем их.
     const exhaustionClusters = getExhaustionMarkerClusters(
       exhaustionPositions,
-      18
+      28
     );
 
     exhaustionClusters.forEach(cluster => {
