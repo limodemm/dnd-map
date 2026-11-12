@@ -610,7 +610,7 @@ function beginRouteMarkerAnimation(startDistance, endDistance) {
   }, routeMarkerAnimationDuration + 100);
 }
 
-function getRouteMarkerAnimation(distance) {
+function getRouteMarkerAnimation(distance, includeStart = false) {
   const now = Date.now();
 
   // Если несколько анимаций пересекаются, используем самую новую.
@@ -619,10 +619,12 @@ function getRouteMarkerAnimation(distance) {
   routeMarkerAnimations.forEach(animation => {
     const elapsed = now - animation.startedAt;
 
-    // Начальный привал не анимируем: анимация относится только
-    // к жетонам, появившимся ПОСЛЕ точки старта нового участка.
+    // По умолчанию анимируем только жетоны внутри нового участка.
+    // Для привала в начале нового участка разрешаем включить саму стартовую точку.
     const isInsideRange =
-      distance > animation.start + 0.05 &&
+      (includeStart
+        ? distance >= animation.start - 0.01
+        : distance > animation.start + 0.05) &&
       distance <= animation.end + 0.01;
 
     if (
@@ -641,8 +643,8 @@ function shouldAnimateRouteMarker(distance) {
   return Boolean(getRouteMarkerAnimation(distance));
 }
 
-function getRouteMarkerAnimationDelay(distance) {
-  const animation = getRouteMarkerAnimation(distance);
+function getRouteMarkerAnimationDelay(distance, includeStart = false) {
+  const animation = getRouteMarkerAnimation(distance, includeStart);
   if (!animation) return null;
 
   return Math.max(0, Date.now() - animation.startedAt);
@@ -2112,7 +2114,8 @@ function updateRouteLine(cursorPosition = null) {
 
     const restIsPreview =
       previewIsActive && distance > committedLength + 0.001;
-    const restAnimationDelay = getRouteMarkerAnimationDelay(distance);
+    // Привал в начале нового отрезка тоже должен проиграть анимацию.
+    const restAnimationDelay = getRouteMarkerAnimationDelay(distance, true);
     const restShouldAnimate = restAnimationDelay !== null;
 
     const marker = L.circleMarker(position, {
