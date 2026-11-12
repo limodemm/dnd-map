@@ -928,8 +928,10 @@ function createRoutePanel() {
 
 /* Линия и жетоны спокойно проявляются без падения и подпрыгивания. */
 @keyframes route-line-reveal {
-  from { opacity: 0; }
-  to { opacity: var(--route-line-opacity, 1); }
+  /* Leaflet задаёт прозрачность именно обводке SVG-пути,
+     поэтому анимируем stroke-opacity, а не общую opacity элемента. */
+  from { stroke-opacity: 0; }
+  to { stroke-opacity: var(--route-line-opacity, 1); }
 }
 
 .route-line-reveal {
