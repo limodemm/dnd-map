@@ -1049,11 +1049,25 @@ window.routePendingConfirmation = false;
 
     routePoints = getRoutePointsUpToDistance(routePoints, targetDistance);
 
-    // Сначала обрезаем геометрию, затем синхронизируем с ней историю маршей.
-    const actualLength = getRouteLength(routePoints);
-    routeForcedSegments = routeForcedSegments.filter(
-      segment => segment.end <= actualLength + 0.01
-    );
+// Синхронизируем историю форсированных маршей
+// с фактической длиной обрезанного маршрута.
+const actualLength = getRouteLength(routePoints);
+
+routeForcedSegments = routeForcedSegments
+  .filter(segment => segment.end <= targetDistance + 0.05)
+  .map(segment => {
+    // Если вернулись точно к концу форсированного марша,
+    // привязываем его конец к фактическому концу маршрута.
+    if (Math.abs(segment.end - actualLength) <= 0.05) {
+      return {
+        ...segment,
+        end: actualLength
+      };
+    }
+
+    return segment;
+  })
+  .filter(segment => segment.end <= actualLength + 0.05);
 
     if (routeFinished) {
       routeFinished = false;
@@ -1398,11 +1412,18 @@ function getNormalRestDistances(totalLength, dailyLimit) {
   let previousAnchor = 0;
 
   function addRest(distance) {
-    if (distance <= 0.001) return;
-    if (!result.length || Math.abs(result[result.length - 1] - distance) > 0.001) {
-      result.push(distance);
-    }
+  if (distance <= 0.001) return;
+
+  // Если привал практически совпадает с концом маршрута,
+  // привязываем его непосредственно к концу.
+  if (distance > totalLength && distance - totalLength <= 0.05) {
+    distance = totalLength;
   }
+
+  if (!result.length || Math.abs(result[result.length - 1] - distance) > 0.001) {
+    result.push(distance);
+  }
+}
 
   segments.forEach(segment => {
     // Обычные дневные привалы до начала форсированного участка.
@@ -1424,7 +1445,7 @@ function getNormalRestDistances(totalLength, dailyLimit) {
 
   // Обычные дни после последнего завершённого форсированного участка.
   let nextRest = previousAnchor + dailyLimit;
-  while (nextRest <= totalLength + 0.001) {
+  while (nextRest <= totalLength + 0.05) {
     addRest(nextRest);
     nextRest += dailyLimit;
   }
@@ -1594,23 +1615,35 @@ function updateRouteLine(cursorPosition = null) {
     // Чёрная линия после разделительной черты — до привала,
     // которым завершился этот форсированный марш.
     const blackSection = getRoutePointsBetweenDistances(
-      pointsToDraw,
-      boundaryDistance,
-      segment.end
-    );
-    if (blackSection.length >= 2) {
-      const blackAnchors = getRoutePointsWithDistanceAnchors(
-        blackSection,
-        [0, getRouteLength(blackSection)]
-      );
-      L.polyline(createRouteDisplayPoints(blackAnchors, [0, getRouteLength(blackAnchors)]), {
-        color: "#171717",
-        weight: 4,
-        opacity: 0.98,
-        lineCap: "round",
-        lineJoin: "round"
-      }).addTo(map);
+  pointsToDraw,
+  boundaryDistance,
+  segment.end
+);
+
+if (blackSection.length >= 2) {
+  const blackLength = getRouteLength(blackSection);
+
+  const blackAnchors = getRoutePointsWithDistanceAnchors(
+    blackSection,
+    [0, blackLength]
+  );
+
+  // Сохраняем линию в общем списке слоёв,
+  // чтобы она удалялась при следующей перерисовке.
+  const blackLine = L.polyline(
+    createRouteDisplayPoints(blackAnchors, [0, blackLength]),
+    {
+      color: "#171717",
+      weight: 4,
+      dashArray: "8, 10",
+      opacity: 0.98,
+      lineCap: "round",
+      lineJoin: "round"
     }
+  ).addTo(map);
+
+  routeRestMarkers.push(blackLine);
+}
 
     // Направление черты всегда перпендикулярно касательной маршрута.
     const angle = getPerpendicularRouteAngle(pointsToDraw, boundaryDistance);
