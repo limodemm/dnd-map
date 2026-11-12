@@ -575,10 +575,13 @@ let routeStatus = null;
 let routeConfirmButton = null;
 let lastCursorPosition = null;
 
-// Анимации новых жетонов хранятся независимо друг от друга.
-// Перерисовка маршрута не сбрасывает их ход.
+// Новая анимация маршрута: три случайные точки — по одной в каждой
+// трети отрезка. Линия проявляется от этих точек в обе стороны.
+// Перерисовка маршрута не сбрасывает уже идущую анимацию.
 let routeMarkerAnimations = [];
-const routeMarkerAnimationDuration = 420;
+const routeRevealSpeed = 55; // единиц длины маршрута в секунду
+const routeRevealFadeDuration = 520;
+const routeRevealChunkLength = 18;
 
 function stopRouteMarkerAnimation() {
   routeMarkerAnimations.forEach(animation => {
@@ -588,46 +591,67 @@ function stopRouteMarkerAnimation() {
   routeMarkerAnimations = [];
 }
 
+function getRouteRevealDistance(animation, distance) {
+  return Math.min(...animation.seeds.map(seed => Math.abs(distance - seed)));
+}
+
+function getRouteRevealDelay(animation, distance) {
+  return getRouteRevealDistance(animation, distance) / routeRevealSpeed * 1000;
+}
+
 function beginRouteMarkerAnimation(startDistance, endDistance) {
-  if (endDistance - startDistance < 0.001) return;
+  const length = endDistance - startDistance;
+  if (length < 0.001) return;
+
+  // Три зоны равной длины; внутри каждой выбирается своя случайная точка.
+  const seeds = [0, 1, 2].map(index =>
+    startDistance + (index + Math.random()) * length / 3
+  );
+
+  const sortedSeeds = [...seeds].sort((a, b) => a - b);
+  const checkDistances = [startDistance, endDistance];
+  for (let i = 0; i < sortedSeeds.length - 1; i++) {
+    checkDistances.push((sortedSeeds[i] + sortedSeeds[i + 1]) / 2);
+  }
+
+  const maxRevealDistance = Math.max(
+    ...checkDistances.map(distance => getRouteRevealDistance({ seeds }, distance))
+  );
+  const duration = maxRevealDistance / routeRevealSpeed * 1000 + routeRevealFadeDuration;
 
   const animation = {
     start: startDistance,
     end: endDistance,
+    seeds,
     startedAt: Date.now(),
+    duration,
     timer: null
   };
 
   routeMarkerAnimations.push(animation);
 
-  // Убираем завершившуюся анимацию после её полного проигрывания.
   animation.timer = setTimeout(function() {
     routeMarkerAnimations = routeMarkerAnimations.filter(
       item => item !== animation
     );
 
     updateRouteLine(lastCursorPosition);
-  }, routeMarkerAnimationDuration + 100);
+  }, duration + 100);
 }
 
 function getRouteMarkerAnimation(distance) {
   const now = Date.now();
-
-  // Если несколько анимаций пересекаются, используем самую новую.
   let matchingAnimation = null;
 
   routeMarkerAnimations.forEach(animation => {
     const elapsed = now - animation.startedAt;
-
-    // Начальный привал не анимируем: анимация относится только
-    // к жетонам, появившимся ПОСЛЕ точки старта нового участка.
     const isInsideRange =
       distance > animation.start + 0.05 &&
       distance <= animation.end + 0.01;
 
     if (
       isInsideRange &&
-      elapsed < routeMarkerAnimationDuration &&
+      elapsed < animation.duration &&
       (!matchingAnimation || animation.startedAt > matchingAnimation.startedAt)
     ) {
       matchingAnimation = animation;
@@ -641,11 +665,14 @@ function shouldAnimateRouteMarker(distance) {
   return Boolean(getRouteMarkerAnimation(distance));
 }
 
+// Возвращает задержку до появления точки. Отрицательное значение означает,
+// что её очередь уже прошла — CSS продолжит анимацию с нужного момента.
 function getRouteMarkerAnimationDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
 
-  return Math.max(0, Date.now() - animation.startedAt);
+  return getRouteRevealDelay(animation, distance) -
+    (Date.now() - animation.startedAt);
 }
 
 // Определяем, используется ли ПК с мышью
@@ -899,65 +926,34 @@ function createRoutePanel() {
   filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.65));
 }
 
-/* Падение жетонов: заметное снижение, короткое сжатие при ударе,
-   затем быстрое и спокойное окончательное положение. */
-@keyframes route-token-drop {
-  0% {
-    transform: translateY(-34px) scale(0.88) rotate(-4deg);
-  }
-  72% {
-    transform: translateY(0) scale(1.06, 0.91) rotate(0deg);
-  }
-  86% {
-    transform: translateY(0) scale(0.98, 1.035) rotate(0deg);
-  }
-  100% {
-    transform: translateY(0) scale(1, 1) rotate(0deg);
-  }
+/* Линия и жетоны спокойно проявляются без падения и подпрыгивания. */
+@keyframes route-line-reveal {
+  from { opacity: 0; }
+  to { opacity: var(--route-line-opacity, 1); }
 }
 
-.route-token-drop {
+.route-line-reveal {
+  animation: route-line-reveal 520ms ease-out both;
+}
+
+@keyframes route-token-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.route-token-appear {
   position: relative;
-  transform-origin: center bottom;
-  animation: route-token-drop 420ms cubic-bezier(0.18, 0.72, 0.25, 1) both;
+  animation: route-token-appear 520ms ease-out both;
   animation-delay: var(--route-animation-delay, 0ms);
 }
 
-.route-token-drop::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: -2px;
-  width: 20px;
-  height: 5px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.55);
-  filter: blur(2px);
-  opacity: 0.35;
-  transform: translateX(-50%) scale(0.45);
-  transform-origin: center;
-  animation: route-token-shadow 420ms ease-out both;
-  animation-delay: var(--route-animation-delay, 0ms);
-  pointer-events: none;
-}
-
-@keyframes route-token-shadow {
-  0% { opacity: 0.12; transform: translateX(-50%) scale(0.35); }
-  72% { opacity: 0.65; transform: translateX(-50%) scale(1.15); }
-  100% { opacity: 0.48; transform: translateX(-50%) scale(1); }
-}
-
-@keyframes route-rest-drop {
-  0% { transform: translateY(-30px) scale(0.88); }
-  72% { transform: translateY(0) scale(1.07, 0.91); }
-  86% { transform: translateY(0) scale(0.98, 1.035); }
-  100% { transform: translateY(0) scale(1, 1); }
+@keyframes route-rest-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .leaflet-route-rest-pane-pane .route-rest-raised.route-marker-appear {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: route-rest-drop 420ms cubic-bezier(0.18, 0.72, 0.25, 1) both;
+  animation: route-rest-appear 520ms ease-out both;
 }
 
 .route-exhaustion-glyph {
@@ -1956,38 +1952,78 @@ function updateRouteLine(cursorPosition = null) {
     function addPiece(from, to, opacity) {
       if (to - from < 0.001) return;
 
-      const sectionPoints = getRoutePointsBetweenDistances(
-        pointsToDraw,
-        from,
-        to
-      );
+      // Делим новый участок на короткие фрагменты. Каждый фрагмент
+      // начинает проявляться, когда волна от ближайшей случайной точки
+      // доходит до его середины. Старые части рисуются без анимации.
+      const boundaries = [from, to];
+      routeMarkerAnimations.forEach(animation => {
+        if (animation.start > from && animation.start < to) boundaries.push(animation.start);
+        if (animation.end > from && animation.end < to) boundaries.push(animation.end);
+      });
+      boundaries.sort((a, b) => a - b);
 
-      if (sectionPoints.length < 2) return;
+      for (let part = 0; part < boundaries.length - 1; part++) {
+        const partStart = boundaries[part];
+        const partEnd = boundaries[part + 1];
+        if (partEnd - partStart < 0.001) continue;
 
-      const localProtectedDistances = protectedDistances
-        .filter(distance =>
-          distance >= from - 0.01 &&
-          distance <= to + 0.01
-        )
-        .map(distance => distance - from);
+        const midpoint = (partStart + partEnd) / 2;
+        const activeAnimation = getRouteMarkerAnimation(midpoint);
+        const fragmentCount = activeAnimation
+          ? Math.max(1, Math.ceil((partEnd - partStart) / routeRevealChunkLength))
+          : 1;
 
-      const line = L.polyline(
-        createRouteDisplayPoints(
-          sectionPoints,
-          localProtectedDistances
-        ),
-        {
-          color: color,
-          weight: 4.5,
-          dashArray: "8, 10",
-          opacity: opacity,
-          lineCap: "round",
-          lineJoin: "round",
-          className: "route-line-raised"
+        for (let fragment = 0; fragment < fragmentCount; fragment++) {
+          const fragmentStart = partStart +
+            (partEnd - partStart) * fragment / fragmentCount;
+          const fragmentEnd = partStart +
+            (partEnd - partStart) * (fragment + 1) / fragmentCount;
+          const fragmentMidpoint = (fragmentStart + fragmentEnd) / 2;
+          const fragmentAnimation = getRouteMarkerAnimation(fragmentMidpoint);
+
+          const sectionPoints = getRoutePointsBetweenDistances(
+            pointsToDraw,
+            fragmentStart,
+            fragmentEnd
+          );
+          if (sectionPoints.length < 2) continue;
+
+          const localProtectedDistances = protectedDistances
+            .filter(distance =>
+              distance >= fragmentStart - 0.01 &&
+              distance <= fragmentEnd + 0.01
+            )
+            .map(distance => distance - fragmentStart);
+
+          const line = L.polyline(
+            createRouteDisplayPoints(sectionPoints, localProtectedDistances),
+            {
+              color: color,
+              weight: 4.5,
+              dashArray: "8, 10",
+              opacity: fragmentAnimation ? 0 : opacity,
+              lineCap: "round",
+              lineJoin: "round",
+              className: "route-line-raised" +
+                (fragmentAnimation ? " route-line-reveal" : "")
+            }
+          ).addTo(map);
+
+          if (fragmentAnimation) {
+            const path = line.getElement();
+            if (path) {
+              const delay = getRouteRevealDelay(
+                fragmentAnimation,
+                fragmentMidpoint
+              ) - (Date.now() - fragmentAnimation.startedAt);
+              path.style.setProperty("--route-line-opacity", String(opacity));
+              path.style.animationDelay = `${delay}ms`;
+            }
+          }
+
+          routeRestMarkers.push(line);
         }
-      ).addTo(map);
-
-      routeRestMarkers.push(line);
+      }
     }
 
     if (!previewIsActive) {
@@ -2070,7 +2106,7 @@ function updateRouteLine(cursorPosition = null) {
       className:
         "route-march-boundary" +
         (boundaryIsPreview ? " route-preview-marker" : ""),
-      html: `<div class="${boundaryShouldAnimate ? "route-token-drop" : ""}" style="--route-animation-delay:-${boundaryAnimationDelay || 0}ms;width:30px;height:4px;"><div style="width:30px;height:4px;background:#e6c77d;border:1px solid #211b16;border-radius:1px;transform:rotate(${angle}deg);box-shadow:1px 2px 4px #000;"></div></div>`,
+      html: `<div class="${boundaryShouldAnimate ? "route-token-appear" : ""}" style="--route-animation-delay:${boundaryAnimationDelay || 0}ms;width:30px;height:4px;"><div style="width:30px;height:4px;background:#e6c77d;border:1px solid #211b16;border-radius:1px;transform:rotate(${angle}deg);box-shadow:1px 2px 4px #000;"></div></div>`,
       iconSize: [32, 6],
       iconAnchor: [16, 3]
     });
@@ -2104,13 +2140,16 @@ function updateRouteLine(cursorPosition = null) {
         previewIsActive &&
         cluster.distances.some(distance => distance > committedLength + 0.001);
 
-      const animationDistance = cluster.distances.find(
-        distance => getRouteMarkerAnimationDelay(distance) !== null
-      );
-      const exhaustionAnimationDelay =
-        animationDistance === undefined
-          ? null
-          : getRouteMarkerAnimationDelay(animationDistance);
+      const exhaustionAnimationCandidates = cluster.distances
+        .map(distance => ({
+          distance,
+          delay: getRouteMarkerAnimationDelay(distance)
+        }))
+        .filter(item => item.delay !== null)
+        .sort((a, b) => a.delay - b.delay);
+      const exhaustionAnimationDelay = exhaustionAnimationCandidates.length
+        ? exhaustionAnimationCandidates[0].delay
+        : null;
       const exhaustionShouldAnimate = exhaustionAnimationDelay !== null;
 
       const countBadge = cluster.count > 1
@@ -2121,7 +2160,7 @@ function updateRouteLine(cursorPosition = null) {
         className:
           "route-exhaustion-mark" +
           (exhaustionIsPreview ? " route-preview-marker" : ""),
-        html: `<div class="${exhaustionShouldAnimate ? "route-token-drop" : ""}" style="--route-animation-delay:-${exhaustionAnimationDelay || 0}ms;width:${cluster.count > 1 ? 56 : 28}px;height:${cluster.count > 1 ? 56 : 28}px;"><div class="route-exhaustion-cluster${cluster.count > 1 ? " route-exhaustion-clustered" : ""}"><span class="route-exhaustion-glyph">×</span>${countBadge}</div></div>`,
+        html: `<div class="${exhaustionShouldAnimate ? "route-token-appear" : ""}" style="--route-animation-delay:${exhaustionAnimationDelay || 0}ms;width:${cluster.count > 1 ? 56 : 28}px;height:${cluster.count > 1 ? 56 : 28}px;"><div class="route-exhaustion-cluster${cluster.count > 1 ? " route-exhaustion-clustered" : ""}"><span class="route-exhaustion-glyph">×</span>${countBadge}</div></div>`,
         iconSize: cluster.count > 1 ? [56, 56] : [28, 28],
         iconAnchor: cluster.count > 1 ? [28, 28] : [14, 14]
       });
@@ -2166,7 +2205,7 @@ function updateRouteLine(cursorPosition = null) {
     if (restShouldAnimate) {
       const element = marker.getElement();
       if (element) {
-        element.style.animationDelay = `-${restAnimationDelay}ms`;
+        element.style.animationDelay = `${restAnimationDelay}ms`;
       }
     }
 
