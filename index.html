@@ -795,6 +795,23 @@ function createRoutePanel() {
       opacity: 0.4;
       cursor: not-allowed;
     }
+
+/* Лёгкий объём линиям маршрута */
+.leaflet-overlay-pane .route-line-raised {
+  filter: drop-shadow(0px 1.5px 1.5px rgba(0, 0, 0, 0.75));
+}
+
+/* Объём обычным привалам */
+.leaflet-overlay-pane .route-rest-raised {
+  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8));
+}
+
+/* Объём разделительным чертам и крестикам */
+.leaflet-marker-icon.route-march-boundary,
+.leaflet-marker-icon.route-exhaustion-mark {
+  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8));
+}
+    
  @media (max-width: 768px), (pointer: coarse) {
       #party-route-panel {
         width: 300px;
@@ -1575,34 +1592,136 @@ function updateRouteLine(cursorPosition = null) {
   );
 
   // Основная линия маршрута.
-  if (anchoredPoints.length >= 2) {
-    routeLine = L.polyline(
-      createRouteDisplayPoints(anchoredPoints, protectedDistances),
-      {
-        color: "#d6b46a",
-        weight: 4,
-        dashArray: "8, 10",
-        opacity: 0.9
-      }
-    ).addTo(map);
+  // Разделяем маршрут на золотые и чёрные участки.
+  // Золотая линия не рисуется там, где должен идти форсированный марш.
+
+  const blackIntervals = forcedVisualSegments
+    .map(segment => ({
+      start: segment.start + segment.dailyLimit,
+      end: segment.end
+    }))
+    .filter(interval => interval.end > interval.start + 0.001)
+    .sort((a, b) => a.start - b.start);
+
+  // Объединяем пересекающиеся чёрные участки.
+  const mergedBlackIntervals = [];
+
+  blackIntervals.forEach(interval => {
+    const previous = mergedBlackIntervals[mergedBlackIntervals.length - 1];
+
+    if (previous && interval.start <= previous.end + 0.001) {
+      previous.end = Math.max(previous.end, interval.end);
+    } else {
+      mergedBlackIntervals.push({
+        start: interval.start,
+        end: interval.end
+      });
+    }
+  });
+
+  // При движении мыши отделяем уже зафиксированный маршрут
+  // от полупрозрачного предпросмотра.
+  const previewIsActive =
+    Boolean(cursorPosition && hasMouse && window.routeMode);
+
+  const committedLength = getRouteLength(routePoints);
+
+  // Универсальное создание отрезка маршрута.
+  function drawRoutePiece(
+    startDistance,
+    endDistance,
+    color,
+    committedOpacity,
+    previewOpacity
+  ) {
+    if (endDistance - startDistance < 0.001) return;
+
+    function addPiece(from, to, opacity) {
+      if (to - from < 0.001) return;
+
+      const sectionPoints = getRoutePointsBetweenDistances(
+        pointsToDraw,
+        from,
+        to
+      );
+
+      if (sectionPoints.length < 2) return;
+
+      const localProtectedDistances = protectedDistances
+        .filter(distance =>
+          distance >= from - 0.01 &&
+          distance <= to + 0.01
+        )
+        .map(distance => distance - from);
+
+      const line = L.polyline(
+        createRouteDisplayPoints(
+          sectionPoints,
+          localProtectedDistances
+        ),
+        {
+          color: color,
+          weight: 4,
+          dashArray: "8, 10",
+          opacity: opacity,
+          lineCap: "round",
+          lineJoin: "round",
+          className: "route-line-raised"
+        }
+      ).addTo(map);
+
+      routeRestMarkers.push(line);
+    }
+
+    if (!previewIsActive) {
+      addPiece(startDistance, endDistance, committedOpacity);
+      return;
+    }
+
+    // Весь отрезок уже зафиксирован.
+    if (endDistance <= committedLength + 0.001) {
+      addPiece(startDistance, endDistance, committedOpacity);
+      return;
+    }
+
+    // Весь отрезок относится к предпросмотру.
+    if (startDistance >= committedLength - 0.001) {
+      addPiece(startDistance, endDistance, previewOpacity);
+      return;
+    }
+
+    // Отрезок пересекает границу между маршрутом и предпросмотром.
+    addPiece(startDistance, committedLength, committedOpacity);
+    addPiece(committedLength, endDistance, previewOpacity);
   }
 
-  // Обычные привалы.
-  restDistancesToDraw.forEach(distance => {
-    if (distance > totalLength + 0.01) return;
-    const position = getRoutePointAtDistance(pointsToDraw, distance);
-    if (!position) return;
+  // Рисуем золотые участки, пропуская все чёрные интервалы.
+  let goldStart = 0;
 
-    const marker = L.circleMarker(position, {
-      radius: 7,
-      color: "#211b16",
-      weight: 2,
-      fillColor: "#e6c77d",
-      fillOpacity: 1,
-      interactive: false
-    }).addTo(map);
-    routeRestMarkers.push(marker);
+  mergedBlackIntervals.forEach(interval => {
+    if (interval.start > goldStart + 0.001) {
+      drawRoutePiece(
+        goldStart,
+        interval.start,
+        "#d6b46a",
+        0.9,
+        0.42
+      );
+    }
+
+    goldStart = Math.max(goldStart, interval.end);
   });
+
+  // Последний золотой участок после всех форсированных маршей.
+  if (goldStart < totalLength - 0.001) {
+    drawRoutePiece(
+      goldStart,
+      totalLength,
+      "#d6b46a",
+      0.9,
+      0.42
+    );
+  }
 
   // Визуал форсированных маршей остаётся на карте и после их завершения.
   forcedVisualSegments.forEach(segment => {
@@ -1612,38 +1731,15 @@ function updateRouteLine(cursorPosition = null) {
     const boundaryPosition = getRoutePointAtDistance(pointsToDraw, boundaryDistance);
     if (!boundaryPosition) return;
 
-    // Чёрная линия после разделительной черты — до привала,
-    // которым завершился этот форсированный марш.
-    const blackSection = getRoutePointsBetweenDistances(
-  pointsToDraw,
-  boundaryDistance,
-  segment.end
-);
-
-if (blackSection.length >= 2) {
-  const blackLength = getRouteLength(blackSection);
-
-  const blackAnchors = getRoutePointsWithDistanceAnchors(
-    blackSection,
-    [0, blackLength]
-  );
-
-  // Сохраняем линию в общем списке слоёв,
-  // чтобы она удалялась при следующей перерисовке.
-  const blackLine = L.polyline(
-    createRouteDisplayPoints(blackAnchors, [0, blackLength]),
-    {
-      color: "#171717",
-      weight: 4,
-      dashArray: "8, 10",
-      opacity: 0.98,
-      lineCap: "round",
-      lineJoin: "round"
-    }
-  ).addTo(map);
-
-  routeRestMarkers.push(blackLine);
-}
+    // Чёрная линия после разделительной черты —
+    // до привала, которым завершился форсированный марш.
+    drawRoutePiece(
+      boundaryDistance,
+      segment.end,
+      "#171717",
+      0.98,
+      0.45
+    );
 
     // Направление черты всегда перпендикулярно касательной маршрута.
     const angle = getPerpendicularRouteAngle(pointsToDraw, boundaryDistance);
@@ -1683,6 +1779,27 @@ if (blackSection.length >= 2) {
       }).addTo(map);
       routeRestMarkers.push(marker);
     }
+  });
+
+  // Обычные привалы рисуем после всех линий и отметок,
+  // чтобы они всегда оставались поверх маршрута.
+  restDistancesToDraw.forEach(distance => {
+    if (distance > totalLength + 0.01) return;
+
+    const position = getRoutePointAtDistance(pointsToDraw, distance);
+    if (!position) return;
+
+    const marker = L.circleMarker(position, {
+      radius: 7,
+      color: "#211b16",
+      weight: 2,
+      fillColor: "#e6c77d",
+      fillOpacity: 1,
+      interactive: false,
+      className: "route-rest-raised"
+    }).addTo(map);
+
+    routeRestMarkers.push(marker);
   });
 
   // Флажок конечной точки.
