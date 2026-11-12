@@ -49,6 +49,10 @@ body {
   border: none !important;
 }
 
+.leaflet-marker-icon:focus {
+  outline: none !important;
+}
+
 #map-wrapper {
   height: 90vh;
   width: 90vw;
@@ -390,8 +394,24 @@ function saveMarker() {
 
 document.addEventListener("keydown", function(e) {
   if (e.key === "Escape") {
+    // Во время прокладки или подтверждения маршрута Escape
+    // выполняет то же действие, что и кнопка «Отменить».
+    if (window.routeMode || window.routePendingConfirmation) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+
+      window.dispatchEvent(new Event("cancel-party-route"));
+
+      // Убираем клавиатурный фокус с маркера отряда,
+      // чтобы браузер не оставлял вокруг него рамку.
+      if (document.activeElement && document.activeElement.blur) {
+        document.activeElement.blur();
+      }
+      return;
+    }
+
     map.closePopup();
-    closeForm(); // если форма открыта
+    closeForm();
   }
 });
 
@@ -488,7 +508,7 @@ routeFinished = false;
 // Сбрасываем состояние форсированного марша
 routeForcedMarch = false;
 routeForcedMarchStartDistance = 0;
-routeRestDistances = [];
+routeForcedSegments = [];
 
 const forcedButton = document.getElementById("route-forced-march");
 
@@ -534,8 +554,8 @@ let routePace = "normal";
 let routeSpeedReduced = false;
 let routeForcedMarch = false;
 
-// Расстояния до уже пройденных обычных привалов
-let routeRestDistances = [];
+// Завершённые участки форсированного марша: { start, end }
+let routeForcedSegments = [];
 
 // Расстояние от начала маршрута до точки начала форсированного марша
 let routeForcedMarchStartDistance = 0;
@@ -909,77 +929,60 @@ reducedSpeedButton.addEventListener("click", function() {
 const forcedMarchButton = document.getElementById("route-forced-march");
 
 forcedMarchButton.addEventListener("click", function() {
+  // После установки флажка переключатель недоступен.
+  if (routeFinished || window.routePendingConfirmation) return;
 
-  const totalLength = getRouteLength(routePoints);
-
+  const fixedLength = getRouteLength(routePoints);
   const dailyLimit =
     routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
 
   lastCursorPosition = null;
 
-  // ВКЛЮЧЕНИЕ форсированного марша
   if (!routeForcedMarch) {
-
-    // Находим последний обычный привал
-    const lastRestDistance = routeRestDistances.length
-      ? routeRestDistances[routeRestDistances.length - 1]
+    // Начинаем форсированный марш от последнего обычного привала.
+    const previousRests = getNormalRestDistances(fixedLength, dailyLimit);
+    const lastRestDistance = previousRests.length
+      ? previousRests[previousRests.length - 1]
       : 0;
 
-    // Откатываем маршрут к этому привалу
-    routePoints = getRoutePointsUpToDistance(
-      routePoints,
-      lastRestDistance
+    // Здесь маршрут действительно откатывается к последнему привалу.
+    routePoints = getRoutePointsUpToDistance(routePoints, lastRestDistance);
+    routeForcedSegments = routeForcedSegments.filter(
+      segment => segment.end <= lastRestDistance + 0.001
     );
 
     routeForcedMarchStartDistance = lastRestDistance;
-
     routeForcedMarch = true;
 
     this.classList.add("active");
     this.setAttribute("aria-pressed", "true");
-
     console.log("Форсированный марш включён");
-
   } else {
+    // Выключаем форсированный марш.
+    const forcedDistance = fixedLength - routeForcedMarchStartDistance;
 
-    // ВЫКЛЮЧЕНИЕ форсированного марша
-
-    const forcedDistance = totalLength - routeForcedMarchStartDistance;
-
-    // Проверяем, достигнута ли дневная черта
     if (forcedDistance >= dailyLimit - 0.001) {
-
-      // После достижения черты текущая точка становится привалом
-      if (
-        !routeRestDistances.length ||
-        Math.abs(
-          routeRestDistances[routeRestDistances.length - 1] - totalLength
-        ) > 0.001
-      ) {
-        routeRestDistances.push(totalLength);
-      }
-
-      console.log("Форсированный марш завершён: создан новый привал");
-
+      // Весь форсированный участок считается одним днём,
+      // независимо от того, сколько норм пройдено.
+      routeForcedSegments.push({
+        start: routeForcedMarchStartDistance,
+        end: fixedLength
+      });
+      console.log("Форсированный марш завершён: создан один привал");
     } else {
-
-      // Если черта не достигнута — откатываемся к началу марша
+      // Если дневная черта не достигнута — возвращаемся к началу марша.
       routePoints = getRoutePointsUpToDistance(
         routePoints,
         routeForcedMarchStartDistance
       );
-
-      // Удаляем привалы, оказавшиеся за точкой отката
-      routeRestDistances = routeRestDistances.filter(
-        distance => distance <= routeForcedMarchStartDistance + 0.001
+      routeForcedSegments = routeForcedSegments.filter(
+        segment => segment.end <= routeForcedMarchStartDistance + 0.001
       );
-
       console.log("Форсированный марш отменён: маршрут возвращён к привалу");
     }
 
     routeForcedMarch = false;
     routeForcedMarchStartDistance = 0;
-
     this.classList.remove("active");
     this.setAttribute("aria-pressed", "false");
   }
@@ -1010,93 +1013,54 @@ window.routePendingConfirmation = false;
 
 // Возврат к предыдущему привалу
   document.getElementById("route-undo").addEventListener("click", function() {
-
-  // Отменяем ожидающий одиночный клик
-  if (pendingRouteClickTimer) {
-    clearTimeout(pendingRouteClickTimer);
-    pendingRouteClickTimer = null;
-    pendingRouteClickPosition = null;
-  }
-
-  const totalLength = getRouteLength(routePoints);
-
-  let targetDistance = 0;
-
-  if (routeForcedMarch) {
-
-    // Во время форсированного марша возвращаемся
-    // к точке, откуда он начался
-    targetDistance = routeForcedMarchStartDistance;
-
-  } else {
-
-    // Ищем предыдущий обычный привал
-    for (let i = routeRestDistances.length - 1; i >= 0; i--) {
-      if (routeRestDistances[i] < totalLength - 0.001) {
-        targetDistance = routeRestDistances[i];
-        break;
-      }
+    if (pendingRouteClickTimer) {
+      clearTimeout(pendingRouteClickTimer);
+      pendingRouteClickTimer = null;
+      pendingRouteClickPosition = null;
     }
 
-    // Удаляем привалы, находящиеся после точки отката
-    routeRestDistances = routeRestDistances.filter(
-      distance => distance <= targetDistance + 0.001
-    );
-  }
+    const totalLength = getRouteLength(routePoints);
+    const dailyLimit =
+      routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
 
-  routePoints = getRoutePointsUpToDistance(
-    routePoints,
-    targetDistance
-  );
+    let targetDistance = 0;
 
-  // Если маршрут был завершён — возвращаемся к редактированию
-  if (routeFinished) {
-    routeFinished = false;
-    window.routePendingConfirmation = false;
-    window.routeMode = true;
-    map.doubleClickZoom.disable();
-  }
+    if (routeForcedMarch) {
+      // Во время форсированного марша возвращаемся к его началу.
+      targetDistance = routeForcedMarchStartDistance;
+    } else {
+      // Ищем последний привал, который находится ДО текущего конца маршрута.
+      const rests = getNormalRestDistances(totalLength, dailyLimit);
+      for (let i = rests.length - 1; i >= 0; i--) {
+        if (rests[i] < totalLength - 0.001) {
+          targetDistance = rests[i];
+          break;
+        }
+      }
 
-  lastCursorPosition = null;
+      routeForcedSegments = routeForcedSegments.filter(
+        segment => segment.end <= targetDistance + 0.001
+      );
+    }
 
-  updateRouteLine();
+    routePoints = getRoutePointsUpToDistance(routePoints, targetDistance);
 
-  console.log("Маршрут возвращён к предыдущему привалу");
-});
+    if (routeFinished) {
+      routeFinished = false;
+      window.routePendingConfirmation = false;
+      window.routeMode = true;
+      map.doubleClickZoom.disable();
+    }
 
-  // Отмена маршрута
-  document.getElementById("route-cancel").addEventListener("click", function() {
-    if (pendingRouteClickTimer) {
-  clearTimeout(pendingRouteClickTimer);
-}
-
-pendingRouteClickTimer = null;
-pendingRouteClickPosition = null;
-
-routeFinished = false;
-window.routePendingConfirmation = false;
-map.doubleClickZoom.enable();
-routeForcedMarch = false;
-routeForcedMarchStartDistance = 0;
-routeRestDistances = [];
-    window.routeMode = false;
-
-    routePoints = [];
     lastCursorPosition = null;
-
-    clearRouteDrawing();
-
-const forcedButton = document.getElementById("route-forced-march");
-
-if (forcedButton) {
-  forcedButton.classList.remove("active");
-  forcedButton.setAttribute("aria-pressed", "false");
-}
-    
-    routePanel.style.display = "none";
-
-    console.log("Прокладка маршрута отменена");
+    updateRouteLine();
+    console.log("Маршрут возвращён к предыдущему привалу");
   });
+
+  // Кнопка и клавиша Escape используют одну и ту же отмену.
+  document.getElementById("route-cancel").addEventListener("click", cancelPartyRoute);
+  window.addEventListener("cancel-party-route", cancelPartyRoute);
+
 }
 
 // =====================================
@@ -1120,7 +1084,7 @@ function getRouteLength(points) {
 // ВИЗУАЛЬНАЯ ОБРАБОТКА ЛИНИИ МАРШРУТА
 // =====================================
 
-function createRouteDisplayPoints(points) {
+function createRouteDisplayPoints(points, protectedDistances = []) {
   if (points.length < 2) return points;
 
   const roundedPoints = [];
@@ -1134,6 +1098,21 @@ function createRouteDisplayPoints(points) {
       const prev = points[i - 1];
       const corner = points[i];
       const next = points[i + 1];
+
+      // Не скругляем вершину, если на ней расположен привал или другой маркер.
+      let cornerDistance = 0;
+      for (let k = 1; k <= i; k++) {
+        const dy = points[k].lat - points[k - 1].lat;
+        const dx = points[k].lng - points[k - 1].lng;
+        cornerDistance += Math.sqrt(dx * dx + dy * dy);
+      }
+      const isProtectedCorner = protectedDistances.some(
+        distance => Math.abs(distance - cornerDistance) < 0.01
+      );
+      if (isProtectedCorner) {
+        roundedPoints.push(corner);
+        continue;
+      }
 
       const dx1 = prev.lng - corner.lng;
       const dy1 = prev.lat - corner.lat;
@@ -1248,6 +1227,9 @@ function getRoutePointAtDistance(points, targetDistance) {
 
     const segmentLength = Math.sqrt(dx * dx + dy * dy);
 
+    // Пропускаем нулевые отрезки, чтобы не получить деление на ноль.
+    if (segmentLength < 0.001) continue;
+
     if (passed + segmentLength >= targetDistance) {
       const part = (targetDistance - passed) / segmentLength;
 
@@ -1314,6 +1296,51 @@ function getRoutePointsUpToDistance(points, targetDistance) {
   return result;
 }
 
+// Пересчитывает все привалы для текущей дневной нормы.
+// Завершённый форсированный участок считается ровно одним днём.
+function getNormalRestDistances(totalLength, dailyLimit) {
+  const result = [];
+  const segments = [...routeForcedSegments]
+    .filter(segment => segment.end <= totalLength + 0.001)
+    .sort((a, b) => a.start - b.start);
+
+  let previousAnchor = 0;
+
+  function addRest(distance) {
+    if (distance <= 0.001) return;
+    if (!result.length || Math.abs(result[result.length - 1] - distance) > 0.001) {
+      result.push(distance);
+    }
+  }
+
+  segments.forEach(segment => {
+    // Обычные дневные привалы до начала форсированного участка.
+    let nextRest = previousAnchor + dailyLimit;
+    while (nextRest < segment.start - 0.001) {
+      addRest(nextRest);
+      nextRest += dailyLimit;
+    }
+
+    // Точка начала марша — привал, от которого он был начат.
+    if (segment.start > previousAnchor + 0.001) {
+      addRest(segment.start);
+    }
+
+    // Весь форсированный участок даёт ровно один следующий привал.
+    addRest(segment.end);
+    previousAnchor = segment.end;
+  });
+
+  // Обычные дни после последнего завершённого форсированного участка.
+  let nextRest = previousAnchor + dailyLimit;
+  while (nextRest <= totalLength + 0.001) {
+    addRest(nextRest);
+    nextRest += dailyLimit;
+  }
+
+  return result;
+}
+
 // =====================================
 // ОЧИСТКА ЛИНИИ И ПРИВАЛОВ
 // =====================================
@@ -1335,13 +1362,53 @@ function clearRouteDrawing() {
 }
 }
 
+// Единая отмена маршрута: вызывается кнопкой и клавишей Escape.
+function cancelPartyRoute() {
+  if (pendingRouteClickTimer) {
+    clearTimeout(pendingRouteClickTimer);
+  }
+  pendingRouteClickTimer = null;
+  pendingRouteClickPosition = null;
+
+  routeFinished = false;
+  window.routePendingConfirmation = false;
+  window.routeMode = false;
+  map.doubleClickZoom.enable();
+
+  routeForcedMarch = false;
+  routeForcedMarchStartDistance = 0;
+  routeForcedSegments = [];
+  routePoints = [];
+  lastCursorPosition = null;
+
+  clearRouteDrawing();
+
+  const forcedButton = document.getElementById("route-forced-march");
+  if (forcedButton) {
+    forcedButton.classList.remove("active");
+    forcedButton.setAttribute("aria-pressed", "false");
+    forcedButton.disabled = false;
+  }
+
+  if (routePanel) {
+    routePanel.style.display = "none";
+  }
+
+  if (document.activeElement && document.activeElement.blur) {
+    document.activeElement.blur();
+  }
+
+  console.log("Прокладка маршрута отменена");
+}
+
 // =====================================
 // ОБНОВЛЕНИЕ И ОТРИСОВКА МАРШРУТА
 // =====================================
 
 function updateRouteLine(cursorPosition = null) {
-  let pointsToDraw = [...routePoints];
-
+  // Для preview используем те же расчёты, что и для зафиксированного маршрута,
+  // но ничего не записываем в состояние до клика.
+  const pointsToDraw = [...routePoints];
   if (cursorPosition && hasMouse && window.routeMode) {
     pointsToDraw.push(cursorPosition);
   }
@@ -1349,172 +1416,117 @@ function updateRouteLine(cursorPosition = null) {
   clearRouteDrawing();
 
   const totalLength = getRouteLength(pointsToDraw);
-  const fixedLength = getRouteLength(routePoints);
-
   const dailyLimit =
     routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
 
-  // В обычном режиме фиксируем пройденные дневные нормы
-  if (!routeForcedMarch) {
+  // Во время форсированного марша показываем только привалы,
+  // уже достигнутые ДО начала текущего форсированного участка.
+  const restCalculationLength = routeForcedMarch
+    ? routeForcedMarchStartDistance
+    : totalLength;
+  const restDistancesToDraw = getNormalRestDistances(
+    restCalculationLength,
+    dailyLimit
+  );
 
-    let lastRestDistance = routeRestDistances.length
-      ? routeRestDistances[routeRestDistances.length - 1]
-      : 0;
-
-    while (lastRestDistance + dailyLimit <= fixedLength + 0.001) {
-      lastRestDistance += dailyLimit;
-      routeRestDistances.push(lastRestDistance);
+  // Все значимые точки защищаем от визуального скругления.
+  const protectedDistances = [...restDistancesToDraw];
+  let forcedBoundaryDistance = null;
+  if (routeForcedMarch) {
+    forcedBoundaryDistance = routeForcedMarchStartDistance + dailyLimit;
+    if (forcedBoundaryDistance <= totalLength + 0.001) {
+      protectedDistances.push(forcedBoundaryDistance);
+      const interval = dailyLimit / 8;
+      for (let d = forcedBoundaryDistance + interval; d <= totalLength + 0.001; d += interval) {
+        protectedDistances.push(d);
+      }
     }
   }
 
-  // Рисуем маршрут
+  // Рисуем всю геометрию маршрута, не заменяя её прямыми между привалами.
   if (pointsToDraw.length >= 2) {
-    routeLine = L.polyline(createRouteDisplayPoints(pointsToDraw), {
-      color: "#d6b46a",
-      weight: 4,
-      dashArray: "8, 10",
-      opacity: 0.9
-    }).addTo(map);
+    routeLine = L.polyline(
+      createRouteDisplayPoints(pointsToDraw, protectedDistances),
+      {
+        color: "#d6b46a",
+        weight: 4,
+        dashArray: "8, 10",
+        opacity: 0.9
+      }
+    ).addTo(map);
   }
 
-  // Отображаем обычные привалы
-  const restDistancesToDraw = [...routeRestDistances];
-
-  // В обычном режиме показываем также привалы на preview-линии
-  if (!routeForcedMarch) {
-
-    let nextRestDistance = restDistancesToDraw.length
-      ? restDistancesToDraw[restDistancesToDraw.length - 1] + dailyLimit
-      : dailyLimit;
-
-    while (nextRestDistance <= totalLength + 0.001) {
-      restDistancesToDraw.push(nextRestDistance);
-      nextRestDistance += dailyLimit;
-    }
-  }
-
+  // Обычные привалы.
   restDistancesToDraw.forEach(distance => {
     if (distance > totalLength + 0.001) return;
+    const position = getRoutePointAtDistance(pointsToDraw, distance);
+    if (!position) return;
 
-    const restPosition = getRoutePointAtDistance(
-      pointsToDraw,
-      Math.min(distance, totalLength)
-    );
-
-    if (restPosition) {
-      const restMarker = L.circleMarker(restPosition, {
-        radius: 7,
-        color: "#211b16",
-        weight: 2,
-        fillColor: "#e6c77d",
-        fillOpacity: 1,
-        interactive: false
-      }).addTo(map);
-
-      routeRestMarkers.push(restMarker);
-    }
+    const marker = L.circleMarker(position, {
+      radius: 7,
+      color: "#211b16",
+      weight: 2,
+      fillColor: "#e6c77d",
+      fillOpacity: 1,
+      interactive: false
+    }).addTo(map);
+    routeRestMarkers.push(marker);
   });
 
-  // Отображение форсированного марша
-  if (routeForcedMarch) {
+  // Визуальные отметки форсированного марша.
+  if (routeForcedMarch && forcedBoundaryDistance !== null &&
+      totalLength >= forcedBoundaryDistance - 0.001) {
+    const boundaryPosition = getRoutePointAtDistance(pointsToDraw, forcedBoundaryDistance);
 
-    const boundaryDistance = routeForcedMarchStartDistance + dailyLimit;
+    if (boundaryPosition) {
+      const boundaryIcon = L.divIcon({
+        className: "route-march-boundary",
+        html: `<div style="color:#e6c77d;font-size:32px;font-weight:bold;line-height:30px;text-shadow:1px 2px 4px #000;">│</div>`,
+        iconSize: [20, 30],
+        iconAnchor: [10, 15]
+      });
+      const boundaryMarker = L.marker(boundaryPosition, {
+        icon: boundaryIcon,
+        interactive: false,
+        keyboard: false,
+        zIndexOffset: 1100
+      }).addTo(map);
+      routeRestMarkers.push(boundaryMarker);
+    }
 
-    // Дневная черта
-    if (totalLength >= boundaryDistance - 0.001) {
+    // Крестики проверок истощения — каждые 1/8 дневной нормы ПОСЛЕ черты.
+    const interval = dailyLimit / 8;
+    for (let distance = forcedBoundaryDistance + interval;
+         distance <= totalLength + 0.001;
+         distance += interval) {
+      const position = getRoutePointAtDistance(pointsToDraw, distance);
+      if (!position) continue;
 
-      const boundaryPosition = getRoutePointAtDistance(
-        pointsToDraw,
-        boundaryDistance
-      );
-
-      if (boundaryPosition) {
-        const boundaryIcon = L.divIcon({
-          className: "route-march-boundary",
-          html: `
-            <div style="
-              color: #e6c77d;
-              font-size: 32px;
-              font-weight: bold;
-              line-height: 30px;
-              text-shadow: 1px 2px 4px #000;
-            ">│</div>
-          `,
-          iconSize: [20, 30],
-          iconAnchor: [10, 15]
-        });
-
-        const boundaryMarker = L.marker(boundaryPosition, {
-          icon: boundaryIcon,
-          interactive: false,
-          keyboard: false,
-          zIndexOffset: 1100
-        }).addTo(map);
-
-        routeRestMarkers.push(boundaryMarker);
-      }
-
-      // Крестики проверок истощения — каждая 1/8 дневной нормы
-      const exhaustionInterval = dailyLimit / 8;
-
-      for (
-        let distance = boundaryDistance + exhaustionInterval;
-        distance <= totalLength + 0.001;
-        distance += exhaustionInterval
-      ) {
-
-        const exhaustionPosition = getRoutePointAtDistance(
-          pointsToDraw,
-          distance
-        );
-
-        if (exhaustionPosition) {
-          const exhaustionIcon = L.divIcon({
-            className: "route-exhaustion-mark",
-            html: `
-              <div style="
-                color: #d58b70;
-                font-size: 24px;
-                font-weight: bold;
-                line-height: 24px;
-                text-shadow: 1px 2px 4px #000;
-              ">×</div>
-            `,
-            iconSize: [20, 24],
-            iconAnchor: [10, 12]
-          });
-
-          const exhaustionMarker = L.marker(exhaustionPosition, {
-            icon: exhaustionIcon,
-            interactive: false,
-            keyboard: false,
-            zIndexOffset: 1100
-          }).addTo(map);
-
-          routeRestMarkers.push(exhaustionMarker);
-        }
-      }
+      const exhaustionIcon = L.divIcon({
+        className: "route-exhaustion-mark",
+        html: `<div style="color:#d58b70;font-size:24px;font-weight:bold;line-height:24px;text-shadow:1px 2px 4px #000;">×</div>`,
+        iconSize: [20, 24],
+        iconAnchor: [10, 12]
+      });
+      const marker = L.marker(position, {
+        icon: exhaustionIcon,
+        interactive: false,
+        keyboard: false,
+        zIndexOffset: 1100
+      }).addTo(map);
+      routeRestMarkers.push(marker);
     }
   }
 
-  // Флажок в конечной точке маршрута
+  // Флажок конечной точки.
   if (routeFinished && routePoints.length >= 2) {
     const endPoint = routePoints[routePoints.length - 1];
-
     const flagIcon = L.divIcon({
       className: "route-end-flag",
-      html: `
-        <div style="
-          font-size: 30px;
-          line-height: 30px;
-          color: #e6c77d;
-          text-shadow: 1px 2px 4px #000;
-        ">⚑</div>
-      `,
+      html: `<div style="font-size:30px;line-height:30px;color:#e6c77d;text-shadow:1px 2px 4px #000;">⚑</div>`,
       iconSize: [24, 30],
       iconAnchor: [5, 28]
     });
-
     routeEndMarker = L.marker(endPoint, {
       icon: flagIcon,
       interactive: false,
@@ -1523,23 +1535,27 @@ function updateRouteLine(cursorPosition = null) {
     }).addTo(map);
   }
 
-  // Обновляем информацию в панели
+  // Информация в панели.
   if (routePanel) {
-
     document.getElementById("route-daily-limit").textContent =
       (dailyLimit * KM_PER_PIXEL).toFixed(1) + " км";
-
     document.getElementById("route-distance").textContent =
       (totalLength * KM_PER_PIXEL).toFixed(1) + " км";
 
-    // Во время форсированного марша дни не начисляются
-    document.getElementById("route-days").textContent =
-      routeRestDistances.length;
+    // Пока форсированный марш активен, новые дни не засчитываются.
+    const completedDays = routeForcedMarch
+      ? getNormalRestDistances(routeForcedMarchStartDistance, dailyLimit).length
+      : getNormalRestDistances(totalLength, dailyLimit).length;
+    document.getElementById("route-days").textContent = completedDays;
 
     routeConfirmButton.disabled = !routeFinished;
 
-    document.getElementById("route-undo").disabled =
-      routePoints.length <= 1;
+    const forcedButton = document.getElementById("route-forced-march");
+    if (forcedButton) {
+      forcedButton.disabled = routeFinished || window.routePendingConfirmation;
+    }
+
+    document.getElementById("route-undo").disabled = routePoints.length <= 1;
   }
 
   console.log("Длина маршрута:", Math.round(totalLength));
