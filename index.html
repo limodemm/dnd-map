@@ -575,20 +575,42 @@ let routeStatus = null;
 let routeConfirmButton = null;
 let lastCursorPosition = null;
 
-// Новая анимация маршрута: случайное количество зон (3–5),
-// в каждой из которых выбирается своя случайная точка проявления.
-// Линия раскрывается от этих точек в обе стороны.
-// Перерисовка маршрута не сбрасывает уже идущую анимацию.
+// Анимация маршрута. Линия раскрывается последовательно от начала
+// нового отрезка к его концу; случайные точки оставлены только для
+// прежнего порядка появления жетонов. Перерисовка не сбрасывает анимацию.
 let routeMarkerAnimations = [];
 const routeRevealBaseSpeed = 55; // базовая скорость в единицах длины маршрута/сек
 const routeRevealFadeDuration = 520; // прежняя длительность появления жетонов
 const routeLineRevealFadeDuration = 220; // плавное появление отдельного штриха
+const routeLineDashLength = 8;
+const routeLineDashGap = 10;
+const routeLineDashStep = routeLineDashLength + routeLineDashGap;
+const routeLineFirstDashDelay = 260; // пауза между первыми штрихами
+const routeLineDashAcceleration = 4; // каждый следующий интервал короче на 4 мс
+const routeLineMinimumDashDelay = 95; // предел ускорения, чтобы штрихи не сливались
 
-// Чем длиннее новый отрезок, тем быстрее распространяется проявление.
-// Скорость плавно растёт от 55 до 180 единиц/сек, чтобы длинные линии
-// не заставляли ждать непропорционально долго.
+// Жетоны сохраняют прежнюю скорость и прежнюю логику появления.
 function getRouteRevealSpeed(length) {
   return routeRevealBaseSpeed + Math.min(125, Math.max(0, length) * 0.12);
+}
+
+// Задержка каждого штриха считается от начала линии. С каждым штрихом
+// интервал немного сокращается, пока не достигнет безопасного минимума.
+function getRouteLineRevealDelay(dashIndex) {
+  let delay = 0;
+  for (let i = 0; i < dashIndex; i++) {
+    delay += Math.max(
+      routeLineMinimumDashDelay,
+      routeLineFirstDashDelay - i * routeLineDashAcceleration
+    );
+  }
+  return delay;
+}
+
+function getRouteLineRevealDuration(screenLength) {
+  if (screenLength <= 0) return routeLineRevealFadeDuration;
+  const lastDashIndex = Math.max(0, Math.floor((screenLength - 1) / routeLineDashStep));
+  return getRouteLineRevealDelay(lastDashIndex) + routeLineRevealFadeDuration;
 }
 
 function stopRouteMarkerAnimation() {
@@ -611,8 +633,8 @@ function beginRouteMarkerAnimation(startDistance, endDistance) {
   const length = endDistance - startDistance;
   if (length < 0.001) return;
 
-  // Каждый раз выбираем 3, 4 или 5 зон равной длины.
-  // Внутри каждой зоны точка проявления располагается случайно.
+  // Сохраняем прежнюю случайную очерёдность появления жетонов.
+  // На последовательность проявления штрихов линии эти точки не влияют.
   const partCount = 3 + Math.floor(Math.random() * 3);
   const seeds = Array.from({ length: partCount }, (_, index) =>
     startDistance + (index + Math.random()) * length / partCount
@@ -630,8 +652,9 @@ function beginRouteMarkerAnimation(startDistance, endDistance) {
   );
   const markerDuration = maxRevealDistance / speed * 1000 + routeRevealFadeDuration;
 
-  // Для самой линии скорость задаётся в экранных пикселях/секунду. Поэтому
-  // при любом масштабе штрихи идут с одинаковым заметным интервалом.
+  // Линия раскрывается строго от начала нового отрезка к его концу.
+  // Экранные координаты нужны, чтобы размер штрихов и их интервалы
+  // оставались одинаковыми при разных уровнях масштаба карты.
   const routeTotalLength = getRouteLength(routePoints);
   const displayPoints = createRouteDisplayPoints(routePoints, []);
   const displayTotalLength = getRouteLength(displayPoints);
@@ -641,37 +664,19 @@ function beginRouteMarkerAnimation(startDistance, endDistance) {
   const displayEnd = routeTotalLength > 0.001
     ? endDistance / routeTotalLength * displayTotalLength
     : displayTotalLength;
-  const screenStart = getRouteScreenDistanceAtDistance(displayPoints, displayStart);
-  const screenEnd = getRouteScreenDistanceAtDistance(displayPoints, displayEnd);
-  const screenSeeds = seeds.map(seed => {
-    const displaySeed = routeTotalLength > 0.001
-      ? seed / routeTotalLength * displayTotalLength
-      : 0;
-    return getRouteScreenDistanceAtDistance(displayPoints, displaySeed);
-  });
-  const sortedScreenSeeds = [...screenSeeds].sort((a, b) => a - b);
-  const screenCheckDistances = [screenStart, screenEnd];
-  for (let i = 0; i < sortedScreenSeeds.length - 1; i++) {
-    screenCheckDistances.push((sortedScreenSeeds[i] + sortedScreenSeeds[i + 1]) / 2);
-  }
-  const maxScreenRevealDistance = Math.max(
-    ...screenCheckDistances.map(distance =>
-      Math.min(...screenSeeds.map(seed => Math.abs(distance - seed)))
-    )
-  );
-  const linePixelsPerSecond = 65 + Math.min(25, Math.max(0, length) * 0.02);
-  const lineDuration = maxScreenRevealDistance / linePixelsPerSecond * 1000 +
-    routeLineRevealFadeDuration;
+  const lineStartScreen = getRouteScreenDistanceAtDistance(displayPoints, displayStart);
+  const lineEndScreen = getRouteScreenDistanceAtDistance(displayPoints, displayEnd);
+  const lineDuration = getRouteLineRevealDuration(lineEndScreen - lineStartScreen);
   const duration = Math.max(markerDuration, lineDuration);
 
   const animation = {
     start: startDistance,
     end: endDistance,
     seeds,
-    screenSeeds,
     partCount,
     speed,
-    linePixelsPerSecond,
+    lineStartScreen,
+    lineEndScreen,
     startedAt: Date.now(),
     duration,
     timer: null
@@ -2045,9 +2050,8 @@ function updateRouteLine(cursorPosition = null) {
     function addPiece(from, to, opacity) {
       if (to - from < 0.001) return;
 
-      // Делим новый участок на короткие фрагменты. Каждый фрагмент
-      // начинает проявляться, когда волна от ближайшей случайной точки
-      // доходит до его середины. Старые части рисуются без анимации.
+      // Делим участок только по границам анимаций. Сами штрихи линии
+      // проявляются последовательно от начала нового отрезка к его концу.
       const boundaries = [from, to];
       routeMarkerAnimations.forEach(animation => {
         if (animation.start > from && animation.start < to) boundaries.push(animation.start);
@@ -2153,21 +2157,27 @@ function updateRouteLine(cursorPosition = null) {
           partDisplayStart
         );
         const elapsed = Date.now() - activeAnimation.startedAt;
-        const dashLength = 8;
-        const dashGap = 10;
-        const dashStep = dashLength + dashGap;
 
-        // Каждый штрих — отдельная короткая линия. Задержка считается от
-        // ближайшей случайной точки проявления, поэтому волна идёт в обе стороны.
-        for (let dashStart = 0; dashStart < partScreenLength; dashStart += dashStep) {
-          const dashEnd = Math.min(partScreenLength, dashStart + dashLength);
+        // Привязываем пунктир к единой экранной шкале всего отрезка, чтобы
+        // при внутренних границах (например, у привалов) рисунок не сбивался.
+        const firstDashIndex = Math.max(
+          0,
+          Math.floor((globalScreenStart - activeAnimation.lineStartScreen) / routeLineDashStep)
+        );
+        const partGlobalScreenEnd = globalScreenStart + partScreenLength;
+
+        for (let dashIndex = firstDashIndex; ; dashIndex++) {
+          const dashGlobalStart = activeAnimation.lineStartScreen + dashIndex * routeLineDashStep;
+          if (dashGlobalStart >= partGlobalScreenEnd - 0.01) break;
+
+          const dashGlobalEnd = dashGlobalStart + routeLineDashLength;
+          const dashStart = Math.max(0, dashGlobalStart - globalScreenStart);
+          const dashEnd = Math.min(partScreenLength, dashGlobalEnd - globalScreenStart);
           if (dashEnd - dashStart < 2) continue;
 
-          const dashMidpoint = globalScreenStart + (dashStart + dashEnd) / 2;
-          const nearestSeedDistance = Math.min(
-            ...activeAnimation.screenSeeds.map(seed => Math.abs(dashMidpoint - seed))
-          );
-          const delay = nearestSeedDistance / activeAnimation.linePixelsPerSecond * 1000 - elapsed;
+          // Очередь каждого штриха идёт от начальной точки. Интервал
+          // постепенно уменьшается, поэтому линия плавно набирает скорость.
+          const delay = getRouteLineRevealDelay(dashIndex) - elapsed;
           const dashPoints = getScreenLinePoints(dashStart, dashEnd);
           if (dashPoints.length < 2) continue;
 
