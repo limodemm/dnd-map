@@ -159,6 +159,8 @@ background:#1e1e1e; padding:20px; border-radius:8px; z-index:1000; color:white; 
 var currentLatLng = null;
 var editId = null;
 var popupJustClosed = false;
+var settlementJustDrew = false;
+window.settlementDrawingActive = false;
 var icons = {
   camp: L.icon({
     iconUrl: 'camp.png',
@@ -322,7 +324,7 @@ function renderPopup() {
 
 // --- ДОБАВЛЕНИЕ МЕТКИ ПО КЛИКУ ---
 map.on('click', function(e) {
-  if (popupJustClosed) return; // ← ВОТ ЭТО ГЛАВНОЕ
+  if (popupJustClosed || window.settlementDrawingActive || settlementJustDrew) return;
 
   if (window.routeMode) {
   window.handlePartyRouteClick(e.latlng);
@@ -540,6 +542,8 @@ partyMarker.on("click", function() {
 
 window.routeMode = true;
 routeFinished = false;
+routeDestinationCityId = null;
+routeDestinationBoundaryPoint = null;
 // Сбрасываем состояние форсированного марша
 routeForcedMarch = false;
 routeForcedMarchStartDistance = 0;
@@ -578,6 +582,18 @@ let routePoints = [];
 let routeLine = null;
 let routeRestMarkers = [];
 let routeEndMarker = null;
+
+// Невидимые области городов и деревень. Геометрия хранится в Firebase;
+// визуальный слой после сохранения не создаётся.
+let settlementAreas = [];
+let routeDestinationCityId = null;
+let routeDestinationBoundaryPoint = null;
+let settlementDrawingMode = null;
+let settlementDraft = [];
+let settlementDraftLine = null;
+let settlementPointerDown = false;
+let settlementToolbar = null;
+let settlementListenerStarted = false;
 
 // Состояние завершения маршрута
 let routeFinished = false;
@@ -1348,9 +1364,19 @@ window.routePendingConfirmation = false;
     }));
 
     lastCursorPosition = null;
-    updateRouteLine();
-
     routePanel.style.display = "none";
+
+    // Для маршрута в поселение после подтверждения повторно раскрываем
+    // путь от начала, а затем рисуем невидимую границу эффектом ручки.
+    if (routeDestinationCityId) {
+      stopRouteMarkerAnimation();
+      const confirmedLength = getRouteLength(routePoints);
+      beginRouteMarkerAnimation(0, confirmedLength);
+      updateRouteLine();
+      waitForRouteRevealThenTraceSettlement(routeDestinationCityId);
+    } else {
+      updateRouteLine();
+    }
 
     console.log("Маршрут подтверждён:", window.confirmedPartyRoute);
   });
@@ -1884,6 +1910,8 @@ function cancelPartyRoute() {
   routeForcedSegments = [];
   routePoints = [];
   lastCursorPosition = null;
+  routeDestinationCityId = null;
+  routeDestinationBoundaryPoint = null;
 
   stopRouteMarkerAnimation();
   clearRouteDrawing();
@@ -2531,7 +2559,7 @@ function finishPartyRoute(latlng) {
   if (
     !lastPoint ||
     map.latLngToContainerPoint(lastPoint)
-      .distanceTo(map.latLngToContainerPoint(latlng)) > 3
+      .distanceTo(map.latLngToContainerPoint(latlng)) > (routeDestinationCityId ? 0.05 : 3)
   ) {
     routePoints.push(latlng);
   }
@@ -2564,6 +2592,29 @@ function finishPartyRoute(latlng) {
 // Обработка одиночного и двойного клика
 window.handlePartyRouteClick = function(latlng) {
   if (!window.routeMode || routeFinished) return;
+
+  // Клик внутри невидимой области поселения автоматически завершает маршрут.
+  // Конечная точка линии — ближайшая точка границы от последней точки пути.
+  const destinationArea = findSettlementAt(latlng);
+  if (destinationArea && routePoints.length > 0) {
+    if (pendingRouteClickTimer) clearTimeout(pendingRouteClickTimer);
+    pendingRouteClickTimer = null;
+    pendingRouteClickPosition = null;
+
+    const approachPoint = routePoints[routePoints.length - 1];
+    const boundary = findNearestSettlementBoundaryPoint(
+      approachPoint,
+      destinationArea.points
+    );
+
+    if (boundary) {
+      routeDestinationCityId = destinationArea.id;
+      routeDestinationBoundaryPoint = boundary.point;
+      finishPartyRoute(boundary.point);
+      console.log("Маршрут завершён у поселения:", destinationArea.type, destinationArea.id);
+      return;
+    }
+  }
 
   // Если уже ожидается одиночный клик,
   // проверяем, является ли новый клик вторым
@@ -2642,6 +2693,365 @@ map.on("zoomend", function() {
     }
   }
 
+ // =====================================
+  // НЕВИДИМЫЕ ОБЛАСТИ ГОРОДОВ И ДЕРЕВЕНЬ
+  // =====================================
+
+  function pointInSettlement(point, polygon) {
+    const x = point.lng;
+    const y = point.lat;
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = polygon[i].lng, yi = polygon[i].lat;
+      const xj = polygon[j].lng, yj = polygon[j].lat;
+      const intersects = ((yi > y) !== (yj > y)) &&
+        (x < (xj - xi) * (y - yi) / ((yj - yi) || 0.0000001) + xi);
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  }
+
+  function findSettlementAt(point) {
+    // Если области пересекаются, выбираем самую маленькую: это наиболее
+    // конкретное поселение, в которое попал курсор.
+    const matches = settlementAreas.filter(area =>
+      Array.isArray(area.points) && area.points.length >= 3 &&
+      pointInSettlement(point, area.points)
+    );
+    if (!matches.length) return null;
+    return matches.sort((a, b) => polygonArea(a.points) - polygonArea(b.points))[0];
+  }
+
+  function polygonArea(points) {
+    let area = 0;
+    for (let i = 0; i < points.length; i++) {
+      const next = points[(i + 1) % points.length];
+      area += points[i].lng * next.lat - next.lng * points[i].lat;
+    }
+    return Math.abs(area / 2);
+  }
+
+  function findNearestSettlementBoundaryPoint(origin, polygon) {
+    if (!polygon || polygon.length < 3) return null;
+    const originPoint = map.latLngToLayerPoint(origin);
+    let best = null;
+    let bestDistance = Infinity;
+
+    for (let i = 0; i < polygon.length; i++) {
+      const a = map.latLngToLayerPoint(polygon[i]);
+      const b = map.latLngToLayerPoint(polygon[(i + 1) % polygon.length]);
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const lengthSquared = dx * dx + dy * dy;
+      const t = lengthSquared > 0
+        ? Math.max(0, Math.min(1, ((originPoint.x - a.x) * dx + (originPoint.y - a.y) * dy) / lengthSquared))
+        : 0;
+      const projected = L.point(a.x + t * dx, a.y + t * dy);
+      const distance = originPoint.distanceTo(projected);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = {
+          point: map.layerPointToLatLng(projected),
+          segmentIndex: i,
+          segmentT: t
+        };
+      }
+    }
+    return best;
+  }
+
+  function buildSettlementTrace(area, startPoint) {
+    const points = area.points;
+    const nearest = findNearestSettlementBoundaryPoint(startPoint, points);
+    if (!nearest) return [];
+
+    const index = nearest.segmentIndex;
+    const nextIndex = (index + 1) % points.length;
+    const previousIndex = (index - 1 + points.length) % points.length;
+    const approachOrigin = routePoints.length >= 2
+      ? routePoints[routePoints.length - 2]
+      : startPoint;
+    const approach = map.latLngToLayerPoint(nearest.point)
+      .subtract(map.latLngToLayerPoint(approachOrigin));
+    const forward = map.latLngToLayerPoint(points[nextIndex])
+      .subtract(map.latLngToLayerPoint(nearest.point));
+    const backward = map.latLngToLayerPoint(points[index])
+      .subtract(map.latLngToLayerPoint(nearest.point));
+    const direction = approach.dot(forward) >= approach.dot(backward) ? 1 : -1;
+
+    const result = [nearest.point];
+    if (direction === 1) {
+      result.push(points[nextIndex]);
+      for (let step = 1; step < points.length; step++) {
+        result.push(points[(nextIndex + step) % points.length]);
+      }
+    } else {
+      result.push(points[index]);
+      for (let step = 1; step < points.length; step++) {
+        result.push(points[(index - step + points.length) % points.length]);
+      }
+    }
+    result.push(nearest.point);
+    return result;
+  }
+
+  function animateSettlementTrace(area) {
+    const startPoint = routeDestinationBoundaryPoint || routePoints[routePoints.length - 1];
+    const tracePoints = buildSettlementTrace(area, startPoint);
+    if (tracePoints.length < 3) return;
+
+    // Временный визуальный слой существует только во время анимации.
+    // После завершения он удаляется: сохранённый контур всегда невидим.
+    const traceLine = L.polyline([tracePoints[0]], {
+      color: "#21170f",
+      weight: 3,
+      opacity: 0.95,
+      lineCap: "round",
+      lineJoin: "round",
+      interactive: false
+    }).addTo(map);
+
+    const screenPoints = tracePoints.map(point => map.latLngToLayerPoint(point));
+    const segmentLengths = [];
+    let totalLength = 0;
+    for (let i = 1; i < screenPoints.length; i++) {
+      const length = screenPoints[i - 1].distanceTo(screenPoints[i]);
+      segmentLengths.push(length);
+      totalLength += length;
+    }
+
+    const duration = Math.max(1800, Math.min(9000, totalLength * 5));
+    const startedAt = performance.now();
+    let animationFrame = null;
+
+    function frame(now) {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      let remaining = totalLength * progress;
+      const drawn = [tracePoints[0]];
+
+      for (let i = 0; i < segmentLengths.length; i++) {
+        const segmentLength = segmentLengths[i];
+        if (remaining >= segmentLength) {
+          drawn.push(tracePoints[i + 1]);
+          remaining -= segmentLength;
+        } else {
+          if (segmentLength > 0.001 && remaining > 0) {
+            const ratio = remaining / segmentLength;
+            drawn.push(L.latLng(
+              tracePoints[i].lat + (tracePoints[i + 1].lat - tracePoints[i].lat) * ratio,
+              tracePoints[i].lng + (tracePoints[i + 1].lng - tracePoints[i].lng) * ratio
+            ));
+          }
+          break;
+        }
+      }
+
+      traceLine.setLatLngs(drawn);
+      if (progress < 1) {
+        animationFrame = requestAnimationFrame(frame);
+      } else {
+        setTimeout(function() {
+          if (map.hasLayer(traceLine)) map.removeLayer(traceLine);
+        }, 900);
+      }
+    }
+    animationFrame = requestAnimationFrame(frame);
+  }
+
+  function waitForRouteRevealThenTraceSettlement(cityId) {
+    const startedAt = Date.now();
+    function check() {
+      if (!routeMarkerAnimations.length || Date.now() - startedAt > 30000) {
+        const area = settlementAreas.find(item => item.id === cityId);
+        if (area) animateSettlementTrace(area);
+        return;
+      }
+      setTimeout(check, 100);
+    }
+    check();
+  }
+
+  function createSettlementToolbar() {
+    if (settlementToolbar || !window.dndFirebase || !window.dndFirebase.isGameMaster) return;
+    const toolbar = document.createElement("div");
+    toolbar.id = "settlement-tools";
+    toolbar.style.cssText = `
+      position:fixed;top:12px;right:12px;z-index:3500;
+      display:flex;flex-direction:column;gap:7px;padding:10px;
+      background:#211b16;color:#eee2c8;border:2px solid #d6b46a;
+      border-radius:9px;box-shadow:0 3px 14px #0009;font:13px Georgia,serif;
+      max-width:190px;
+    `;
+    toolbar.innerHTML = `
+      <div style="font-weight:bold;text-align:center;">Области поселений</div>
+      <button type="button" data-settlement-type="city">Обвести город</button>
+      <button type="button" data-settlement-type="village">Обвести деревню</button>
+      <button type="button" id="settlement-draw-cancel" disabled>Отменить обводку</button>
+      <div id="settlement-tool-status" style="line-height:1.35;opacity:.85;">Выбери тип поселения, затем зажми кнопку мыши и обведи его.</div>
+    `;
+    document.body.appendChild(toolbar);
+    settlementToolbar = toolbar;
+
+    toolbar.querySelectorAll("[data-settlement-type]").forEach(button => {
+      button.style.cssText = "padding:7px;background:#393027;color:#eee2c8;border:1px solid #756044;border-radius:5px;";
+      button.addEventListener("click", function() {
+        beginSettlementDrawing(this.dataset.settlementType);
+      });
+    });
+    const cancel = toolbar.querySelector("#settlement-draw-cancel");
+    cancel.style.cssText = "padding:6px;background:#4a2924;color:#fff;border:1px solid #8d5146;border-radius:5px;";
+    cancel.addEventListener("click", cancelSettlementDrawing);
+
+    map.getContainer().addEventListener("pointerdown", handleSettlementPointerDown, true);
+    map.getContainer().addEventListener("pointermove", handleSettlementPointerMove, true);
+    map.getContainer().addEventListener("pointerup", handleSettlementPointerUp, true);
+    map.getContainer().addEventListener("pointercancel", cancelSettlementDrawing, true);
+  }
+
+  function setSettlementToolStatus(message) {
+    const status = document.getElementById("settlement-tool-status");
+    if (status) status.textContent = message;
+    const cancel = document.getElementById("settlement-draw-cancel");
+    if (cancel) cancel.disabled = !settlementDrawingMode;
+  }
+
+  function beginSettlementDrawing(type) {
+    if (!window.dndFirebase || !window.dndFirebase.isGameMaster) return;
+    cancelSettlementDrawing();
+    settlementDrawingMode = type;
+    window.settlementDrawingActive = true;
+    settlementDraft = [];
+    map.dragging.disable();
+    map.doubleClickZoom.disable();
+    map.getContainer().style.touchAction = "none";
+    setSettlementToolStatus(type === "city"
+      ? "Зажми левую кнопку и обведи весь город. Отпусти, чтобы сохранить."
+      : "Зажми левую кнопку и обведи всю деревню. Отпусти, чтобы сохранить.");
+  }
+
+  function handleSettlementPointerDown(event) {
+    if (!settlementDrawingMode || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    settlementPointerDown = true;
+    settlementDraft = [map.mouseEventToLatLng(event)];
+    if (settlementDraftLine && map.hasLayer(settlementDraftLine)) map.removeLayer(settlementDraftLine);
+    settlementDraftLine = L.polyline(settlementDraft, {
+      color: "#f0d18a", weight: 3, opacity: 0.95,
+      lineCap: "round", lineJoin: "round", interactive: false
+    }).addTo(map);
+    try { map.getContainer().setPointerCapture(event.pointerId); } catch (_) {}
+  }
+
+  function handleSettlementPointerMove(event) {
+    if (!settlementDrawingMode || !settlementPointerDown) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const point = map.mouseEventToLatLng(event);
+    const previous = settlementDraft[settlementDraft.length - 1];
+    if (map.latLngToContainerPoint(previous).distanceTo(map.latLngToContainerPoint(point)) >= 4) {
+      settlementDraft.push(point);
+      settlementDraftLine.setLatLngs(settlementDraft);
+    }
+  }
+
+  async function handleSettlementPointerUp(event) {
+    if (!settlementDrawingMode || !settlementPointerDown) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const finalPoint = map.mouseEventToLatLng(event);
+    const previous = settlementDraft[settlementDraft.length - 1];
+    if (!previous || map.latLngToContainerPoint(previous).distanceTo(map.latLngToContainerPoint(finalPoint)) > 1) {
+      settlementDraft.push(finalPoint);
+    }
+    settlementPointerDown = false;
+    settlementJustDrew = true;
+    setTimeout(function() { settlementJustDrew = false; }, 350);
+    try { map.getContainer().releasePointerCapture(event.pointerId); } catch (_) {}
+
+    if (settlementDraft.length < 8 || polygonArea(settlementDraft) < 100) {
+      setSettlementToolStatus("Контур слишком маленький. Попробуй обвести поселение ещё раз.");
+      if (settlementDraftLine && map.hasLayer(settlementDraftLine)) map.removeLayer(settlementDraftLine);
+      settlementDraftLine = null;
+      settlementDraft = [];
+      return;
+    }
+
+    // Замыкаем область автоматически; после сохранения линия исчезнет.
+    const type = settlementDrawingMode;
+    const area = {
+      id: "settlement_" + Date.now() + "_" + Math.floor(Math.random() * 100000),
+      type: type,
+      points: settlementDraft.map(point => ({ lat: point.lat, lng: point.lng })),
+      entrancePoints: [],
+      exitPoints: [],
+      createdAt: Date.now()
+    };
+
+    try {
+      if (!window.dndFirebase || typeof window.dndFirebase.saveSettlementAreas !== "function") {
+        throw new Error("Firebase ещё не готов к сохранению поселений");
+      }
+      await window.dndFirebase.saveSettlementAreas(area);
+      setSettlementToolStatus(type === "city"
+        ? "Город сохранён. Его контур теперь невидим для всех игроков."
+        : "Деревня сохранена. Её контур теперь невидим для всех игроков.");
+    } catch (error) {
+      console.error("Не удалось сохранить область поселения:", error);
+      setSettlementToolStatus("Ошибка сохранения: " + error.message);
+      alert("Не удалось сохранить поселение в Firebase: " + error.message);
+    }
+
+    if (settlementDraftLine && map.hasLayer(settlementDraftLine)) map.removeLayer(settlementDraftLine);
+    settlementDraftLine = null;
+    settlementDraft = [];
+    settlementDrawingMode = null;
+    window.settlementDrawingActive = false;
+    map.dragging.enable();
+    map.doubleClickZoom.enable();
+    map.getContainer().style.touchAction = "";
+    setSettlementToolStatus(type === "city"
+      ? "Город сохранён. Можно обвести следующий город или деревню."
+      : "Деревня сохранена. Можно обвести следующий город или деревню.");
+  }
+
+  function cancelSettlementDrawing() {
+    settlementPointerDown = false;
+    settlementDrawingMode = null;
+    window.settlementDrawingActive = false;
+    settlementDraft = [];
+    if (settlementDraftLine && map.hasLayer(settlementDraftLine)) map.removeLayer(settlementDraftLine);
+    settlementDraftLine = null;
+    if (map.dragging) map.dragging.enable();
+    if (map.doubleClickZoom) map.doubleClickZoom.enable();
+    if (map.getContainer) map.getContainer().style.touchAction = "";
+    setSettlementToolStatus("Обводка отменена. Выбери город или деревню.");
+  }
+
+  function initializeSettlementAreas() {
+    if (settlementListenerStarted) return;
+    settlementListenerStarted = true;
+    const areasRef = ref(database, "settlements/areas");
+    window.dndFirebase.saveSettlementAreas = async function(area) {
+      if (!window.dndFirebase.ready || !window.dndFirebase.isGameMaster) {
+        throw new Error("Создавать поселения может только ведущий");
+      }
+      await set(ref(database, "settlements/areas/" + area.id), area);
+    };
+
+    onValue(areasRef, function(snapshot) {
+      const value = snapshot.val() || {};
+      settlementAreas = Object.keys(value).map(key => ({
+        ...value[key], id: value[key].id || key
+      })).filter(area => Array.isArray(area.points) && area.points.length >= 3);
+      console.log("Области поселений загружены:", settlementAreas.length);
+    }, function(error) {
+      console.error("Ошибка загрузки областей поселений:", error);
+    });
+
+    createSettlementToolbar();
+  }
+
  // Тестовая проверка общей базы
   window.testFirebase = async function() {
     const testRef = ref(database, "connectionTest");
@@ -2671,7 +3081,8 @@ map.on("zoomend", function() {
     uid: null,
     ready: false,
     isGameMaster: false,
-    savePersonalMarkers: null
+    savePersonalMarkers: null,
+    saveSettlementAreas: null
   };
 
   async function initializePersonalMarkers(uid) {
@@ -2768,6 +3179,7 @@ map.on("zoomend", function() {
         status.style.background = "#8b2222";
       });
       initializeParty();
+      initializeSettlementAreas();
     } else {
       window.dndFirebase.ready = false;
       window.dndFirebase.isGameMaster = false;
