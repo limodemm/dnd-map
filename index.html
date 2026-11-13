@@ -2932,78 +2932,58 @@ map.on("zoomend", function() {
   let settlementSelectedOutline = null;
   const settlementTraceLayers = new Map();
 
-  // Одна и та же форма росчерка используется для наведения, выбора и финальной анимации.
-  // Геометрия строится в экранных координатах, поэтому толщина пера не зависит от масштаба.
-  function makeSettlementRibbonLatLngs(screenPoints) {
-    if (!screenPoints || screenPoints.length < 2) return [];
-    const left = [];
-    const right = [];
-    const lengths = [0];
-    let drawnLength = 0;
-    for (let i = 1; i < screenPoints.length; i++) {
-      drawnLength += screenPoints[i - 1].distanceTo(screenPoints[i]);
-      lengths.push(drawnLength);
-    }
-    const fullLength = Math.max(1, lengths[lengths.length - 1]);
-
-    for (let i = 0; i < screenPoints.length; i++) {
-      const previous = screenPoints[Math.max(0, i - 1)];
-      const next = screenPoints[Math.min(screenPoints.length - 1, i + 1)];
-      const dx = next.x - previous.x;
-      const dy = next.y - previous.y;
-      const magnitude = Math.hypot(dx, dy) || 1;
-      const nx = -dy / magnitude;
-      const ny = dx / magnitude;
-      const progress = lengths[i] / fullLength;
-      // Толстое начало и плавное сужение почти до острого пера.
-      const halfWidth = 4.2 * (1 - progress) + 0.22;
-      left.push(map.layerPointToLatLng(L.point(
-        screenPoints[i].x + nx * halfWidth,
-        screenPoints[i].y + ny * halfWidth
-      )));
-      right.push(map.layerPointToLatLng(L.point(
-        screenPoints[i].x - nx * halfWidth,
-        screenPoints[i].y - ny * halfWidth
-      )));
-    }
-    return [left.concat(right.reverse())];
-  }
-
+  // Визуальные слои отделены от поиска поселений и обработки кликов.
+  // Используем обычный Leaflet polyline: он надёжно отображает росчерк
+  // и не зависит от построения самопересекающегося полигона-ленты.
   function getSettlementStrokePoints(area, approachPoint) {
     if (!area || !approachPoint) return [];
-    const tracePoints = buildSettlementTrace(area, approachPoint);
-    if (tracePoints.length < 3) return [];
-    return tracePoints.map(point => map.latLngToLayerPoint(point));
+    const points = buildSettlementTrace(area, approachPoint);
+    return Array.isArray(points) ? points : [];
   }
 
+  function getSettlementStrokePane(name, zIndex) {
+    let pane = map.getPane(name);
+    if (!pane) pane = map.createPane(name);
+    pane.style.zIndex = String(zIndex);
+    return name;
+  }
 
   function showSettlementOutline(area, opacity) {
-    if (!area || !Array.isArray(area.points) || area.points.length < 3) return;
-    // При выборе используем точку подхода отряда, а не повторяем контур ведущего.
-    const approachPoint = window.routeDestinationApproachPoint || window.routeDestinationBoundaryPoint;
-    const screenPoints = getSettlementStrokePoints(area, approachPoint);
-    if (screenPoints.length < 3) return;
-    const ribbon = makeSettlementRibbonLatLngs(screenPoints);
-    if (!ribbon.length) return;
+    try {
+      if (!area || !Array.isArray(area.points) || area.points.length < 3) return;
+      const approachPoint = window.routeDestinationApproachPoint || window.routeDestinationBoundaryPoint;
+      const strokePoints = getSettlementStrokePoints(area, approachPoint);
+      if (strokePoints.length < 2) {
+        console.warn("Недостаточно точек для предварительной обводки поселения:", area.id);
+        return;
+      }
 
-    let pane = map.getPane("settlement-preview-pane");
-    if (!pane) pane = map.createPane("settlement-preview-pane");
-    pane.style.zIndex = "675";
+      const paneName = getSettlementStrokePane("settlement-preview-pane", 675);
+      const style = {
+        pane: paneName,
+        color: "#080808",
+        weight: 7,
+        opacity: Number.isFinite(opacity) ? opacity : 1,
+        lineCap: "round",
+        lineJoin: "round",
+        interactive: false
+      };
 
-    if (!settlementSelectedOutline) {
-      settlementSelectedOutline = L.polygon(ribbon, {
-        pane: "settlement-preview-pane",
-        color: "#080808", weight: 0.6, opacity: opacity,
-        fill: true, fillColor: "#080808", fillOpacity: opacity,
-        interactive: false, lineJoin: "round"
-      }).addTo(map);
-    } else {
-      settlementSelectedOutline.setLatLngs(ribbon);
-      settlementSelectedOutline.setStyle({ opacity: opacity, fillOpacity: opacity });
-    }
-    if (settlementHoverOutline && map.hasLayer(settlementHoverOutline)) {
-      map.removeLayer(settlementHoverOutline);
+      if (!settlementSelectedOutline) {
+        settlementSelectedOutline = L.polyline(strokePoints, style).addTo(map);
+      } else {
+        settlementSelectedOutline.setLatLngs(strokePoints);
+        settlementSelectedOutline.setStyle({ opacity: style.opacity, weight: style.weight });
+        if (!map.hasLayer(settlementSelectedOutline)) settlementSelectedOutline.addTo(map);
+      }
+
+      if (settlementHoverOutline && map.hasLayer(settlementHoverOutline)) {
+        map.removeLayer(settlementHoverOutline);
+      }
       settlementHoverOutline = null;
+      console.log("Показана обводка поселения:", area.id, strokePoints.length);
+    } catch (error) {
+      console.error("Ошибка отображения обводки поселения:", error);
     }
   }
 
@@ -3018,6 +2998,7 @@ map.on("zoomend", function() {
   }
 
   window.clearSettlementOutline = clearSettlementOutline;
+
   window.previewSettlementAt = function(point) {
     try {
       if (!window.routeMode) {
@@ -3025,6 +3006,7 @@ map.on("zoomend", function() {
         settlementHoverOutline = null;
         return;
       }
+
       const area = findSettlementAt(point);
       if (!area) {
         if (settlementHoverOutline && map.hasLayer(settlementHoverOutline)) map.removeLayer(settlementHoverOutline);
@@ -3033,99 +3015,113 @@ map.on("zoomend", function() {
       }
       if (settlementSelectedOutline) return;
 
-      // При наведении точка курсора задаёт предварительное место прибытия.
-      const screenPoints = getSettlementStrokePoints(area, point);
-      if (screenPoints.length < 3) return;
-      const ribbon = makeSettlementRibbonLatLngs(screenPoints);
-      if (!ribbon.length) return;
-      let pane = map.getPane("settlement-preview-pane");
-      if (!pane) pane = map.createPane("settlement-preview-pane");
-      pane.style.zIndex = "675";
+      const strokePoints = getSettlementStrokePoints(area, point);
+      if (strokePoints.length < 2) return;
+
+      const paneName = getSettlementStrokePane("settlement-preview-pane", 675);
+      const style = {
+        pane: paneName,
+        color: "#080808",
+        weight: 7,
+        opacity: 0.42,
+        lineCap: "round",
+        lineJoin: "round",
+        interactive: false
+      };
 
       if (!settlementHoverOutline) {
-        settlementHoverOutline = L.polygon(ribbon, {
-          pane: "settlement-preview-pane",
-          color: "#080808", weight: 0.6, opacity: 0.38,
-          fill: true, fillColor: "#080808", fillOpacity: 0.38,
-          interactive: false, lineJoin: "round"
-        }).addTo(map);
+        settlementHoverOutline = L.polyline(strokePoints, style).addTo(map);
       } else {
-        settlementHoverOutline.setLatLngs(ribbon);
+        settlementHoverOutline.setLatLngs(strokePoints);
+        if (!map.hasLayer(settlementHoverOutline)) settlementHoverOutline.addTo(map);
       }
-    } catch (previewError) {
-      console.error("Не удалось нарисовать предварительную обводку поселения:", previewError);
+    } catch (error) {
+      console.error("Не удалось нарисовать предварительную обводку поселения:", error);
       if (settlementHoverOutline && map.hasLayer(settlementHoverOutline)) map.removeLayer(settlementHoverOutline);
       settlementHoverOutline = null;
     }
   };
 
   function animateSettlementTrace(area) {
-    const startPoint = window.routeDestinationBoundaryPoint;
-    if (!startPoint) {
-      console.warn("Не удалось начать обводку поселения: отсутствует точка прибытия");
-      return;
-    }
-    const screenPoints = getSettlementStrokePoints(area, startPoint);
-    if (screenPoints.length < 3) {
-      console.warn("Не удалось построить геометрию обводки поселения", area && area.id);
-      return;
-    }
+    try {
+      const startPoint = window.routeDestinationBoundaryPoint;
+      if (!startPoint) {
+        console.warn("Не удалось начать обводку поселения: отсутствует точка прибытия");
+        return;
+      }
 
-    let tracePane = map.getPane("settlement-trace-pane");
-    if (!tracePane) tracePane = map.createPane("settlement-trace-pane");
-    tracePane.style.zIndex = "680";
+      const strokePoints = getSettlementStrokePoints(area, startPoint);
+      if (strokePoints.length < 2) {
+        console.warn("Не удалось построить геометрию обводки поселения:", area && area.id);
+        return;
+      }
 
-    const previousTrace = settlementTraceLayers.get(area.id);
-    if (previousTrace && map.hasLayer(previousTrace)) map.removeLayer(previousTrace);
+      const paneName = getSettlementStrokePane("settlement-trace-pane", 680);
+      const previousTrace = settlementTraceLayers.get(area.id);
+      if (previousTrace && map.hasLayer(previousTrace)) map.removeLayer(previousTrace);
 
-    const segmentLengths = [];
-    let totalLength = 0;
-    for (let i = 1; i < screenPoints.length; i++) {
-      const length = screenPoints[i - 1].distanceTo(screenPoints[i]);
-      segmentLengths.push(length);
-      totalLength += length;
-    }
-    if (totalLength < 2) return;
+      const layerPoints = strokePoints.map(point => map.latLngToLayerPoint(point));
+      const segmentLengths = [];
+      let totalLength = 0;
+      for (let i = 1; i < layerPoints.length; i++) {
+        const length = layerPoints[i - 1].distanceTo(layerPoints[i]);
+        segmentLengths.push(length);
+        totalLength += length;
+      }
+      if (totalLength < 1) return;
 
-    // Создаём слой сразу с небольшим начальным фрагментом, чтобы SVG-путь
-    // гарантированно существовал до первого кадра анимации.
-    const initialEnd = screenPoints[1];
-    const traceRibbon = L.polygon(makeSettlementRibbonLatLngs([screenPoints[0], initialEnd]), {
-      pane: "settlement-trace-pane",
-      stroke: true, color: "#080808", weight: 0.6, opacity: 1,
-      fill: true, fillColor: "#080808", fillOpacity: 1,
-      interactive: false, lineJoin: "round"
-    }).addTo(map);
-    settlementTraceLayers.set(area.id, traceRibbon);
+      const trace = L.polyline([strokePoints[0], strokePoints[1]], {
+        pane: paneName,
+        color: "#080808",
+        weight: 7,
+        opacity: 1,
+        lineCap: "round",
+        lineJoin: "round",
+        interactive: false
+      }).addTo(map);
+      settlementTraceLayers.set(area.id, trace);
 
-    const duration = Math.max(2200, Math.min(10000, totalLength * 5));
-    const startedAt = performance.now();
+      const duration = Math.max(2200, Math.min(10000, totalLength * 5));
+      const startedAt = performance.now();
 
-    function frame(now) {
-      const progress = Math.min(1, (now - startedAt) / duration);
-      let remaining = totalLength * progress;
-      const drawn = [screenPoints[0]];
-      for (let i = 0; i < segmentLengths.length; i++) {
-        const segmentLength = segmentLengths[i];
-        if (remaining >= segmentLength) {
-          drawn.push(screenPoints[i + 1]);
-          remaining -= segmentLength;
-        } else {
-          if (segmentLength > 0.001 && remaining > 0) {
-            const ratio = remaining / segmentLength;
-            drawn.push(L.point(
-              screenPoints[i].x + (screenPoints[i + 1].x - screenPoints[i].x) * ratio,
-              screenPoints[i].y + (screenPoints[i + 1].y - screenPoints[i].y) * ratio
-            ));
+      function frame(now) {
+        if (!map.hasLayer(trace)) return;
+        const progress = Math.min(1, (now - startedAt) / duration);
+        let remaining = totalLength * progress;
+        const drawn = [strokePoints[0]];
+
+        for (let i = 0; i < segmentLengths.length; i++) {
+          const segmentLength = segmentLengths[i];
+          if (remaining >= segmentLength) {
+            drawn.push(strokePoints[i + 1]);
+            remaining -= segmentLength;
+          } else {
+            if (segmentLength > 0.001 && remaining > 0) {
+              const ratio = remaining / segmentLength;
+              const interpolated = L.point(
+                layerPoints[i].x + (layerPoints[i + 1].x - layerPoints[i].x) * ratio,
+                layerPoints[i].y + (layerPoints[i + 1].y - layerPoints[i].y) * ratio
+              );
+              drawn.push(map.layerPointToLatLng(interpolated));
+            }
+            break;
           }
-          break;
+        }
+
+        if (drawn.length >= 2) trace.setLatLngs(drawn);
+        if (progress < 1) {
+          requestAnimationFrame(frame);
+        } else {
+          trace.setLatLngs(strokePoints);
+          console.log("Завершена анимация обводки поселения:", area.id);
         }
       }
-      if (drawn.length >= 2) traceRibbon.setLatLngs(makeSettlementRibbonLatLngs(drawn));
-      if (progress < 1) requestAnimationFrame(frame);
+
+      requestAnimationFrame(frame);
+      console.log("Начата анимация обводки поселения:", area.id, strokePoints.length);
+    } catch (error) {
+      console.error("Ошибка анимации обводки поселения:", error);
     }
-    requestAnimationFrame(frame);
-    console.log("Начата анимация обводки поселения:", area.id);
   }
 
   function waitForRouteRevealThenTraceSettlement(cityId) {
@@ -3139,7 +3135,6 @@ map.on("zoomend", function() {
         window.isRouteRevealRunning();
       const timedOut = Date.now() - startedAt > 35000;
 
-      // Не запускаем росчерк раньше общей анимации маршрута.
       if (routeIsAnimating && !timedOut) {
         setTimeout(check, 100);
         return;
@@ -3149,8 +3144,6 @@ map.on("zoomend", function() {
         return;
       }
 
-      // Firebase может доставить маршрут чуть раньше, чем список областей.
-      // Даём слушателю settlements/areas время загрузить нужную область.
       const area = (window.settlementAreas || []).find(item => String(item.id) === String(cityId));
       if (!area && !timedOut) {
         setTimeout(check, 150);
