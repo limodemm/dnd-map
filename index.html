@@ -2875,12 +2875,32 @@ map.on("zoomend", function() {
     return best;
   }
 
-  // Единый визуальный стиль обводки поселения: чёрный открытый росчерк
-  // с плавным сужением к концу. Используется для наведения, выбора и анимации.
+  // Единый расчёт открытого контура поселения. Не зависит от внешних
+  // диагностических функций: начинает с ближайшей точки границы и обходит
+  // исходный полигон в направлении движения к границе.
   function getOpenSettlementContour(area, startPoint) {
-    if (!area || !Array.isArray(area.points) || area.points.length < 3) return [];
-    const contour = getDiagnosticSettlementContour(area, startPoint);
-    if (!contour || contour.length < 4) return [];
+    if (!area || !Array.isArray(area.points) || area.points.length < 3 || !startPoint) return [];
+    const boundary = findNearestSettlementBoundaryPoint(startPoint, area.points);
+    if (!boundary || !boundary.point) return [];
+
+    const points = area.points;
+    const count = points.length;
+    const segment = boundary.segmentIndex;
+    const start = boundary.point;
+    const startPx = map.latLngToLayerPoint(start);
+    const approach = map.latLngToLayerPoint(startPoint);
+    const incoming = L.point(startPx.x - approach.x, startPx.y - approach.y);
+    const a = map.latLngToLayerPoint(points[segment]);
+    const b = map.latLngToLayerPoint(points[(segment + 1) % count]);
+    const tangent = L.point(b.x - a.x, b.y - a.y);
+    const direction = incoming.x * tangent.x + incoming.y * tangent.y >= 0 ? 1 : -1;
+
+    const contour = [start];
+    if (direction > 0) {
+      for (let step = 1; step <= count; step++) contour.push(points[(segment + step) % count]);
+    } else {
+      for (let step = 0; step < count; step++) contour.push(points[(segment - step + count) % count]);
+    }
 
     const layerPoints = contour.map(point => map.latLngToLayerPoint(point));
     const lengths = [];
