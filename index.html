@@ -581,7 +581,8 @@ let lastCursorPosition = null;
 // Перерисовка маршрута не сбрасывает уже идущую анимацию.
 let routeMarkerAnimations = [];
 const routeRevealBaseSpeed = 55; // базовая скорость в единицах длины маршрута/сек
-const routeRevealFadeDuration = 900;
+const routeRevealFadeDuration = 520; // прежняя длительность появления жетонов
+const routeLineRevealFadeDuration = 220; // плавное появление отдельного штриха
 
 // Чем длиннее новый отрезок, тем быстрее распространяется проявление.
 // Скорость плавно растёт от 55 до 180 единиц/сек, чтобы длинные линии
@@ -627,14 +628,50 @@ function beginRouteMarkerAnimation(startDistance, endDistance) {
   const maxRevealDistance = Math.max(
     ...checkDistances.map(distance => getRouteRevealDistance({ seeds }, distance))
   );
-  const duration = maxRevealDistance / speed * 1000 + routeRevealFadeDuration;
+  const markerDuration = maxRevealDistance / speed * 1000 + routeRevealFadeDuration;
+
+  // Для самой линии скорость задаётся в экранных пикселях/секунду. Поэтому
+  // при любом масштабе штрихи идут с одинаковым заметным интервалом.
+  const routeTotalLength = getRouteLength(routePoints);
+  const displayPoints = createRouteDisplayPoints(routePoints, []);
+  const displayTotalLength = getRouteLength(displayPoints);
+  const displayStart = routeTotalLength > 0.001
+    ? startDistance / routeTotalLength * displayTotalLength
+    : 0;
+  const displayEnd = routeTotalLength > 0.001
+    ? endDistance / routeTotalLength * displayTotalLength
+    : displayTotalLength;
+  const screenStart = getRouteScreenDistanceAtDistance(displayPoints, displayStart);
+  const screenEnd = getRouteScreenDistanceAtDistance(displayPoints, displayEnd);
+  const screenSeeds = seeds.map(seed => {
+    const displaySeed = routeTotalLength > 0.001
+      ? seed / routeTotalLength * displayTotalLength
+      : 0;
+    return getRouteScreenDistanceAtDistance(displayPoints, displaySeed);
+  });
+  const sortedScreenSeeds = [...screenSeeds].sort((a, b) => a - b);
+  const screenCheckDistances = [screenStart, screenEnd];
+  for (let i = 0; i < sortedScreenSeeds.length - 1; i++) {
+    screenCheckDistances.push((sortedScreenSeeds[i] + sortedScreenSeeds[i + 1]) / 2);
+  }
+  const maxScreenRevealDistance = Math.max(
+    ...screenCheckDistances.map(distance =>
+      Math.min(...screenSeeds.map(seed => Math.abs(distance - seed)))
+    )
+  );
+  const linePixelsPerSecond = 65 + Math.min(25, Math.max(0, length) * 0.02);
+  const lineDuration = maxScreenRevealDistance / linePixelsPerSecond * 1000 +
+    routeLineRevealFadeDuration;
+  const duration = Math.max(markerDuration, lineDuration);
 
   const animation = {
     start: startDistance,
     end: endDistance,
     seeds,
+    screenSeeds,
     partCount,
     speed,
+    linePixelsPerSecond,
     startedAt: Date.now(),
     duration,
     timer: null
@@ -938,13 +975,7 @@ function createRoutePanel() {
   filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.65));
 }
 
-/* Линии и жетоны проявляются медленнее и с более мягким ускорением. */
-@property --route-token-reveal-radius {
-  syntax: "<length>";
-  inherits: false;
-  initial-value: 0px;
-}
-
+/* Линия и жетоны спокойно проявляются без падения и подпрыгивания. */
 @keyframes route-line-reveal {
   /* Leaflet задаёт прозрачность именно обводке SVG-пути,
      поэтому анимируем stroke-opacity, а не общую opacity элемента. */
@@ -953,37 +984,17 @@ function createRoutePanel() {
 }
 
 .route-line-reveal {
-  animation: route-line-reveal 900ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  animation: route-line-reveal 220ms ease-out both;
 }
 
-/* Иконки раскрываются одновременно из четырёх небольших областей.
-   Радиусы постепенно растут и соединяются, открывая весь значок. */
 @keyframes route-token-appear {
-  from {
-    --route-token-reveal-radius: 0px;
-    opacity: 0.15;
-  }
-  to {
-    --route-token-reveal-radius: 42px;
-    opacity: 1;
-  }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .route-token-appear {
   position: relative;
-  -webkit-mask-image:
-    radial-gradient(circle at 22% 22%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px)),
-    radial-gradient(circle at 78% 22%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px)),
-    radial-gradient(circle at 22% 78%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px)),
-    radial-gradient(circle at 78% 78%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px));
-  mask-image:
-    radial-gradient(circle at 22% 22%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px)),
-    radial-gradient(circle at 78% 22%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px)),
-    radial-gradient(circle at 22% 78%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px)),
-    radial-gradient(circle at 78% 78%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px));
-  -webkit-mask-composite: source-over;
-  mask-composite: add;
-  animation: route-token-appear 900ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  animation: route-token-appear 520ms ease-out both;
   animation-delay: var(--route-animation-delay, 0ms);
 }
 
@@ -993,7 +1004,7 @@ function createRoutePanel() {
 }
 
 .leaflet-route-rest-pane-pane .route-rest-raised.route-marker-appear {
-  animation: route-rest-appear 900ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  animation: route-rest-appear 520ms ease-out both;
 }
 
 .route-exhaustion-glyph {
@@ -1358,6 +1369,39 @@ function getRouteLength(points) {
   }
 
   return total;
+}
+
+// Экранное расстояние вдоль визуальной линии. Используется только для
+// равномерного по пикселям проявления штрихов, а не для расчёта пути.
+function getRouteScreenDistanceAtDistance(points, targetDistance) {
+  if (!points || points.length < 2) return 0;
+
+  let routePassed = 0;
+  let screenPassed = 0;
+
+  for (let i = 1; i < points.length; i++) {
+    const previous = points[i - 1];
+    const current = points[i];
+    const routeLength = Math.hypot(
+      current.lat - previous.lat,
+      current.lng - previous.lng
+    );
+    if (routeLength < 0.000001) continue;
+
+    const a = map.latLngToLayerPoint(previous);
+    const b = map.latLngToLayerPoint(current);
+    const screenLength = a.distanceTo(b);
+
+    if (routePassed + routeLength >= targetDistance) {
+      const part = Math.max(0, Math.min(1, (targetDistance - routePassed) / routeLength));
+      return screenPassed + screenLength * part;
+    }
+
+    routePassed += routeLength;
+    screenPassed += screenLength;
+  }
+
+  return screenPassed;
 }
 
 // =====================================
@@ -2019,90 +2063,129 @@ function updateRouteLine(cursorPosition = null) {
         const midpoint = (partStart + partEnd) / 2;
         const activeAnimation = getRouteMarkerAnimation(midpoint);
 
-        // Размер анимируемых фрагментов задаём в экранных пикселях, а не
-        // в условных единицах маршрута. Иначе при отдалении карты фрагменты
-        // становятся короче самого рисунка пунктира, и штрихи сливаются.
+        // Отдельно рассчитываем экранную геометрию участка. Активная линия
+        // будет рисоваться не крупными отрывками, а короткими штрихами.
         const partDisplayStart = totalLength > 0.001
           ? partStart / totalLength * displayRouteLength
           : 0;
         const partDisplayEnd = totalLength > 0.001
           ? partEnd / totalLength * displayRouteLength
           : displayRouteLength;
-        const partDisplayPoints = getRoutePointsBetweenDistances(
+        const sectionPoints = getRoutePointsBetweenDistances(
           displayRoutePoints,
           partDisplayStart,
           partDisplayEnd
         );
+        if (sectionPoints.length < 2) continue;
+
+        const localProtectedDistances = protectedDistances
+          .filter(distance =>
+            distance >= partStart - 0.01 &&
+            distance <= partEnd + 0.01
+          )
+          .map(distance => distance - partStart);
+        const partDisplayPoints = createRouteDisplayPoints(
+          sectionPoints,
+          localProtectedDistances
+        );
+
+        const screenEntries = [];
         let partScreenLength = 0;
-        for (let i = 1; i < partDisplayPoints.length; i++) {
-          const a = map.latLngToLayerPoint(partDisplayPoints[i - 1]);
-          const b = map.latLngToLayerPoint(partDisplayPoints[i]);
-          partScreenLength += a.distanceTo(b);
+        partDisplayPoints.forEach((point, index) => {
+          const layerPoint = map.latLngToLayerPoint(point);
+          if (index > 0) {
+            partScreenLength += layerPoint.distanceTo(screenEntries[index - 1].layerPoint);
+          }
+          screenEntries.push({ point, layerPoint, distance: partScreenLength });
+        });
+
+        if (!activeAnimation) {
+          const line = L.polyline(partDisplayPoints, {
+            color: color,
+            weight: 4.5,
+            dashArray: "8, 10",
+            opacity: opacity,
+            lineCap: "round",
+            lineJoin: "round",
+            className: "route-line-raised"
+          }).addTo(map);
+          routeRestMarkers.push(line);
+          continue;
         }
 
-        // Оставляем каждому фрагменту достаточно места для полного
-        // отображения штрихов и промежутков пунктирной линии.
-        const fragmentCount = activeAnimation
-          ? Math.max(1, Math.floor(partScreenLength / 48))
-          : 1;
-
-        for (let fragment = 0; fragment < fragmentCount; fragment++) {
-          const fragmentStart = partStart +
-            (partEnd - partStart) * fragment / fragmentCount;
-          const fragmentEnd = partStart +
-            (partEnd - partStart) * (fragment + 1) / fragmentCount;
-          const fragmentMidpoint = (fragmentStart + fragmentEnd) / 2;
-          const fragmentAnimation = getRouteMarkerAnimation(fragmentMidpoint);
-
-          // Переводим исходные расстояния маршрута в расстояния по общей
-          // сглаженной геометрии. Так каждый фрагмент сохраняет ту же кривизну,
-          // которую игрок видел в предпросмотре до клика.
-          const displayStart = totalLength > 0.001
-            ? fragmentStart / totalLength * displayRouteLength
-            : 0;
-          const displayEnd = totalLength > 0.001
-            ? fragmentEnd / totalLength * displayRouteLength
-            : displayRouteLength;
-          const sectionPoints = getRoutePointsBetweenDistances(
-            displayRoutePoints,
-            displayStart,
-            displayEnd
-          );
-          if (sectionPoints.length < 2) continue;
-
-          const localProtectedDistances = protectedDistances
-            .filter(distance =>
-              distance >= fragmentStart - 0.01 &&
-              distance <= fragmentEnd + 0.01
-            )
-            .map(distance => distance - fragmentStart);
-
-          const line = L.polyline(
-            createRouteDisplayPoints(sectionPoints, localProtectedDistances),
-            {
-              color: color,
-              weight: 4.5,
-              dashArray: "8, 10",
-              opacity: fragmentAnimation ? 0 : opacity,
-              lineCap: "round",
-              lineJoin: "round",
-              className: "route-line-raised" +
-                (fragmentAnimation ? " route-line-reveal" : "")
-            }
-          ).addTo(map);
-
-          if (fragmentAnimation) {
-            const path = line.getElement();
-            if (path) {
-              const delay = getRouteRevealDelay(
-                fragmentAnimation,
-                fragmentMidpoint
-              ) - (Date.now() - fragmentAnimation.startedAt);
-              path.style.setProperty("--route-line-opacity", String(opacity));
-              path.style.animationDelay = `${delay}ms`;
+        // Получаем кусочек кривой между двумя расстояниями в экранных пикселях.
+        // Так каждый штрих сохраняет кривизну общего маршрута.
+        function getScreenPointAtDistance(targetDistance) {
+          if (targetDistance <= 0) return screenEntries[0].layerPoint;
+          if (targetDistance >= partScreenLength) {
+            return screenEntries[screenEntries.length - 1].layerPoint;
+          }
+          for (let i = 1; i < screenEntries.length; i++) {
+            const previous = screenEntries[i - 1];
+            const current = screenEntries[i];
+            if (current.distance >= targetDistance) {
+              const segmentLength = current.distance - previous.distance;
+              const t = segmentLength > 0.001
+                ? (targetDistance - previous.distance) / segmentLength
+                : 0;
+              return L.point(
+                previous.layerPoint.x + (current.layerPoint.x - previous.layerPoint.x) * t,
+                previous.layerPoint.y + (current.layerPoint.y - previous.layerPoint.y) * t
+              );
             }
           }
+          return screenEntries[screenEntries.length - 1].layerPoint;
+        }
 
+        function getScreenLinePoints(startPx, endPx) {
+          const points = [getScreenPointAtDistance(startPx)];
+          screenEntries.forEach(entry => {
+            if (entry.distance > startPx + 0.01 && entry.distance < endPx - 0.01) {
+              points.push(entry.layerPoint);
+            }
+          });
+          points.push(getScreenPointAtDistance(endPx));
+          return points.map(point => map.layerPointToLatLng(point));
+        }
+
+        const globalScreenStart = getRouteScreenDistanceAtDistance(
+          displayRoutePoints,
+          partDisplayStart
+        );
+        const elapsed = Date.now() - activeAnimation.startedAt;
+        const dashLength = 8;
+        const dashGap = 10;
+        const dashStep = dashLength + dashGap;
+
+        // Каждый штрих — отдельная короткая линия. Задержка считается от
+        // ближайшей случайной точки проявления, поэтому волна идёт в обе стороны.
+        for (let dashStart = 0; dashStart < partScreenLength; dashStart += dashStep) {
+          const dashEnd = Math.min(partScreenLength, dashStart + dashLength);
+          if (dashEnd - dashStart < 2) continue;
+
+          const dashMidpoint = globalScreenStart + (dashStart + dashEnd) / 2;
+          const nearestSeedDistance = Math.min(
+            ...activeAnimation.screenSeeds.map(seed => Math.abs(dashMidpoint - seed))
+          );
+          const delay = nearestSeedDistance / activeAnimation.linePixelsPerSecond * 1000 - elapsed;
+          const dashPoints = getScreenLinePoints(dashStart, dashEnd);
+          if (dashPoints.length < 2) continue;
+
+          const line = L.polyline(dashPoints, {
+            color: color,
+            weight: 4.5,
+            opacity: 0,
+            lineCap: "round",
+            lineJoin: "round",
+            className: "route-line-raised route-line-reveal"
+          }).addTo(map);
+
+          const path = line.getElement();
+          if (path) {
+            path.style.setProperty("--route-line-opacity", String(opacity));
+            path.style.animationDuration = `${routeLineRevealFadeDuration}ms`;
+            path.style.animationDelay = `${delay}ms`;
+          }
           routeRestMarkers.push(line);
         }
       }
