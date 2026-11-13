@@ -529,7 +529,7 @@ window.routeMode = false;
         window.applySynchronizedPartyRoute(data);
       }
       if (data.destinationSettlementId) {
-        waitForRouteRevealThenTraceSettlement(data.destinationSettlementId);
+        waitForRouteRevealThenTraceSettlement(data.destinationSettlementId, data.points);
       }
     }, function(error) {
       console.error("Ошибка синхронизации маршрута:", error);
@@ -3115,7 +3115,7 @@ map.on("zoomend", function() {
   let settlementTraceWaitTimer = null;
   let settlementTraceWaitToken = 0;
 
-  function waitForRouteRevealThenTraceSettlement(cityId) {
+  function waitForRouteRevealThenTraceSettlement(cityId, synchronizedRoutePoints) {
     if (settlementTraceWaitTimer) clearTimeout(settlementTraceWaitTimer);
     settlementTraceWaitTimer = null;
     const waitToken = ++settlementTraceWaitToken;
@@ -3129,23 +3129,25 @@ map.on("zoomend", function() {
       console.warn("Обводка поселения: область пока не найдена", cityId);
     }
 
-    // При выборе поселения finishPartyRoute(boundary.point) записывает
-    // точку границы последней точкой маршрута. Поэтому её расстояние
-    // вдоль пути равно полной длине маршрута.
+    // Берём точки непосредственно из подтверждённого Firebase-маршрута.
+    // routePoints — локальная переменная другого обработчика и здесь недоступна.
     const boundaryPoint = window.routeDestinationBoundaryPoint;
-    // Считаем длину здесь локально: getRouteLength объявлена в другой
-    // области видимости модуля и недоступна этому обработчику в текущей сборке.
+    const routePointsForTrace = Array.isArray(synchronizedRoutePoints)
+      ? synchronizedRoutePoints
+      : [];
     let routeEndDistance = 0;
-    for (let i = 1; i < routePoints.length; i++) {
-      const dy = routePoints[i].lat - routePoints[i - 1].lat;
-      const dx = routePoints[i].lng - routePoints[i - 1].lng;
+    for (let i = 1; i < routePointsForTrace.length; i++) {
+      const previous = routePointsForTrace[i - 1];
+      const current = routePointsForTrace[i];
+      const dy = Number(current.lat) - Number(previous.lat);
+      const dx = Number(current.lng) - Number(previous.lng);
       routeEndDistance += Math.sqrt(dx * dx + dy * dy);
     }
-    if (!boundaryPoint || routePoints.length < 2) {
+    if (!boundaryPoint || routePointsForTrace.length < 2) {
       console.warn("Обводка поселения: нет конечной точки маршрута или границы", {
         cityId,
         boundaryPoint,
-        routePoints: routePoints.length
+        routePointCount: routePointsForTrace.length
       });
     }
 
@@ -3153,11 +3155,18 @@ map.on("zoomend", function() {
       cityId,
       routeEndDistance,
       boundaryPoint,
-      routeEnd: routePoints.length ? routePoints[routePoints.length - 1] : null
+      routeEnd: routePointsForTrace.length
+        ? routePointsForTrace[routePointsForTrace.length - 1]
+        : null
     });
 
     function check() {
       if (waitToken !== settlementTraceWaitToken) return;
+      if (routePointsForTrace.length < 2) {
+        console.warn("Обводка поселения: в подтверждённом маршруте недостаточно точек", cityId);
+        settlementTraceWaitTimer = null;
+        return;
+      }
 
       const areaNow = (window.settlementAreas || []).find(
         item => String(item.id) === String(cityId)
