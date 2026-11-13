@@ -2913,7 +2913,6 @@ map.on("zoomend", function() {
 
   let settlementHoverOutline = null;
   let settlementSelectedOutline = null;
-  let settlementArrivalMarker = null;
   const settlementTraceLayers = new Map();
 
   function removeSettlementLayer(layer) {
@@ -2948,19 +2947,6 @@ map.on("zoomend", function() {
         lineJoin: "round"
       }).addTo(map);
 
-      removeSettlementLayer(settlementArrivalMarker);
-      if (window.routeDestinationBoundaryPoint) {
-        settlementArrivalMarker = L.circleMarker(window.routeDestinationBoundaryPoint, {
-          radius: 7,
-          color: "#fff4b0",
-          weight: 2,
-          opacity: 1,
-          fillColor: "#e6c77d",
-          fillOpacity: 1,
-          interactive: false
-        }).addTo(map);
-      }
-
       console.log("Проверка старой обводки: линия добавлена", area.id, points.length);
     } catch (error) {
       console.error("Ошибка старой обводки поселения:", error);
@@ -2972,10 +2958,8 @@ map.on("zoomend", function() {
   function clearSettlementOutline() {
     removeSettlementLayer(settlementHoverOutline);
     removeSettlementLayer(settlementSelectedOutline);
-    removeSettlementLayer(settlementArrivalMarker);
     settlementHoverOutline = null;
     settlementSelectedOutline = null;
-    settlementArrivalMarker = null;
   }
 
   window.clearSettlementOutline = clearSettlementOutline;
@@ -3028,6 +3012,11 @@ map.on("zoomend", function() {
 
   function animateSettlementTrace(area) {
     try {
+      console.log("Обводка поселения: animateSettlementTrace вызвана", {
+        areaId: area && area.id,
+        hasBoundaryPoint: Boolean(window.routeDestinationBoundaryPoint),
+        pointCount: area && Array.isArray(area.points) ? area.points.length : 0
+      });
       const startPoint = window.routeDestinationBoundaryPoint;
       if (!startPoint) {
         console.warn("Диагностика: отсутствует точка прибытия для анимации");
@@ -3054,6 +3043,11 @@ map.on("zoomend", function() {
         interactive: false
       }).addTo(map);
       settlementTraceLayers.set(area.id, trace);
+      console.log("Обводка поселения: слой добавлен на карту", {
+        areaId: area.id,
+        layerVisible: map.hasLayer(trace),
+        contourPoints: contour.length
+      });
 
       const layerPoints = contour.map(point => map.latLngToLayerPoint(point));
       const segmentLengths = [];
@@ -3063,7 +3057,13 @@ map.on("zoomend", function() {
         segmentLengths.push(length);
         totalLength += length;
       }
-      if (totalLength < 1) return;
+      if (totalLength < 1) {
+        console.warn("Обводка поселения: длина контура меньше 1 пикселя", {
+          areaId: area.id,
+          totalLength
+        });
+        return;
+      }
 
       const duration = Math.max(1800, Math.min(8000, totalLength * 4));
       const startedAt = performance.now();
@@ -3109,44 +3109,93 @@ map.on("zoomend", function() {
     }
   }
 
+  // Запускаем обводку не после всей анимации маршрута, а в тот момент,
+  // когда анимированный пунктир доходит до конечной точки у границы поселения.
+  // Время берём из той же системы расчёта штрихов, что и для появления жетонов.
+  let settlementTraceWaitTimer = null;
+  let settlementTraceWaitToken = 0;
+
   function waitForRouteRevealThenTraceSettlement(cityId) {
+    if (settlementTraceWaitTimer) clearTimeout(settlementTraceWaitTimer);
+    settlementTraceWaitTimer = null;
+    const waitToken = ++settlementTraceWaitToken;
     const startedAt = Date.now();
-    const minimumVisualDelay = startedAt + 250;
-    let traceStarted = false;
+    let loggedStart = false;
 
-    function check() {
-      if (traceStarted) return;
-
-      const routeIsAnimating = typeof window.isRouteRevealRunning === "function" &&
-        window.isRouteRevealRunning();
-      const timedOut = Date.now() - startedAt > 35000;
-
-      if (routeIsAnimating && !timedOut) {
-        setTimeout(check, 100);
-        return;
-      }
-      if (Date.now() < minimumVisualDelay) {
-        setTimeout(check, 100);
-        return;
-      }
-
-      const area = (window.settlementAreas || []).find(
-        item => String(item.id) === String(cityId)
-      );
-      if (!area && !timedOut) {
-        setTimeout(check, 150);
-        return;
-      }
-
-      traceStarted = true;
-      if (area) {
-        animateSettlementTrace(area);
-      } else {
-        console.warn("Диагностика: не найдена область для финальной обводки", cityId);
-      }
+    const area = (window.settlementAreas || []).find(
+      item => String(item.id) === String(cityId)
+    );
+    if (!area) {
+      console.warn("Обводка поселения: область пока не найдена", cityId);
     }
 
-    setTimeout(check, 100);
+    // При выборе поселения finishPartyRoute(boundary.point) записывает
+    // точку границы последней точкой маршрута. Поэтому её расстояние
+    // вдоль пути равно полной длине маршрута.
+    const boundaryPoint = window.routeDestinationBoundaryPoint;
+    const routeEndDistance = getRouteLength(routePoints);
+    if (!boundaryPoint || routePoints.length < 2) {
+      console.warn("Обводка поселения: нет конечной точки маршрута или границы", {
+        cityId,
+        boundaryPoint,
+        routePoints: routePoints.length
+      });
+    }
+
+    console.log("Обводка поселения: ожидаем касания границы", {
+      cityId,
+      routeEndDistance,
+      boundaryPoint,
+      routeEnd: routePoints.length ? routePoints[routePoints.length - 1] : null
+    });
+
+    function check() {
+      if (waitToken !== settlementTraceWaitToken) return;
+
+      const areaNow = (window.settlementAreas || []).find(
+        item => String(item.id) === String(cityId)
+      );
+      const delay = getRouteMarkerAnimationDelay(routeEndDistance);
+      const routeIsAnimating = routeMarkerAnimations.length > 0;
+
+      if (!loggedStart) {
+        console.log("Обводка поселения: проверка синхронизации", {
+          cityId,
+          delayUntilBoundary: delay,
+          routeIsAnimating,
+          areaFound: Boolean(areaNow)
+        });
+        loggedStart = true;
+      }
+
+      // Положительное значение означает, что пунктир ещё не дошёл до
+      // позиции поселения. Проверяем часто, чтобы запуск был почти точным.
+      if (delay !== null && delay > 0) {
+        settlementTraceWaitTimer = setTimeout(check, Math.min(40, Math.max(12, delay)));
+        return;
+      }
+
+      if (!areaNow) {
+        if (Date.now() - startedAt < 15000) {
+          settlementTraceWaitTimer = setTimeout(check, 100);
+          return;
+        }
+        console.warn("Обводка поселения: не удалось найти область", cityId);
+        return;
+      }
+
+      settlementTraceWaitTimer = null;
+      console.log("Обводка поселения: пунктир достиг границы, запускаем анимацию", {
+        cityId,
+        delayUntilBoundary: delay,
+        routeIsAnimating
+      });
+      animateSettlementTrace(areaNow);
+    }
+
+    // Небольшая задержка нужна только для того, чтобы обработчик успел
+    // увидеть уже созданную общую анимацию маршрута.
+    settlementTraceWaitTimer = setTimeout(check, 20);
   }
 
   function createSettlementToolbar() {
