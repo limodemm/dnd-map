@@ -3179,7 +3179,9 @@ map.on("zoomend", function() {
       const delay = typeof window.getRouteMarkerAnimationDelay === "function"
         ? window.getRouteMarkerAnimationDelay(routeEndDistance)
         : null;
-      const routeIsAnimating = routeMarkerAnimations.length > 0;
+      const routeIsAnimating = typeof window.isRouteRevealRunning === "function"
+        ? window.isRouteRevealRunning()
+        : false;
 
       if (!loggedStart) {
         console.log("Обводка поселения: проверка синхронизации", {
