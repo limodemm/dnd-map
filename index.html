@@ -582,7 +582,6 @@ let lastCursorPosition = null;
 let routeMarkerAnimations = [];
 const routeRevealBaseSpeed = 55; // базовая скорость в единицах длины маршрута/сек
 const routeRevealFadeDuration = 520;
-const routeRevealChunkLength = 18;
 
 // Чем длиннее новый отрезок, тем быстрее распространяется проявление.
 // Скорость плавно растёт от 55 до 180 единиц/сек, чтобы длинные линии
@@ -1993,8 +1992,32 @@ function updateRouteLine(cursorPosition = null) {
 
         const midpoint = (partStart + partEnd) / 2;
         const activeAnimation = getRouteMarkerAnimation(midpoint);
+
+        // Размер анимируемых фрагментов задаём в экранных пикселях, а не
+        // в условных единицах маршрута. Иначе при отдалении карты фрагменты
+        // становятся короче самого рисунка пунктира, и штрихи сливаются.
+        const partDisplayStart = totalLength > 0.001
+          ? partStart / totalLength * displayRouteLength
+          : 0;
+        const partDisplayEnd = totalLength > 0.001
+          ? partEnd / totalLength * displayRouteLength
+          : displayRouteLength;
+        const partDisplayPoints = getRoutePointsBetweenDistances(
+          displayRoutePoints,
+          partDisplayStart,
+          partDisplayEnd
+        );
+        let partScreenLength = 0;
+        for (let i = 1; i < partDisplayPoints.length; i++) {
+          const a = map.latLngToLayerPoint(partDisplayPoints[i - 1]);
+          const b = map.latLngToLayerPoint(partDisplayPoints[i]);
+          partScreenLength += a.distanceTo(b);
+        }
+
+        // Оставляем каждому фрагменту достаточно места для полного
+        // отображения штрихов и промежутков пунктирной линии.
         const fragmentCount = activeAnimation
-          ? Math.max(1, Math.ceil((partEnd - partStart) / routeRevealChunkLength))
+          ? Math.max(1, Math.floor(partScreenLength / 48))
           : 1;
 
         for (let fragment = 0; fragment < fragmentCount; fragment++) {
