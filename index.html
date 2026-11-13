@@ -471,6 +471,18 @@ document.addEventListener("keydown", function(e) {
   const auth = getAuth(app);
   const database = getDatabase(app);
 
+  // Глобальное состояние поселений. Оно хранится на window, чтобы все
+  // обработчики и вложенные функции карты обращались к одному экземпляру.
+  window.settlementAreas = window.settlementAreas || [];
+  window.settlementDrawingMode = null;
+  window.settlementDraft = [];
+  window.settlementDraftLine = null;
+  window.settlementPointerDown = false;
+  window.settlementToolbar = null;
+  window.settlementListenerStarted = false;
+  window.routeDestinationCityId = null;
+  window.routeDestinationBoundaryPoint = null;
+
 // UID ведущего. Используется только для разграничения прав.
   const GAME_MASTER_UID = "qxdgnWhXmQeqHTLPMI3q8EK60Fi2";
 
@@ -542,8 +554,8 @@ partyMarker.on("click", function() {
 
 window.routeMode = true;
 routeFinished = false;
-routeDestinationCityId = null;
-routeDestinationBoundaryPoint = null;
+window.routeDestinationCityId = null;
+window.routeDestinationBoundaryPoint = null;
 // Сбрасываем состояние форсированного марша
 routeForcedMarch = false;
 routeForcedMarchStartDistance = 0;
@@ -583,17 +595,7 @@ let routeLine = null;
 let routeRestMarkers = [];
 let routeEndMarker = null;
 
-// Невидимые области городов и деревень. Геометрия хранится в Firebase;
-// визуальный слой после сохранения не создаётся.
-let settlementAreas = [];
-let routeDestinationCityId = null;
-let routeDestinationBoundaryPoint = null;
-let settlementDrawingMode = null;
-let settlementDraft = [];
-let settlementDraftLine = null;
-let settlementPointerDown = false;
-let settlementToolbar = null;
-let settlementListenerStarted = false;
+// Невидимые области поселений и состояние маршрута обрабатываются ниже.
 
 // Состояние завершения маршрута
 let routeFinished = false;
@@ -1368,12 +1370,12 @@ window.routePendingConfirmation = false;
 
     // Для маршрута в поселение после подтверждения повторно раскрываем
     // путь от начала, а затем рисуем невидимую границу эффектом ручки.
-    if (routeDestinationCityId) {
+    if (window.routeDestinationCityId) {
       stopRouteMarkerAnimation();
       const confirmedLength = getRouteLength(routePoints);
       beginRouteMarkerAnimation(0, confirmedLength);
       updateRouteLine();
-      waitForRouteRevealThenTraceSettlement(routeDestinationCityId);
+      waitForRouteRevealThenTraceSettlement(window.routeDestinationCityId);
     } else {
       updateRouteLine();
     }
@@ -1910,8 +1912,8 @@ function cancelPartyRoute() {
   routeForcedSegments = [];
   routePoints = [];
   lastCursorPosition = null;
-  routeDestinationCityId = null;
-  routeDestinationBoundaryPoint = null;
+  window.routeDestinationCityId = null;
+  window.routeDestinationBoundaryPoint = null;
 
   stopRouteMarkerAnimation();
   clearRouteDrawing();
@@ -2559,7 +2561,7 @@ function finishPartyRoute(latlng) {
   if (
     !lastPoint ||
     map.latLngToContainerPoint(lastPoint)
-      .distanceTo(map.latLngToContainerPoint(latlng)) > (routeDestinationCityId ? 0.05 : 3)
+      .distanceTo(map.latLngToContainerPoint(latlng)) > (window.routeDestinationCityId ? 0.05 : 3)
   ) {
     routePoints.push(latlng);
   }
@@ -2608,8 +2610,8 @@ window.handlePartyRouteClick = function(latlng) {
     );
 
     if (boundary) {
-      routeDestinationCityId = destinationArea.id;
-      routeDestinationBoundaryPoint = boundary.point;
+      window.routeDestinationCityId = destinationArea.id;
+      window.routeDestinationBoundaryPoint = boundary.point;
       finishPartyRoute(boundary.point);
       console.log("Маршрут завершён у поселения:", destinationArea.type, destinationArea.id);
       return;
@@ -2714,7 +2716,7 @@ map.on("zoomend", function() {
   function findSettlementAt(point) {
     // Если области пересекаются, выбираем самую маленькую: это наиболее
     // конкретное поселение, в которое попал курсор.
-    const matches = settlementAreas.filter(area =>
+    const matches = window.settlementAreas.filter(area =>
       Array.isArray(area.points) && area.points.length >= 3 &&
       pointInSettlement(point, area.points)
     );
@@ -2796,7 +2798,7 @@ map.on("zoomend", function() {
   }
 
   function animateSettlementTrace(area) {
-    const startPoint = routeDestinationBoundaryPoint || routePoints[routePoints.length - 1];
+    const startPoint = window.routeDestinationBoundaryPoint || routePoints[routePoints.length - 1];
     const tracePoints = buildSettlementTrace(area, startPoint);
     if (tracePoints.length < 3) return;
 
@@ -2862,7 +2864,7 @@ map.on("zoomend", function() {
     const startedAt = Date.now();
     function check() {
       if (!routeMarkerAnimations.length || Date.now() - startedAt > 30000) {
-        const area = settlementAreas.find(item => item.id === cityId);
+        const area = window.settlementAreas.find(item => item.id === cityId);
         if (area) animateSettlementTrace(area);
         return;
       }
@@ -2872,7 +2874,7 @@ map.on("zoomend", function() {
   }
 
   function createSettlementToolbar() {
-    if (settlementToolbar || !window.dndFirebase || !window.dndFirebase.isGameMaster) return;
+    if (window.settlementToolbar || !window.dndFirebase || !window.dndFirebase.isGameMaster) return;
     const toolbar = document.createElement("div");
     toolbar.id = "settlement-tools";
     toolbar.style.cssText = `
@@ -2890,7 +2892,7 @@ map.on("zoomend", function() {
       <div id="settlement-tool-status" style="line-height:1.35;opacity:.85;">Выбери тип поселения, затем зажми кнопку мыши и обведи его.</div>
     `;
     document.body.appendChild(toolbar);
-    settlementToolbar = toolbar;
+    window.settlementToolbar = toolbar;
 
     toolbar.querySelectorAll("[data-settlement-type]").forEach(button => {
       button.style.cssText = "padding:7px;background:#393027;color:#eee2c8;border:1px solid #756044;border-radius:5px;";
@@ -2912,15 +2914,15 @@ map.on("zoomend", function() {
     const status = document.getElementById("settlement-tool-status");
     if (status) status.textContent = message;
     const cancel = document.getElementById("settlement-draw-cancel");
-    if (cancel) cancel.disabled = !settlementDrawingMode;
+    if (cancel) cancel.disabled = !window.settlementDrawingMode;
   }
 
   function beginSettlementDrawing(type) {
     if (!window.dndFirebase || !window.dndFirebase.isGameMaster) return;
     cancelSettlementDrawing();
-    settlementDrawingMode = type;
+    window.settlementDrawingMode = type;
     window.settlementDrawingActive = true;
-    settlementDraft = [];
+    window.settlementDraft = [];
     map.dragging.disable();
     map.doubleClickZoom.disable();
     map.getContainer().style.touchAction = "none";
@@ -2930,13 +2932,13 @@ map.on("zoomend", function() {
   }
 
   function handleSettlementPointerDown(event) {
-    if (!settlementDrawingMode || event.button !== 0) return;
+    if (!window.settlementDrawingMode || event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    settlementPointerDown = true;
-    settlementDraft = [map.mouseEventToLatLng(event)];
-    if (settlementDraftLine && map.hasLayer(settlementDraftLine)) map.removeLayer(settlementDraftLine);
-    settlementDraftLine = L.polyline(settlementDraft, {
+    window.settlementPointerDown = true;
+    window.settlementDraft = [map.mouseEventToLatLng(event)];
+    if (window.settlementDraftLine && map.hasLayer(window.settlementDraftLine)) map.removeLayer(window.settlementDraftLine);
+    window.settlementDraftLine = L.polyline(window.settlementDraft, {
       color: "#f0d18a", weight: 3, opacity: 0.95,
       lineCap: "round", lineJoin: "round", interactive: false
     }).addTo(map);
@@ -2944,45 +2946,45 @@ map.on("zoomend", function() {
   }
 
   function handleSettlementPointerMove(event) {
-    if (!settlementDrawingMode || !settlementPointerDown) return;
+    if (!window.settlementDrawingMode || !window.settlementPointerDown) return;
     event.preventDefault();
     event.stopPropagation();
     const point = map.mouseEventToLatLng(event);
-    const previous = settlementDraft[settlementDraft.length - 1];
+    const previous = window.settlementDraft[window.settlementDraft.length - 1];
     if (map.latLngToContainerPoint(previous).distanceTo(map.latLngToContainerPoint(point)) >= 4) {
-      settlementDraft.push(point);
-      settlementDraftLine.setLatLngs(settlementDraft);
+      window.settlementDraft.push(point);
+      window.settlementDraftLine.setLatLngs(window.settlementDraft);
     }
   }
 
   async function handleSettlementPointerUp(event) {
-    if (!settlementDrawingMode || !settlementPointerDown) return;
+    if (!window.settlementDrawingMode || !window.settlementPointerDown) return;
     event.preventDefault();
     event.stopPropagation();
     const finalPoint = map.mouseEventToLatLng(event);
-    const previous = settlementDraft[settlementDraft.length - 1];
+    const previous = window.settlementDraft[window.settlementDraft.length - 1];
     if (!previous || map.latLngToContainerPoint(previous).distanceTo(map.latLngToContainerPoint(finalPoint)) > 1) {
-      settlementDraft.push(finalPoint);
+      window.settlementDraft.push(finalPoint);
     }
-    settlementPointerDown = false;
+    window.settlementPointerDown = false;
     settlementJustDrew = true;
     setTimeout(function() { settlementJustDrew = false; }, 350);
     try { map.getContainer().releasePointerCapture(event.pointerId); } catch (_) {}
 
-    if (settlementDraft.length < 8 || polygonArea(settlementDraft) < 100) {
+    if (window.settlementDraft.length < 8 || polygonArea(window.settlementDraft) < 100) {
       setSettlementToolStatus("Контур слишком маленький. Попробуй обвести поселение ещё раз.");
-      if (settlementDraftLine && map.hasLayer(settlementDraftLine)) map.removeLayer(settlementDraftLine);
-      settlementDraftLine = null;
-      settlementDraft = [];
+      if (window.settlementDraftLine && map.hasLayer(window.settlementDraftLine)) map.removeLayer(window.settlementDraftLine);
+      window.settlementDraftLine = null;
+      window.settlementDraft = [];
       return;
     }
 
     // Замыкаем область автоматически; после сохранения линия исчезнет.
-    const type = settlementDrawingMode;
+    const type = window.settlementDrawingMode;
     const area = {
       id: "settlement_" + Date.now() + "_" + Math.floor(Math.random() * 100000),
       type: type,
-      points: settlementDraft.map(point => ({ lat: point.lat, lng: point.lng })),
+      points: window.settlementDraft.map(point => ({ lat: point.lat, lng: point.lng })),
       entrancePoints: [],
       exitPoints: [],
       createdAt: Date.now()
@@ -3002,10 +3004,10 @@ map.on("zoomend", function() {
       alert("Не удалось сохранить поселение в Firebase: " + error.message);
     }
 
-    if (settlementDraftLine && map.hasLayer(settlementDraftLine)) map.removeLayer(settlementDraftLine);
-    settlementDraftLine = null;
-    settlementDraft = [];
-    settlementDrawingMode = null;
+    if (window.settlementDraftLine && map.hasLayer(window.settlementDraftLine)) map.removeLayer(window.settlementDraftLine);
+    window.settlementDraftLine = null;
+    window.settlementDraft = [];
+    window.settlementDrawingMode = null;
     window.settlementDrawingActive = false;
     map.dragging.enable();
     map.doubleClickZoom.enable();
@@ -3016,12 +3018,12 @@ map.on("zoomend", function() {
   }
 
   function cancelSettlementDrawing() {
-    settlementPointerDown = false;
-    settlementDrawingMode = null;
+    window.settlementPointerDown = false;
+    window.settlementDrawingMode = null;
     window.settlementDrawingActive = false;
-    settlementDraft = [];
-    if (settlementDraftLine && map.hasLayer(settlementDraftLine)) map.removeLayer(settlementDraftLine);
-    settlementDraftLine = null;
+    window.settlementDraft = [];
+    if (window.settlementDraftLine && map.hasLayer(window.settlementDraftLine)) map.removeLayer(window.settlementDraftLine);
+    window.settlementDraftLine = null;
     if (map.dragging) map.dragging.enable();
     if (map.doubleClickZoom) map.doubleClickZoom.enable();
     if (map.getContainer) map.getContainer().style.touchAction = "";
@@ -3043,10 +3045,10 @@ map.on("zoomend", function() {
 
     onValue(areasRef, function(snapshot) {
       const value = snapshot.val() || {};
-      settlementAreas = Object.keys(value).map(key => ({
+      window.settlementAreas = Object.keys(value).map(key => ({
         ...value[key], id: value[key].id || key
       })).filter(area => Array.isArray(area.points) && area.points.length >= 3);
-      console.log("Области поселений загружены:", settlementAreas.length);
+      console.log("Области поселений загружены:", window.settlementAreas.length);
     }, function(error) {
       console.error("Ошибка загрузки областей поселений:", error);
     });
