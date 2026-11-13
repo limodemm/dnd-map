@@ -2705,8 +2705,14 @@ window.handlePartyRouteClick = function(latlng) {
       window.routeDestinationCityId = destinationArea.id;
       window.routeDestinationBoundaryPoint = boundary.point;
       window.routeDestinationApproachPoint = approachPoint;
-      if (window.showSettlementOutline) window.showSettlementOutline(destinationArea, 1);
+      // Сначала завершаем маршрут. Визуальная обводка — необязательный эффект:
+      // ошибка Leaflet/геометрии не должна отменять выбор поселения.
       finishPartyRoute(boundary.point);
+      try {
+        if (window.showSettlementOutline) window.showSettlementOutline(destinationArea, 1);
+      } catch (outlineError) {
+        console.error("Ошибка отображения обводки поселения (маршрут уже завершён):", outlineError);
+      }
       console.log("Маршрут завершён у поселения:", destinationArea.type, destinationArea.id);
       return;
     }
@@ -2761,7 +2767,12 @@ map.on("mousemove", function(e) {
   if (!window.routeMode || !hasMouse) return;
 
   lastCursorPosition = e.latlng;
-  if (window.previewSettlementAt) window.previewSettlementAt(e.latlng);
+  // Ошибка предварительной обводки не должна прерывать построение маршрута.
+  try {
+    if (window.previewSettlementAt) window.previewSettlementAt(e.latlng);
+  } catch (previewError) {
+    console.error("Ошибка предварительной обводки поселения:", previewError);
+  }
 
   updateRouteLine(e.latlng);
 });
@@ -2809,9 +2820,11 @@ map.on("zoomend", function() {
   }
 
   function findSettlementAt(point) {
+    // Поиск области не должен ломаться, если Firebase ещё не загрузил список.
+    const areas = Array.isArray(window.settlementAreas) ? window.settlementAreas : [];
     // Если области пересекаются, выбираем самую маленькую: это наиболее
     // конкретное поселение, в которое попал курсор.
-    const matches = window.settlementAreas.filter(area =>
+    const matches = areas.filter(area =>
       Array.isArray(area.points) && area.points.length >= 3 &&
       pointInSettlement(point, area.points)
     );
@@ -3006,37 +3019,43 @@ map.on("zoomend", function() {
 
   window.clearSettlementOutline = clearSettlementOutline;
   window.previewSettlementAt = function(point) {
-    if (!window.routeMode) {
+    try {
+      if (!window.routeMode) {
+        if (settlementHoverOutline && map.hasLayer(settlementHoverOutline)) map.removeLayer(settlementHoverOutline);
+        settlementHoverOutline = null;
+        return;
+      }
+      const area = findSettlementAt(point);
+      if (!area) {
+        if (settlementHoverOutline && map.hasLayer(settlementHoverOutline)) map.removeLayer(settlementHoverOutline);
+        settlementHoverOutline = null;
+        return;
+      }
+      if (settlementSelectedOutline) return;
+
+      // При наведении точка курсора задаёт предварительное место прибытия.
+      const screenPoints = getSettlementStrokePoints(area, point);
+      if (screenPoints.length < 3) return;
+      const ribbon = makeSettlementRibbonLatLngs(screenPoints);
+      if (!ribbon.length) return;
+      let pane = map.getPane("settlement-preview-pane");
+      if (!pane) pane = map.createPane("settlement-preview-pane");
+      pane.style.zIndex = "675";
+
+      if (!settlementHoverOutline) {
+        settlementHoverOutline = L.polygon(ribbon, {
+          pane: "settlement-preview-pane",
+          color: "#080808", weight: 0.6, opacity: 0.38,
+          fill: true, fillColor: "#080808", fillOpacity: 0.38,
+          interactive: false, lineJoin: "round"
+        }).addTo(map);
+      } else {
+        settlementHoverOutline.setLatLngs(ribbon);
+      }
+    } catch (previewError) {
+      console.error("Не удалось нарисовать предварительную обводку поселения:", previewError);
       if (settlementHoverOutline && map.hasLayer(settlementHoverOutline)) map.removeLayer(settlementHoverOutline);
       settlementHoverOutline = null;
-      return;
-    }
-    const area = findSettlementAt(point);
-    if (!area) {
-      if (settlementHoverOutline && map.hasLayer(settlementHoverOutline)) map.removeLayer(settlementHoverOutline);
-      settlementHoverOutline = null;
-      return;
-    }
-    if (settlementSelectedOutline) return;
-
-    // На наведении точка курсора служит предварительной точкой прибытия.
-    // После клика тот же росчерк перестраивается от точной точки подхода отряда.
-    const screenPoints = getSettlementStrokePoints(area, point);
-    if (screenPoints.length < 3) return;
-    const ribbon = makeSettlementRibbonLatLngs(screenPoints);
-    let pane = map.getPane("settlement-preview-pane");
-    if (!pane) pane = map.createPane("settlement-preview-pane");
-    pane.style.zIndex = "675";
-
-    if (!settlementHoverOutline) {
-      settlementHoverOutline = L.polygon(ribbon, {
-        pane: "settlement-preview-pane",
-        color: "#080808", weight: 0.6, opacity: 0.38,
-        fill: true, fillColor: "#080808", fillOpacity: 0.38,
-        interactive: false, lineJoin: "round"
-      }).addTo(map);
-    } else {
-      settlementHoverOutline.setLatLngs(ribbon);
     }
   };
 
