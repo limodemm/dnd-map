@@ -2880,6 +2880,7 @@ map.on("zoomend", function() {
   // кастомных panes и сложной геометрии. Так проверяем именно вывод Leaflet-слоёв.
 
   function getDiagnosticSettlementContour(area, startPoint) {
+    console.log("Обводка поселения: версия контура vector-arithmetic-20261113-2");
     if (!area || !Array.isArray(area.points) || area.points.length < 3) return [];
 
     const points = area.points;
@@ -2900,7 +2901,11 @@ map.on("zoomend", function() {
       .subtract(map.latLngToLayerPoint(nearest.point));
     const backward = map.latLngToLayerPoint(points[index])
       .subtract(map.latLngToLayerPoint(nearest.point));
-    const direction = approach.dot(forward) >= approach.dot(backward) ? 1 : -1;
+    // Leaflet Point не предоставляет метод dot() во всех используемых версиях.
+    // Считаем скалярные произведения явно, чтобы выбрать сторону обхода контура.
+    const forwardDot = approach.x * forward.x + approach.y * forward.y;
+    const backwardDot = approach.x * backward.x + approach.y * backward.y;
+    const direction = forwardDot >= backwardDot ? 1 : -1;
 
     const contour = [nearest.point];
     if (direction === 1) {
