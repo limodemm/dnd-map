@@ -576,23 +576,17 @@ let routeConfirmButton = null;
 let lastCursorPosition = null;
 
 // Анимация маршрута. Линия раскрывается последовательно от начала
-// нового отрезка к его концу; случайные точки оставлены только для
-// прежнего порядка появления жетонов. Перерисовка не сбрасывает анимацию.
+// нового отрезка к его концу; жетоны синхронизированы с достижением
+// пунктиром их позиции. Перерисовка не сбрасывает анимацию.
 let routeMarkerAnimations = [];
-const routeRevealBaseSpeed = 55; // базовая скорость в единицах длины маршрута/сек
 const routeRevealFadeDuration = 520; // прежняя длительность появления жетонов
 const routeLineRevealFadeDuration = 220; // плавное появление отдельного штриха
 const routeLineDashLength = 8;
 const routeLineDashGap = 10;
 const routeLineDashStep = routeLineDashLength + routeLineDashGap;
-const routeLineFirstDashDelay = 260; // пауза между первыми штрихами
-const routeLineDashAcceleration = 4; // каждый следующий интервал короче на 4 мс
+const routeLineFirstDashDelay = 220; // пауза между первыми штрихами
+const routeLineDashAcceleration = 3; // каждый следующий интервал короче на 3 мс
 const routeLineMinimumDashDelay = 95; // предел ускорения, чтобы штрихи не сливались
-
-// Жетоны сохраняют прежнюю скорость и прежнюю логику появления.
-function getRouteRevealSpeed(length) {
-  return routeRevealBaseSpeed + Math.min(125, Math.max(0, length) * 0.12);
-}
 
 // Задержка каждого штриха считается от начала линии. С каждым штрихом
 // интервал немного сокращается, пока не достигнет безопасного минимума.
@@ -609,7 +603,7 @@ function getRouteLineRevealDelay(dashIndex) {
 
 function getRouteLineRevealDuration(screenLength) {
   if (screenLength <= 0) return routeLineRevealFadeDuration;
-  const lastDashIndex = Math.max(0, Math.floor((screenLength - 1) / routeLineDashStep));
+  const lastDashIndex = Math.max(0, Math.floor((screenLength - 2) / routeLineDashStep));
   return getRouteLineRevealDelay(lastDashIndex) + routeLineRevealFadeDuration;
 }
 
@@ -621,38 +615,13 @@ function stopRouteMarkerAnimation() {
   routeMarkerAnimations = [];
 }
 
-function getRouteRevealDistance(animation, distance) {
-  return Math.min(...animation.seeds.map(seed => Math.abs(distance - seed)));
-}
-
-function getRouteRevealDelay(animation, distance) {
-  return getRouteRevealDistance(animation, distance) / animation.speed * 1000;
-}
-
 function beginRouteMarkerAnimation(startDistance, endDistance) {
   const length = endDistance - startDistance;
   if (length < 0.001) return;
 
-  // Сохраняем прежнюю случайную очерёдность появления жетонов.
-  // На последовательность проявления штрихов линии эти точки не влияют.
-  const partCount = 3 + Math.floor(Math.random() * 3);
-  const seeds = Array.from({ length: partCount }, (_, index) =>
-    startDistance + (index + Math.random()) * length / partCount
-  );
-  const speed = getRouteRevealSpeed(length);
-
-  const sortedSeeds = [...seeds].sort((a, b) => a - b);
-  const checkDistances = [startDistance, endDistance];
-  for (let i = 0; i < sortedSeeds.length - 1; i++) {
-    checkDistances.push((sortedSeeds[i] + sortedSeeds[i + 1]) / 2);
-  }
-
-  const maxRevealDistance = Math.max(
-    ...checkDistances.map(distance => getRouteRevealDistance({ seeds }, distance))
-  );
-  const markerDuration = maxRevealDistance / speed * 1000 + routeRevealFadeDuration;
-
-  // Линия раскрывается строго от начала нового отрезка к его концу.
+  // Линия и жетоны используют одну и ту же сглаженную геометрию.
+  // Это позволяет запускать каждый жетон только после того, как
+  // последовательность штрихов дошла до его позиции.
   // Экранные координаты нужны, чтобы размер штрихов и их интервалы
   // оставались одинаковыми при разных уровнях масштаба карты.
   const routeTotalLength = getRouteLength(routePoints);
@@ -667,14 +636,15 @@ function beginRouteMarkerAnimation(startDistance, endDistance) {
   const lineStartScreen = getRouteScreenDistanceAtDistance(displayPoints, displayStart);
   const lineEndScreen = getRouteScreenDistanceAtDistance(displayPoints, displayEnd);
   const lineDuration = getRouteLineRevealDuration(lineEndScreen - lineStartScreen);
-  const duration = Math.max(markerDuration, lineDuration);
+  // Держим анимацию активной и на время плавного появления последнего жетона.
+  const duration = lineDuration + routeRevealFadeDuration;
 
   const animation = {
     start: startDistance,
     end: endDistance,
-    seeds,
-    partCount,
-    speed,
+    routeTotalLength,
+    displayTotalLength,
+    displayPoints,
     lineStartScreen,
     lineEndScreen,
     startedAt: Date.now(),
@@ -719,14 +689,39 @@ function shouldAnimateRouteMarker(distance) {
   return Boolean(getRouteMarkerAnimation(distance));
 }
 
-// Возвращает задержку до появления точки. Отрицательное значение означает,
-// что её очередь уже прошла — CSS продолжит анимацию с нужного момента.
+// Возвращает задержку до появления жетона. Он начинает проявляться
+// только после того, как пунктир дошёл до соответствующей позиции.
 function getRouteMarkerAnimationDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
 
-  return getRouteRevealDelay(animation, distance) -
-    (Date.now() - animation.startedAt);
+  const displayDistance = animation.routeTotalLength > 0.001
+    ? distance / animation.routeTotalLength * animation.displayTotalLength
+    : 0;
+  const markerScreenDistance = getRouteScreenDistanceAtDistance(
+    animation.displayPoints,
+    displayDistance
+  );
+  const relativeScreenDistance = Math.max(
+    0,
+    markerScreenDistance - animation.lineStartScreen
+  );
+
+  // Если жетон находится внутри штриха, ждём этот штрих;
+  // если в промежутке между штрихами — следующий за ним.
+  const dashOffset = relativeScreenDistance % routeLineDashStep;
+  let dashIndex = Math.floor(relativeScreenDistance / routeLineDashStep);
+  if (dashOffset > routeLineDashLength) dashIndex++;
+
+  const lastDashIndex = Math.max(
+    0,
+    Math.floor((animation.lineEndScreen - animation.lineStartScreen - 2) / routeLineDashStep)
+  );
+  dashIndex = Math.min(dashIndex, lastDashIndex);
+
+  const markerRevealTime =
+    getRouteLineRevealDelay(dashIndex) + routeLineRevealFadeDuration;
+  return markerRevealTime - (Date.now() - animation.startedAt);
 }
 
 // Определяем, используется ли ПК с мышью
