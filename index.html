@@ -663,6 +663,42 @@ function beginRouteMarkerAnimation(startDistance, endDistance) {
   }, duration + 100);
 }
 
+// При смене масштаба пересчитываем экранную длину активных анимаций,
+// сохраняя уже пройденную долю времени. Благодаря этому новый зум не
+// заставляет штрихи перескакивать вперёд/назад и не запускает линию заново.
+function rebaseRouteMarkerAnimationsForZoom() {
+  const now = Date.now();
+
+  routeMarkerAnimations.forEach(animation => {
+    const oldDuration = Math.max(1, animation.duration);
+    const elapsed = Math.max(0, now - animation.startedAt);
+    const progress = Math.max(0, Math.min(1, elapsed / oldDuration));
+
+    const lineStartScreen = getRouteScreenDistanceAtDistance(
+      animation.displayPoints,
+      animation.start / animation.routeTotalLength * animation.displayTotalLength
+    );
+    const lineEndScreen = getRouteScreenDistanceAtDistance(
+      animation.displayPoints,
+      animation.end / animation.routeTotalLength * animation.displayTotalLength
+    );
+    const lineDuration = getRouteLineRevealDuration(lineEndScreen - lineStartScreen);
+    const newDuration = lineDuration + routeRevealFadeDuration;
+
+    animation.lineStartScreen = lineStartScreen;
+    animation.lineEndScreen = lineEndScreen;
+    animation.duration = newDuration;
+    animation.startedAt = now - progress * newDuration;
+
+    if (animation.timer) clearTimeout(animation.timer);
+    const remaining = Math.max(0, newDuration - progress * newDuration);
+    animation.timer = setTimeout(function() {
+      routeMarkerAnimations = routeMarkerAnimations.filter(item => item !== animation);
+      updateRouteLine(lastCursorPosition);
+    }, remaining + 100);
+  });
+}
+
 function getRouteMarkerAnimation(distance) {
   const now = Date.now();
   let matchingAnimation = null;
@@ -2550,6 +2586,9 @@ map.on("mousemove", function(e) {
 // При изменении масштаба пересобираем группы крестиков,
 // чтобы они не накладывались друг на друга.
 map.on("zoomend", function() {
+  // Сначала переводим активные анимации на новую экранную шкалу,
+  // сохраняя их текущий прогресс, и только затем перерисовываем маршрут.
+  rebaseRouteMarkerAnimationsForZoom();
   if (routePoints.length >= 2 || window.routeMode) {
     updateRouteLine(lastCursorPosition);
   }
