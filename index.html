@@ -581,7 +581,7 @@ let lastCursorPosition = null;
 // Перерисовка маршрута не сбрасывает уже идущую анимацию.
 let routeMarkerAnimations = [];
 const routeRevealBaseSpeed = 55; // базовая скорость в единицах длины маршрута/сек
-const routeRevealFadeDuration = 520;
+const routeRevealFadeDuration = 900;
 
 // Чем длиннее новый отрезок, тем быстрее распространяется проявление.
 // Скорость плавно растёт от 55 до 180 единиц/сек, чтобы длинные линии
@@ -938,7 +938,13 @@ function createRoutePanel() {
   filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.65));
 }
 
-/* Линия и жетоны спокойно проявляются без падения и подпрыгивания. */
+/* Линии и жетоны проявляются медленнее и с более мягким ускорением. */
+@property --route-token-reveal-radius {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
 @keyframes route-line-reveal {
   /* Leaflet задаёт прозрачность именно обводке SVG-пути,
      поэтому анимируем stroke-opacity, а не общую opacity элемента. */
@@ -947,17 +953,37 @@ function createRoutePanel() {
 }
 
 .route-line-reveal {
-  animation: route-line-reveal 520ms ease-out both;
+  animation: route-line-reveal 900ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 
+/* Иконки раскрываются одновременно из четырёх небольших областей.
+   Радиусы постепенно растут и соединяются, открывая весь значок. */
 @keyframes route-token-appear {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    --route-token-reveal-radius: 0px;
+    opacity: 0.15;
+  }
+  to {
+    --route-token-reveal-radius: 42px;
+    opacity: 1;
+  }
 }
 
 .route-token-appear {
   position: relative;
-  animation: route-token-appear 520ms ease-out both;
+  -webkit-mask-image:
+    radial-gradient(circle at 22% 22%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px)),
+    radial-gradient(circle at 78% 22%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px)),
+    radial-gradient(circle at 22% 78%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px)),
+    radial-gradient(circle at 78% 78%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px));
+  mask-image:
+    radial-gradient(circle at 22% 22%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px)),
+    radial-gradient(circle at 78% 22%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px)),
+    radial-gradient(circle at 22% 78%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px)),
+    radial-gradient(circle at 78% 78%, #000 0 var(--route-token-reveal-radius), transparent calc(var(--route-token-reveal-radius) + 1px));
+  -webkit-mask-composite: source-over;
+  mask-composite: add;
+  animation: route-token-appear 900ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
   animation-delay: var(--route-animation-delay, 0ms);
 }
 
@@ -967,7 +993,7 @@ function createRoutePanel() {
 }
 
 .leaflet-route-rest-pane-pane .route-rest-raised.route-marker-appear {
-  animation: route-rest-appear 520ms ease-out both;
+  animation: route-rest-appear 900ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 
 .route-exhaustion-glyph {
