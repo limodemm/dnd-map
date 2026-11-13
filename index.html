@@ -515,6 +515,33 @@ window.routeMode = false;
     partyListenerStarted = true;
 
     const partyRef = ref(database, "party/state");
+    const sharedRouteRef = ref(database, "party/route");
+
+    let firstSharedRouteSnapshot = true;
+    onValue(sharedRouteRef, function(snapshot) {
+      if (firstSharedRouteSnapshot) {
+        firstSharedRouteSnapshot = false;
+        return;
+      }
+      const data = snapshot.val();
+      if (!data || !Array.isArray(data.points)) return;
+      if (typeof window.applySynchronizedPartyRoute === "function") {
+        window.applySynchronizedPartyRoute(data);
+      }
+      if (data.destinationSettlementId) {
+        waitForRouteRevealThenTraceSettlement(data.destinationSettlementId);
+      }
+    }, function(error) {
+      console.error("Ошибка синхронизации маршрута:", error);
+    });
+
+    window.publishPartyRoute = async function(routeData) {
+      if (!window.dndFirebase || !window.dndFirebase.ready || !window.dndFirebase.uid) {
+        throw new Error("Firebase ещё не готов");
+      }
+      const payload = { ...routeData, eventId: Date.now() + "_" + window.dndFirebase.uid };
+      await set(sharedRouteRef, payload);
+    };
 
     try {
       // Проверяем, существует ли уже отряд в базе
@@ -670,7 +697,7 @@ function stopRouteMarkerAnimation() {
   routeMarkerAnimations = [];
 }
 
-function beginRouteMarkerAnimation(startDistance, endDistance) {
+function beginRouteMarkerAnimation(startDistance, endDistance, synchronizedStartedAt) {
   const length = endDistance - startDistance;
   if (length < 0.001) return;
 
@@ -702,7 +729,7 @@ function beginRouteMarkerAnimation(startDistance, endDistance) {
     displayPoints,
     lineStartScreen,
     lineEndScreen,
-    startedAt: Date.now(),
+    startedAt: Number.isFinite(synchronizedStartedAt) ? synchronizedStartedAt : Date.now(),
     duration,
     timer: null
   };
@@ -1362,20 +1389,46 @@ window.routeMode = false;
 map.doubleClickZoom.enable();
 window.routePendingConfirmation = false;
 
-    window.confirmedPartyRoute = routePoints.map(point => ({
-      lat: point.lat,
-      lng: point.lng
-    }));
+    const routePayload = {
+      points: routePoints.map(point => ({ lat: point.lat, lng: point.lng })),
+      destinationSettlementId: window.routeDestinationCityId || null,
+      destinationBoundaryPoint: window.routeDestinationBoundaryPoint
+        ? { lat: window.routeDestinationBoundaryPoint.lat, lng: window.routeDestinationBoundaryPoint.lng }
+        : null,
+      destinationApproachPoint: window.routeDestinationApproachPoint
+        ? { lat: window.routeDestinationApproachPoint.lat, lng: window.routeDestinationApproachPoint.lng }
+        : null,
+      pace: routePace,
+      speedReduced: routeSpeedReduced,
+      forcedMarch: routeForcedMarch,
+      forcedMarchStartDistance: routeForcedMarchStartDistance,
+      forcedMarchStartUnits: routeForcedMarchStartUnits,
+      forcedSegments: routeForcedSegments.map(segment => ({ ...segment })),
+      startedAt: Date.now() + 500,
+      confirmedBy: window.dndFirebase && window.dndFirebase.uid
+        ? window.dndFirebase.uid : null
+    };
 
     lastCursorPosition = null;
     routePanel.style.display = "none";
+    window.confirmedPartyRoute = routePayload.points;
 
-    // Маршрут в поселение и его обводка уже анимируются до подтверждения.
-    // Подтверждение только фиксирует маршрут и не запускает анимации повторно.
-    // Для обычных маршрутов сохраняем прежнее обновление линии.
-    if (!window.routeDestinationCityId) updateRouteLine();
+    if (!window.publishPartyRoute) {
+      console.error("Синхронизация маршрута ещё не готова");
+      alert("Не удалось подтвердить маршрут: нет соединения с Firebase.");
+      window.routePendingConfirmation = true;
+      routePanel.style.display = "block";
+      return;
+    }
 
-    console.log("Маршрут подтверждён:", window.confirmedPartyRoute);
+    window.publishPartyRoute(routePayload).then(function() {
+      console.log("Маршрут опубликован для всех участников:", routePayload);
+    }).catch(function(error) {
+      console.error("Ошибка публикации маршрута:", error);
+      alert("Не удалось опубликовать маршрут: " + error.message);
+      window.routePendingConfirmation = true;
+      routePanel.style.display = "block";
+    });
   });
 
   // Возврат к предыдущему привалу
@@ -1913,6 +1966,7 @@ function cancelPartyRoute() {
 
   stopRouteMarkerAnimation();
   clearRouteDrawing();
+  if (window.clearSettlementOutline) window.clearSettlementOutline();
 
   const forcedButton = document.getElementById("route-forced-march");
   if (forcedButton) {
@@ -2524,6 +2578,41 @@ function updateRouteLine(cursorPosition = null) {
   console.log("Длина маршрута:", Math.round(totalLength));
 }
 
+// Применение подтверждённого маршрута, полученного из Firebase.
+// Эта функция вызывается одинаково на всех подключённых клиентах.
+window.applySynchronizedPartyRoute = function(data) {
+  if (!data || !Array.isArray(data.points) || data.points.length < 2) return;
+
+  stopRouteMarkerAnimation();
+  routePoints = data.points.map(point => L.latLng(Number(point.lat), Number(point.lng)));
+  routePace = data.pace || "normal";
+  routeSpeedReduced = Boolean(data.speedReduced);
+  routeForcedMarch = Boolean(data.forcedMarch);
+  routeForcedMarchStartDistance = Number(data.forcedMarchStartDistance) || 0;
+  routeForcedMarchStartUnits = Number(data.forcedMarchStartUnits) || 0;
+  routeForcedSegments = Array.isArray(data.forcedSegments) ? data.forcedSegments : [];
+  routeFinished = true;
+  window.routeMode = false;
+  window.routePendingConfirmation = false;
+  window.routeDestinationCityId = data.destinationSettlementId || null;
+  window.routeDestinationBoundaryPoint = data.destinationBoundaryPoint
+    ? L.latLng(data.destinationBoundaryPoint.lat, data.destinationBoundaryPoint.lng) : null;
+  window.routeDestinationApproachPoint = data.destinationApproachPoint
+    ? L.latLng(data.destinationApproachPoint.lat, data.destinationApproachPoint.lng) : null;
+  lastCursorPosition = null;
+
+  if (routePanel) routePanel.style.display = "none";
+  map.doubleClickZoom.enable();
+  if (window.clearSettlementOutline) window.clearSettlementOutline();
+
+  const total = getRouteLength(routePoints);
+  if (total > 0.001) {
+    beginRouteMarkerAnimation(0, total, Number(data.startedAt) || Date.now());
+  }
+  updateRouteLine(null);
+  console.log("Получен общий маршрут:", data);
+};
+
 // =====================================
 // ДОБАВЛЕНИЕ ТОЧКИ МАРШРУТА
 // =====================================
@@ -2532,11 +2621,7 @@ window.addPartyRoutePoint = function(latlng) {
   const previousLength = getRouteLength(routePoints);
   routePoints.push(latlng);
 
-  beginRouteMarkerAnimation(
-    previousLength,
-    getRouteLength(routePoints)
-  );
-
+  // Во время прокладки маршрут и жетоны отображаются сразу, без анимации.
   lastCursorPosition = null;
   updateRouteLine(null, true);
 
@@ -2568,11 +2653,7 @@ function finishPartyRoute(latlng) {
     return;
   }
 
-  beginRouteMarkerAnimation(
-    previousLength,
-    getRouteLength(routePoints)
-  );
-
+  // До подтверждения маршрут остаётся статичным предпросмотром.
   routeFinished = true;
   window.routeMode = false;
   window.routePendingConfirmation = true;
@@ -2609,10 +2690,8 @@ window.handlePartyRouteClick = function(latlng) {
       window.routeDestinationCityId = destinationArea.id;
       window.routeDestinationBoundaryPoint = boundary.point;
       window.routeDestinationApproachPoint = approachPoint;
+      if (window.showSettlementOutline) window.showSettlementOutline(destinationArea, 1);
       finishPartyRoute(boundary.point);
-      // Периметр обводится после того, как до границы дошла анимация маршрута,
-      // не дожидаясь нажатия кнопки «Подтвердить».
-      waitForRouteRevealThenTraceSettlement(destinationArea.id);
       console.log("Маршрут завершён у поселения:", destinationArea.type, destinationArea.id);
       return;
     }
@@ -2667,6 +2746,7 @@ map.on("mousemove", function(e) {
   if (!window.routeMode || !hasMouse) return;
 
   lastCursorPosition = e.latlng;
+  if (window.previewSettlementAt) window.previewSettlementAt(e.latlng);
 
   updateRouteLine(e.latlng);
 });
@@ -2794,6 +2874,73 @@ map.on("zoomend", function() {
     result.push(nearest.point);
     return result;
   }
+
+  let settlementHoverOutline = null;
+  let settlementSelectedOutline = null;
+
+  function showSettlementOutline(area, opacity) {
+    if (!area || !Array.isArray(area.points) || area.points.length < 3) return;
+    const points = area.points.map(point => [point.lat, point.lng]);
+    points.push(points[0]);
+    let pane = map.getPane("settlement-preview-pane");
+    if (!pane) pane = map.createPane("settlement-preview-pane");
+    pane.style.zIndex = "675";
+
+    if (!settlementSelectedOutline) {
+      settlementSelectedOutline = L.polyline(points, {
+        pane: "settlement-preview-pane", color: "#e6c77d", weight: 3,
+        opacity: opacity, dashArray: "7, 5", interactive: false,
+        lineCap: "round", lineJoin: "round"
+      }).addTo(map);
+    } else {
+      settlementSelectedOutline.setLatLngs(points);
+      settlementSelectedOutline.setStyle({ opacity: opacity });
+    }
+    if (settlementHoverOutline && map.hasLayer(settlementHoverOutline)) {
+      map.removeLayer(settlementHoverOutline);
+      settlementHoverOutline = null;
+    }
+  }
+
+  window.showSettlementOutline = showSettlementOutline;
+
+  function clearSettlementOutline() {
+    [settlementHoverOutline, settlementSelectedOutline].forEach(layer => {
+      if (layer && map.hasLayer(layer)) map.removeLayer(layer);
+    });
+    settlementHoverOutline = null;
+    settlementSelectedOutline = null;
+  }
+
+  window.clearSettlementOutline = clearSettlementOutline;
+  window.previewSettlementAt = function(point) {
+    if (!window.routeMode) {
+      if (settlementHoverOutline && map.hasLayer(settlementHoverOutline)) map.removeLayer(settlementHoverOutline);
+      settlementHoverOutline = null;
+      return;
+    }
+    const area = findSettlementAt(point);
+    if (!area) {
+      if (settlementHoverOutline && map.hasLayer(settlementHoverOutline)) map.removeLayer(settlementHoverOutline);
+      settlementHoverOutline = null;
+      return;
+    }
+    if (settlementSelectedOutline) return;
+    const points = area.points.map(item => [item.lat, item.lng]);
+    points.push(points[0]);
+    let pane = map.getPane("settlement-preview-pane");
+    if (!pane) pane = map.createPane("settlement-preview-pane");
+    pane.style.zIndex = "675";
+    if (!settlementHoverOutline) {
+      settlementHoverOutline = L.polyline(points, {
+        pane: "settlement-preview-pane", color: "#e6c77d", weight: 3,
+        opacity: 0.32, dashArray: "7, 5", interactive: false,
+        lineCap: "round", lineJoin: "round"
+      }).addTo(map);
+    } else {
+      settlementHoverOutline.setLatLngs(points);
+    }
+  };
 
   function animateSettlementTrace(area) {
     const startPoint = window.routeDestinationBoundaryPoint;
