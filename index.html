@@ -482,6 +482,7 @@ document.addEventListener("keydown", function(e) {
   window.settlementListenerStarted = false;
   window.routeDestinationCityId = null;
   window.routeDestinationBoundaryPoint = null;
+  window.routeDestinationApproachPoint = null;
 
 // UID ведущего. Используется только для разграничения прав.
   const GAME_MASTER_UID = "qxdgnWhXmQeqHTLPMI3q8EK60Fi2";
@@ -556,6 +557,7 @@ window.routeMode = true;
 routeFinished = false;
 window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
+window.routeDestinationApproachPoint = null;
 // Сбрасываем состояние форсированного марша
 routeForcedMarch = false;
 routeForcedMarchStartDistance = 0;
@@ -1368,17 +1370,10 @@ window.routePendingConfirmation = false;
     lastCursorPosition = null;
     routePanel.style.display = "none";
 
-    // Для маршрута в поселение после подтверждения повторно раскрываем
-    // путь от начала, а затем рисуем невидимую границу эффектом ручки.
-    if (window.routeDestinationCityId) {
-      stopRouteMarkerAnimation();
-      const confirmedLength = getRouteLength(routePoints);
-      beginRouteMarkerAnimation(0, confirmedLength);
-      updateRouteLine();
-      waitForRouteRevealThenTraceSettlement(window.routeDestinationCityId);
-    } else {
-      updateRouteLine();
-    }
+    // Маршрут в поселение и его обводка уже анимируются до подтверждения.
+    // Подтверждение только фиксирует маршрут и не запускает анимации повторно.
+    // Для обычных маршрутов сохраняем прежнее обновление линии.
+    if (!window.routeDestinationCityId) updateRouteLine();
 
     console.log("Маршрут подтверждён:", window.confirmedPartyRoute);
   });
@@ -1914,6 +1909,7 @@ function cancelPartyRoute() {
   lastCursorPosition = null;
   window.routeDestinationCityId = null;
   window.routeDestinationBoundaryPoint = null;
+  window.routeDestinationApproachPoint = null;
 
   stopRouteMarkerAnimation();
   clearRouteDrawing();
@@ -1954,7 +1950,7 @@ function ensureRouteMarkerPanes() {
 // Объединяем крестики только тогда, когда их экранные области 28x28 px
 // действительно пересекаются. Если пересекаются соседние группы, они тоже
 // объединяются: A-B и B-C превращаются в одну группу A-B-C.
-function getExhaustionMarkerClusters(markers, markerSize = 28) {
+function getExhaustionMarkerClusters(markers, markerSize = 28, routeGeometry = routePoints) {
   const points = markers.map(item => ({
     item,
     point: map.latLngToContainerPoint(item.position)
@@ -2003,15 +1999,14 @@ function getExhaustionMarkerClusters(markers, markerSize = 28) {
       };
     }
 
-    // Ставим общий маркер в геометрическую середину группы на экране.
-    const minX = Math.min(...group.map(entry => entry.point.x));
-    const maxX = Math.max(...group.map(entry => entry.point.x));
-    const minY = Math.min(...group.map(entry => entry.point.y));
-    const maxY = Math.max(...group.map(entry => entry.point.y));
-    const center = L.point((minX + maxX) / 2, (minY + maxY) / 2);
+    // Общий крестик ставим в середину группы ПО ДЛИНЕ МАРШРУТА,
+    // а не в центр экранного прямоугольника. Центр прямоугольника
+    // может оказаться за пределами дуги или изгиба маршрута.
+    const centerDistance = items.reduce((sum, item) => sum + item.distance, 0) / items.length;
+    const centerPosition = getRoutePointAtDistance(routeGeometry, centerDistance);
 
     return {
-      position: map.containerPointToLatLng(center),
+      position: centerPosition || items[Math.floor(items.length / 2)].position,
       count: items.length,
       distances: items.map(item => item.distance)
     };
@@ -2403,7 +2398,8 @@ function updateRouteLine(cursorPosition = null) {
     // Если при отдалении карты крестики сблизились, объединяем их.
     const exhaustionClusters = getExhaustionMarkerClusters(
       exhaustionPositions,
-      28
+      28,
+      pointsToDraw
     );
 
     exhaustionClusters.forEach(cluster => {
@@ -2486,7 +2482,7 @@ function updateRouteLine(cursorPosition = null) {
   });
 
   // Флажок конечной точки.
-  if (routeFinished && routePoints.length >= 2) {
+  if (routeFinished && routePoints.length >= 2 && !window.routeDestinationCityId) {
     const endPoint = routePoints[routePoints.length - 1];
     const flagIcon = L.divIcon({
       className: "route-end-flag",
@@ -2612,7 +2608,11 @@ window.handlePartyRouteClick = function(latlng) {
     if (boundary) {
       window.routeDestinationCityId = destinationArea.id;
       window.routeDestinationBoundaryPoint = boundary.point;
+      window.routeDestinationApproachPoint = approachPoint;
       finishPartyRoute(boundary.point);
+      // Периметр обводится после того, как до границы дошла анимация маршрута,
+      // не дожидаясь нажатия кнопки «Подтвердить».
+      waitForRouteRevealThenTraceSettlement(destinationArea.id);
       console.log("Маршрут завершён у поселения:", destinationArea.type, destinationArea.id);
       return;
     }
@@ -2770,9 +2770,7 @@ map.on("zoomend", function() {
     const index = nearest.segmentIndex;
     const nextIndex = (index + 1) % points.length;
     const previousIndex = (index - 1 + points.length) % points.length;
-    const approachOrigin = routePoints.length >= 2
-      ? routePoints[routePoints.length - 2]
-      : startPoint;
+    const approachOrigin = window.routeDestinationApproachPoint || startPoint;
     const approach = map.latLngToLayerPoint(nearest.point)
       .subtract(map.latLngToLayerPoint(approachOrigin));
     const forward = map.latLngToLayerPoint(points[nextIndex])
@@ -2798,19 +2796,25 @@ map.on("zoomend", function() {
   }
 
   function animateSettlementTrace(area) {
-    const startPoint = window.routeDestinationBoundaryPoint || routePoints[routePoints.length - 1];
+    const startPoint = window.routeDestinationBoundaryPoint;
+    if (!startPoint) return;
     const tracePoints = buildSettlementTrace(area, startPoint);
     if (tracePoints.length < 3) return;
 
     // Временный визуальный слой существует только во время анимации.
-    // После завершения он удаляется: сохранённый контур всегда невидим.
+    // Он находится выше маршрута и жетонов, а после завершения удаляется.
+    let tracePane = map.getPane("settlement-trace-pane");
+    if (!tracePane) tracePane = map.createPane("settlement-trace-pane");
+    tracePane.style.zIndex = "680";
     const traceLine = L.polyline([tracePoints[0]], {
-      color: "#21170f",
-      weight: 3,
-      opacity: 0.95,
+      pane: "settlement-trace-pane",
+      color: "#e6c77d",
+      weight: 4,
+      opacity: 1,
       lineCap: "round",
       lineJoin: "round",
-      interactive: false
+      interactive: false,
+      className: "settlement-trace-line"
     }).addTo(map);
 
     const screenPoints = tracePoints.map(point => map.latLngToLayerPoint(point));
