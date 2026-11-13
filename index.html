@@ -2875,50 +2875,65 @@ map.on("zoomend", function() {
     return best;
   }
 
-  // ДИАГНОСТИКА ОТОБРАЖЕНИЯ ОБВОДКИ ПОСЕЛЕНИЙ
-  // На этом этапе намеренно используем исходный контур области без сглаживания,
-  // кастомных panes и сложной геометрии. Так проверяем именно вывод Leaflet-слоёв.
-
-  function getDiagnosticSettlementContour(area, startPoint) {
-    console.log("Обводка поселения: версия контура vector-arithmetic-20261113-2");
+  // Единый визуальный стиль обводки поселения: чёрный открытый росчерк
+  // с плавным сужением к концу. Используется для наведения, выбора и анимации.
+  function getOpenSettlementContour(area, startPoint) {
     if (!area || !Array.isArray(area.points) || area.points.length < 3) return [];
+    const contour = getDiagnosticSettlementContour(area, startPoint);
+    if (!contour || contour.length < 4) return [];
 
-    const points = area.points;
-    const nearest = startPoint
-      ? findNearestSettlementBoundaryPoint(startPoint, points)
-      : null;
-
-    if (!nearest) {
-      return points.concat([points[0]]);
+    const layerPoints = contour.map(point => map.latLngToLayerPoint(point));
+    const lengths = [];
+    let total = 0;
+    for (let i = 1; i < layerPoints.length; i++) {
+      const len = layerPoints[i - 1].distanceTo(layerPoints[i]);
+      lengths.push(len);
+      total += len;
     }
+    if (total < 1) return [];
 
-    const index = nearest.segmentIndex;
-    const nextIndex = (index + 1) % points.length;
-    const approachOrigin = window.routeDestinationApproachPoint || startPoint;
-    const approach = map.latLngToLayerPoint(nearest.point)
-      .subtract(map.latLngToLayerPoint(approachOrigin));
-    const forward = map.latLngToLayerPoint(points[nextIndex])
-      .subtract(map.latLngToLayerPoint(nearest.point));
-    const backward = map.latLngToLayerPoint(points[index])
-      .subtract(map.latLngToLayerPoint(nearest.point));
-    // Leaflet Point не предоставляет метод dot() во всех используемых версиях.
-    // Считаем скалярные произведения явно, чтобы выбрать сторону обхода контура.
-    const forwardDot = approach.x * forward.x + approach.y * forward.y;
-    const backwardDot = approach.x * backward.x + approach.y * backward.y;
-    const direction = forwardDot >= backwardDot ? 1 : -1;
-
-    const contour = [nearest.point];
-    if (direction === 1) {
-      for (let step = 1; step <= points.length; step++) {
-        contour.push(points[(index + step) % points.length]);
-      }
-    } else {
-      for (let step = 0; step < points.length; step++) {
-        contour.push(points[(index - step + points.length) % points.length]);
+    // Оставляем небольшой разрыв: росчерк не замыкает окружность.
+    const target = total * 0.88;
+    let used = 0;
+    const result = [contour[0]];
+    for (let i = 0; i < lengths.length; i++) {
+      const len = lengths[i];
+      if (used + len <= target) {
+        result.push(contour[i + 1]);
+        used += len;
+      } else {
+        const t = Math.max(0, Math.min(1, (target - used) / Math.max(len, 0.0001)));
+        const a = layerPoints[i], b = layerPoints[i + 1];
+        result.push(map.layerPointToLatLng(L.point(a.x + (b.x-a.x)*t, a.y + (b.y-a.y)*t)));
+        break;
       }
     }
-    contour.push(nearest.point);
-    return contour;
+    return result;
+  }
+
+  function makeTaperedSettlementPolygon(latlngs, maxWidth, opacity) {
+    if (!latlngs || latlngs.length < 2) return null;
+    const pts = latlngs.map(ll => map.latLngToLayerPoint(ll));
+    const left = [], right = [];
+    for (let i = 0; i < pts.length; i++) {
+      const prev = pts[Math.max(0, i - 1)];
+      const next = pts[Math.min(pts.length - 1, i + 1)];
+      let dx = next.x - prev.x, dy = next.y - prev.y;
+      const mag = Math.sqrt(dx*dx + dy*dy) || 1;
+      const nx = -dy / mag, ny = dx / mag;
+      const t = i / Math.max(1, pts.length - 1);
+      const width = Math.max(0.18, maxWidth * Math.pow(1 - t, 1.35));
+      left.push(map.layerPointToLatLng(L.point(pts[i].x + nx*width/2, pts[i].y + ny*width/2)));
+      right.push(map.layerPointToLatLng(L.point(pts[i].x - nx*width/2, pts[i].y - ny*width/2)));
+    }
+    return L.polygon(left.concat(right.reverse()), {
+      stroke: false,
+      fill: true,
+      fillColor: "#171512",
+      fillOpacity: opacity,
+      interactive: false,
+      smoothFactor: 1
+    });
   }
 
   let settlementHoverOutline = null;
@@ -2932,37 +2947,18 @@ map.on("zoomend", function() {
   function showSettlementOutline(area, opacity) {
     try {
       if (!area || !Array.isArray(area.points) || area.points.length < 3) return;
-
-      // Контрольный возврат к прежнему рабочему способу:
-      // рисуем непосредственно сохранённые точки области, без пересчёта контура.
-      const points = area.points.map(point => [point.lat, point.lng]);
-      points.push(points[0]);
-
+      const start = window.routeDestinationBoundaryPoint || area.points[0];
+      const path = getOpenSettlementContour(area, start);
+      if (path.length < 2) return;
       let pane = map.getPane("settlement-preview-pane");
       if (!pane) pane = map.createPane("settlement-preview-pane");
       pane.style.zIndex = "675";
-
-      removeSettlementLayer(settlementHoverOutline);
-      settlementHoverOutline = null;
+      removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null;
       removeSettlementLayer(settlementSelectedOutline);
-
-      settlementSelectedOutline = L.polyline(points, {
-        pane: "settlement-preview-pane",
-        color: "#e6c77d",
-        weight: 3,
-        opacity: Number.isFinite(opacity) ? opacity : 1,
-        dashArray: "7, 5",
-        interactive: false,
-        lineCap: "round",
-        lineJoin: "round"
-      }).addTo(map);
-
-      console.log("Проверка старой обводки: линия добавлена", area.id, points.length);
-    } catch (error) {
-      console.error("Ошибка старой обводки поселения:", error);
-    }
+      settlementSelectedOutline = makeTaperedSettlementPolygon(path, 3.6, Number.isFinite(opacity) ? opacity : 0.95);
+      if (settlementSelectedOutline) settlementSelectedOutline.addTo(map);
+    } catch (error) { console.error("Ошибка выбранной обводки поселения:", error); }
   }
-
   window.showSettlementOutline = showSettlementOutline;
 
   function clearSettlementOutline() {
@@ -2971,149 +2967,82 @@ map.on("zoomend", function() {
     settlementHoverOutline = null;
     settlementSelectedOutline = null;
   }
-
   window.clearSettlementOutline = clearSettlementOutline;
 
   window.previewSettlementAt = function(point) {
     try {
       if (!window.routeMode) {
-        removeSettlementLayer(settlementHoverOutline);
-        settlementHoverOutline = null;
-        return;
+        removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null; return;
       }
-
       const area = findSettlementAt(point);
-      if (!area) {
-        removeSettlementLayer(settlementHoverOutline);
-        settlementHoverOutline = null;
+      if (!area || settlementSelectedOutline) {
+        if (!area) { removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null; }
         return;
       }
-      if (settlementSelectedOutline) return;
-
-      // Та же простая геометрия, которая использовалась в рабочей версии.
-      const points = area.points.map(item => [item.lat, item.lng]);
-      points.push(points[0]);
-
-      let pane = map.getPane("settlement-preview-pane");
-      if (!pane) pane = map.createPane("settlement-preview-pane");
-      pane.style.zIndex = "675";
-
-      if (!settlementHoverOutline) {
-        settlementHoverOutline = L.polyline(points, {
-          pane: "settlement-preview-pane",
-          color: "#e6c77d",
-          weight: 3,
-          opacity: 0.42,
-          dashArray: "7, 5",
-          interactive: false,
-          lineCap: "round",
-          lineJoin: "round"
-        }).addTo(map);
-      } else {
-        settlementHoverOutline.setLatLngs(points);
-        if (!map.hasLayer(settlementHoverOutline)) settlementHoverOutline.addTo(map);
-      }
+      const path = getOpenSettlementContour(area, point);
+      if (path.length < 2) return;
+      removeSettlementLayer(settlementHoverOutline);
+      settlementHoverOutline = makeTaperedSettlementPolygon(path, 2.8, 0.52);
+      if (settlementHoverOutline) settlementHoverOutline.addTo(map);
     } catch (error) {
       console.error("Ошибка предварительной обводки поселения:", error);
-      removeSettlementLayer(settlementHoverOutline);
-      settlementHoverOutline = null;
+      removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null;
     }
   };
 
   function animateSettlementTrace(area) {
     try {
-      console.log("Обводка поселения: animateSettlementTrace вызвана", {
-        areaId: area && area.id,
-        hasBoundaryPoint: Boolean(window.routeDestinationBoundaryPoint),
-        pointCount: area && Array.isArray(area.points) ? area.points.length : 0
-      });
       const startPoint = window.routeDestinationBoundaryPoint;
-      if (!startPoint) {
-        console.warn("Диагностика: отсутствует точка прибытия для анимации");
-        return;
-      }
-
-      const contour = getDiagnosticSettlementContour(area, startPoint);
-      if (contour.length < 4) {
-        console.warn("Диагностика: не удалось получить контур для анимации", area && area.id);
-        return;
-      }
-
+      if (!startPoint) return;
+      const contour = getOpenSettlementContour(area, startPoint);
+      if (contour.length < 2) return;
       const previousTrace = settlementTraceLayers.get(area.id);
       removeSettlementLayer(previousTrace);
       removeSettlementLayer(settlementSelectedOutline);
       settlementSelectedOutline = null;
 
-      const trace = L.polyline([contour[0], contour[0]], {
-        color: "#ff2020",
-        weight: 5,
-        opacity: 1,
-        lineCap: "round",
-        lineJoin: "round",
-        interactive: false
-      }).addTo(map);
+      const trace = makeTaperedSettlementPolygon([contour[0], contour[0]], 4.2, 1);
+      if (!trace) return;
+      trace.addTo(map);
       settlementTraceLayers.set(area.id, trace);
-      console.log("Обводка поселения: слой добавлен на карту", {
-        areaId: area.id,
-        layerVisible: map.hasLayer(trace),
-        contourPoints: contour.length
-      });
 
       const layerPoints = contour.map(point => map.latLngToLayerPoint(point));
-      const segmentLengths = [];
+      const lengths = [];
       let totalLength = 0;
       for (let i = 1; i < layerPoints.length; i++) {
-        const length = layerPoints[i - 1].distanceTo(layerPoints[i]);
-        segmentLengths.push(length);
-        totalLength += length;
+        const len = layerPoints[i - 1].distanceTo(layerPoints[i]);
+        lengths.push(len); totalLength += len;
       }
-      if (totalLength < 1) {
-        console.warn("Обводка поселения: длина контура меньше 1 пикселя", {
-          areaId: area.id,
-          totalLength
-        });
-        return;
-      }
-
+      if (totalLength < 1) return;
       const duration = Math.max(1800, Math.min(8000, totalLength * 4));
       const startedAt = performance.now();
 
       function frame(now) {
         if (!map.hasLayer(trace)) return;
-
         const progress = Math.min(1, (now - startedAt) / duration);
         let remaining = totalLength * progress;
         const drawn = [contour[0]];
-
-        for (let i = 0; i < segmentLengths.length; i++) {
-          const segmentLength = segmentLengths[i];
-          if (remaining >= segmentLength) {
-            drawn.push(contour[i + 1]);
-            remaining -= segmentLength;
-          } else {
-            if (segmentLength > 0.001 && remaining > 0) {
-              const ratio = remaining / segmentLength;
-              const point = L.point(
-                layerPoints[i].x + (layerPoints[i + 1].x - layerPoints[i].x) * ratio,
-                layerPoints[i].y + (layerPoints[i + 1].y - layerPoints[i].y) * ratio
-              );
-              drawn.push(map.layerPointToLatLng(point));
+        for (let i = 0; i < lengths.length; i++) {
+          if (remaining >= lengths[i]) { drawn.push(contour[i + 1]); remaining -= lengths[i]; }
+          else {
+            if (remaining > 0 && lengths[i] > 0.001) {
+              const t = remaining / lengths[i], a = layerPoints[i], b = layerPoints[i+1];
+              drawn.push(map.layerPointToLatLng(L.point(a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t)));
             }
             break;
           }
         }
-
-        trace.setLatLngs(drawn);
-        if (progress < 1) {
-          requestAnimationFrame(frame);
-        } else {
-          trace.setLatLngs(contour);
-          console.log("Диагностика: анимация контура завершена", area.id);
+        const next = makeTaperedSettlementPolygon(drawn, 4.2, 1);
+        if (next) {
+          const latlngs = next.getLatLngs();
+          trace.setLatLngs(latlngs);
+          trace.setStyle({stroke:false, fill:true, fillColor:"#171512", fillOpacity:1});
         }
+        if (progress < 1) requestAnimationFrame(frame);
+        else console.log("Обводка поселения: анимация росчерка завершена", area.id);
       }
-
       requestAnimationFrame(frame);
-      console.log("Диагностика: анимация контура началась", area.id, contour.length);
+      console.log("Обводка поселения: анимация чёрного сужающегося росчерка началась", area.id);
     } catch (error) {
       console.error("Диагностика: ошибка анимации контура поселения", error);
     }
