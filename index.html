@@ -575,13 +575,21 @@ let routeStatus = null;
 let routeConfirmButton = null;
 let lastCursorPosition = null;
 
-// Новая анимация маршрута: три случайные точки — по одной в каждой
-// трети отрезка. Линия проявляется от этих точек в обе стороны.
+// Новая анимация маршрута: случайное количество зон (3–5),
+// в каждой из которых выбирается своя случайная точка проявления.
+// Линия раскрывается от этих точек в обе стороны.
 // Перерисовка маршрута не сбрасывает уже идущую анимацию.
 let routeMarkerAnimations = [];
-const routeRevealSpeed = 55; // единиц длины маршрута в секунду
+const routeRevealBaseSpeed = 55; // базовая скорость в единицах длины маршрута/сек
 const routeRevealFadeDuration = 520;
 const routeRevealChunkLength = 18;
+
+// Чем длиннее новый отрезок, тем быстрее распространяется проявление.
+// Скорость плавно растёт от 55 до 180 единиц/сек, чтобы длинные линии
+// не заставляли ждать непропорционально долго.
+function getRouteRevealSpeed(length) {
+  return routeRevealBaseSpeed + Math.min(125, Math.max(0, length) * 0.12);
+}
 
 function stopRouteMarkerAnimation() {
   routeMarkerAnimations.forEach(animation => {
@@ -596,17 +604,20 @@ function getRouteRevealDistance(animation, distance) {
 }
 
 function getRouteRevealDelay(animation, distance) {
-  return getRouteRevealDistance(animation, distance) / routeRevealSpeed * 1000;
+  return getRouteRevealDistance(animation, distance) / animation.speed * 1000;
 }
 
 function beginRouteMarkerAnimation(startDistance, endDistance) {
   const length = endDistance - startDistance;
   if (length < 0.001) return;
 
-  // Три зоны равной длины; внутри каждой выбирается своя случайная точка.
-  const seeds = [0, 1, 2].map(index =>
-    startDistance + (index + Math.random()) * length / 3
+  // Каждый раз выбираем 3, 4 или 5 зон равной длины.
+  // Внутри каждой зоны точка проявления располагается случайно.
+  const partCount = 3 + Math.floor(Math.random() * 3);
+  const seeds = Array.from({ length: partCount }, (_, index) =>
+    startDistance + (index + Math.random()) * length / partCount
   );
+  const speed = getRouteRevealSpeed(length);
 
   const sortedSeeds = [...seeds].sort((a, b) => a - b);
   const checkDistances = [startDistance, endDistance];
@@ -617,12 +628,14 @@ function beginRouteMarkerAnimation(startDistance, endDistance) {
   const maxRevealDistance = Math.max(
     ...checkDistances.map(distance => getRouteRevealDistance({ seeds }, distance))
   );
-  const duration = maxRevealDistance / routeRevealSpeed * 1000 + routeRevealFadeDuration;
+  const duration = maxRevealDistance / speed * 1000 + routeRevealFadeDuration;
 
   const animation = {
     start: startDistance,
     end: endDistance,
     seeds,
+    partCount,
+    speed,
     startedAt: Date.now(),
     duration,
     timer: null
@@ -1906,6 +1919,15 @@ function updateRouteLine(cursorPosition = null) {
     protectedDistances
   );
 
+  // ВАЖНО: сначала формируем одну общую сглаженную геометрию всего маршрута,
+  // и только затем нарезаем её на анимируемые фрагменты. Иначе каждый короткий
+  // фрагмент сглаживается отдельно и на время проявления превращается в прямую.
+  const displayRoutePoints = createRouteDisplayPoints(
+    pointsToDraw,
+    protectedDistances
+  );
+  const displayRouteLength = getRouteLength(displayRoutePoints);
+
   // Основная линия маршрута.
   // Разделяем маршрут на золотые и чёрные участки.
   // Золотая линия не рисуется там, где должен идти форсированный марш.
@@ -1983,10 +2005,19 @@ function updateRouteLine(cursorPosition = null) {
           const fragmentMidpoint = (fragmentStart + fragmentEnd) / 2;
           const fragmentAnimation = getRouteMarkerAnimation(fragmentMidpoint);
 
+          // Переводим исходные расстояния маршрута в расстояния по общей
+          // сглаженной геометрии. Так каждый фрагмент сохраняет ту же кривизну,
+          // которую игрок видел в предпросмотре до клика.
+          const displayStart = totalLength > 0.001
+            ? fragmentStart / totalLength * displayRouteLength
+            : 0;
+          const displayEnd = totalLength > 0.001
+            ? fragmentEnd / totalLength * displayRouteLength
+            : displayRouteLength;
           const sectionPoints = getRoutePointsBetweenDistances(
-            pointsToDraw,
-            fragmentStart,
-            fragmentEnd
+            displayRoutePoints,
+            displayStart,
+            displayEnd
           );
           if (sectionPoints.length < 2) continue;
 
