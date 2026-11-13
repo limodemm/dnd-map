@@ -2694,17 +2694,20 @@ window.handlePartyRouteClick = function(latlng) {
 
   // Клик внутри невидимой области поселения автоматически завершает маршрут.
   // Конечная точка линии — ближайшая точка границы от последней точки пути.
-  const destinationArea = findSettlementAt(latlng);
+  // Поиск поселений и ближайшей точки границы реализованы внутри
+  // Firebase-модуля, поэтому обычный скрипт обращается к ним через window.
+  const destinationArea = typeof window.findSettlementAt === "function"
+    ? window.findSettlementAt(latlng)
+    : null;
   if (destinationArea && routePoints.length > 0) {
     if (pendingRouteClickTimer) clearTimeout(pendingRouteClickTimer);
     pendingRouteClickTimer = null;
     pendingRouteClickPosition = null;
 
     const approachPoint = routePoints[routePoints.length - 1];
-    const boundary = findNearestSettlementBoundaryPoint(
-      approachPoint,
-      destinationArea.points
-    );
+    const boundary = typeof window.findNearestSettlementBoundaryPoint === "function"
+      ? window.findNearestSettlementBoundaryPoint(approachPoint, destinationArea.points)
+      : null;
 
     if (boundary) {
       window.routeDestinationCityId = destinationArea.id;
@@ -2816,13 +2819,18 @@ map.on("zoomend", function() {
   function findSettlementAt(point) {
     // Если области пересекаются, выбираем самую маленькую: это наиболее
     // конкретное поселение, в которое попал курсор.
-    const matches = window.settlementAreas.filter(area =>
+    const matches = (window.settlementAreas || []).filter(area =>
       Array.isArray(area.points) && area.points.length >= 3 &&
       pointInSettlement(point, area.points)
     );
     if (!matches.length) return null;
     return matches.sort((a, b) => polygonArea(a.points) - polygonArea(b.points))[0];
   }
+
+  // Эти функции нужны также обработчику клика, который находится
+  // в обычном (не module) скрипте. Module-область видимости сама по себе
+  // недоступна из соседнего script-блока.
+  window.findSettlementAt = findSettlementAt;
 
   function polygonArea(points) {
     let area = 0;
@@ -2861,6 +2869,8 @@ map.on("zoomend", function() {
     }
     return best;
   }
+
+  window.findNearestSettlementBoundaryPoint = findNearestSettlementBoundaryPoint;
 
   function buildSettlementTrace(area, startPoint) {
     const points = area.points;
