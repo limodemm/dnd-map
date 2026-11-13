@@ -745,6 +745,12 @@ function beginRouteMarkerAnimation(startDistance, endDistance, synchronizedStart
   }, duration + 100);
 }
 
+// Firebase-модуль использует этот метод, чтобы дождаться окончания
+// общей анимации маршрута перед обводкой конечного поселения.
+window.isRouteRevealRunning = function() {
+  return routeMarkerAnimations.length > 0;
+};
+
 // При смене масштаба пересчитываем экранную длину активных анимаций,
 // сохраняя уже пройденную долю времени. Благодаря этому новый зум не
 // заставляет штрихи перескакивать вперёд/назад и не запускает линию заново.
@@ -1433,6 +1439,15 @@ window.routePendingConfirmation = false;
 
   // Возврат к предыдущему привалу
   document.getElementById("route-undo").addEventListener("click", function() {
+    // Если маршрут был завершён кликом по поселению, возврат отменяет
+    // именно это назначение: снова разрешаем обычное завершение флажком.
+    if (window.routeDestinationCityId) {
+      window.routeDestinationCityId = null;
+      window.routeDestinationBoundaryPoint = null;
+      window.routeDestinationApproachPoint = null;
+      if (window.clearSettlementOutline) window.clearSettlementOutline();
+    }
+
     // Возврат меняет геометрию маршрута: завершаем старые анимации,
     // чтобы привал возврата не воспринимался как новый жетон.
     stopRouteMarkerAnimation();
@@ -2849,7 +2864,6 @@ map.on("zoomend", function() {
 
     const index = nearest.segmentIndex;
     const nextIndex = (index + 1) % points.length;
-    const previousIndex = (index - 1 + points.length) % points.length;
     const approachOrigin = window.routeDestinationApproachPoint || startPoint;
     const approach = map.latLngToLayerPoint(nearest.point)
       .subtract(map.latLngToLayerPoint(approachOrigin));
@@ -2859,24 +2873,51 @@ map.on("zoomend", function() {
       .subtract(map.latLngToLayerPoint(nearest.point));
     const direction = approach.dot(forward) >= approach.dot(backward) ? 1 : -1;
 
-    const result = [nearest.point];
+    // Проходим по периметру почти полный круг, но НЕ замыкаем линию:
+    // её начало совпадает с точкой прибытия, конец остаётся рядом с ней.
+    const raw = [nearest.point];
     if (direction === 1) {
-      result.push(points[nextIndex]);
+      raw.push(points[nextIndex]);
       for (let step = 1; step < points.length; step++) {
-        result.push(points[(nextIndex + step) % points.length]);
+        raw.push(points[(nextIndex + step) % points.length]);
       }
     } else {
-      result.push(points[index]);
+      raw.push(points[index]);
       for (let step = 1; step < points.length; step++) {
-        result.push(points[(index - step + points.length) % points.length]);
+        raw.push(points[(index - step + points.length) % points.length]);
       }
     }
-    result.push(nearest.point);
-    return result;
+
+    // Сглаживаем угловатую линию ведущего, чтобы обводка выглядела
+    // как отдельный уверенный росчерк, а не как копия нарисованной области.
+    const screen = raw.map(point => map.latLngToLayerPoint(point));
+    if (screen.length < 3) return raw;
+    const smooth = [screen[0]];
+    const subdivisions = 5;
+    for (let i = 0; i < screen.length - 1; i++) {
+      const p0 = screen[Math.max(0, i - 1)];
+      const p1 = screen[i];
+      const p2 = screen[i + 1];
+      const p3 = screen[Math.min(screen.length - 1, i + 2)];
+      for (let step = 1; step <= subdivisions; step++) {
+        const t = step / subdivisions;
+        const t2 = t * t;
+        const t3 = t2 * t;
+        const x = 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t +
+          (2*p0.x - 5*p1.x + 4*p2.x - p3.x) * t2 +
+          (-p0.x + 3*p1.x - 3*p2.x + p3.x) * t3);
+        const y = 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t +
+          (2*p0.y - 5*p1.y + 4*p2.y - p3.y) * t2 +
+          (-p0.y + 3*p1.y - 3*p2.y + p3.y) * t3);
+        smooth.push(L.point(x, y));
+      }
+    }
+    return smooth.map(point => map.layerPointToLatLng(point));
   }
 
   let settlementHoverOutline = null;
   let settlementSelectedOutline = null;
+  const settlementTraceLayers = new Map();
 
   function showSettlementOutline(area, opacity) {
     if (!area || !Array.isArray(area.points) || area.points.length < 3) return;
@@ -2948,21 +2989,13 @@ map.on("zoomend", function() {
     const tracePoints = buildSettlementTrace(area, startPoint);
     if (tracePoints.length < 3) return;
 
-    // Временный визуальный слой существует только во время анимации.
-    // Он находится выше маршрута и жетонов, а после завершения удаляется.
     let tracePane = map.getPane("settlement-trace-pane");
     if (!tracePane) tracePane = map.createPane("settlement-trace-pane");
     tracePane.style.zIndex = "680";
-    const traceLine = L.polyline([tracePoints[0]], {
-      pane: "settlement-trace-pane",
-      color: "#e6c77d",
-      weight: 4,
-      opacity: 1,
-      lineCap: "round",
-      lineJoin: "round",
-      interactive: false,
-      className: "settlement-trace-line"
-    }).addTo(map);
+
+    // При повторной прокладке к тому же поселению заменяем старый росчерк.
+    const previousTrace = settlementTraceLayers.get(area.id);
+    if (previousTrace && map.hasLayer(previousTrace)) map.removeLayer(previousTrace);
 
     const screenPoints = tracePoints.map(point => map.latLngToLayerPoint(point));
     const segmentLengths = [];
@@ -2972,50 +3005,96 @@ map.on("zoomend", function() {
       segmentLengths.push(length);
       totalLength += length;
     }
+    if (totalLength < 2) return;
 
-    const duration = Math.max(1800, Math.min(9000, totalLength * 5));
+    // Обводка — не обычная полилиния, а узкая лента с переменной шириной:
+    // у точки прибытия она жирная, к свободному концу сходит на нет.
+    const traceRibbon = L.polygon([], {
+      pane: "settlement-trace-pane",
+      stroke: true,
+      color: "#080808",
+      weight: 0.8,
+      opacity: 1,
+      fill: true,
+      fillColor: "#080808",
+      fillOpacity: 0.96,
+      interactive: false,
+      lineJoin: "round",
+      lineCap: "round"
+    }).addTo(map);
+    settlementTraceLayers.set(area.id, traceRibbon);
+
+    const duration = Math.max(2200, Math.min(10000, totalLength * 5));
     const startedAt = performance.now();
-    let animationFrame = null;
+
+    function makeTaperedRibbon(points) {
+      if (points.length < 2) return [];
+      const left = [];
+      const right = [];
+      const lengths = [0];
+      let drawnLength = 0;
+      for (let i = 1; i < points.length; i++) {
+        drawnLength += points[i - 1].distanceTo(points[i]);
+        lengths.push(drawnLength);
+      }
+      const fullLength = Math.max(1, lengths[lengths.length - 1]);
+
+      for (let i = 0; i < points.length; i++) {
+        const previous = points[Math.max(0, i - 1)];
+        const next = points[Math.min(points.length - 1, i + 1)];
+        let dx = next.x - previous.x;
+        let dy = next.y - previous.y;
+        const magnitude = Math.hypot(dx, dy) || 1;
+        const nx = -dy / magnitude;
+        const ny = dx / magnitude;
+        const progress = lengths[i] / fullLength;
+        const halfWidth = 3.4 * (1 - progress) + 0.35;
+        left.push(map.layerPointToLatLng(L.point(
+          points[i].x + nx * halfWidth,
+          points[i].y + ny * halfWidth
+        )));
+        right.push(map.layerPointToLatLng(L.point(
+          points[i].x - nx * halfWidth,
+          points[i].y - ny * halfWidth
+        )));
+      }
+      return [left.concat(right.reverse())];
+    }
 
     function frame(now) {
       const progress = Math.min(1, (now - startedAt) / duration);
       let remaining = totalLength * progress;
-      const drawn = [tracePoints[0]];
-
+      const drawn = [screenPoints[0]];
       for (let i = 0; i < segmentLengths.length; i++) {
         const segmentLength = segmentLengths[i];
         if (remaining >= segmentLength) {
-          drawn.push(tracePoints[i + 1]);
+          drawn.push(screenPoints[i + 1]);
           remaining -= segmentLength;
         } else {
           if (segmentLength > 0.001 && remaining > 0) {
             const ratio = remaining / segmentLength;
-            drawn.push(L.latLng(
-              tracePoints[i].lat + (tracePoints[i + 1].lat - tracePoints[i].lat) * ratio,
-              tracePoints[i].lng + (tracePoints[i + 1].lng - tracePoints[i].lng) * ratio
+            drawn.push(L.point(
+              screenPoints[i].x + (screenPoints[i + 1].x - screenPoints[i].x) * ratio,
+              screenPoints[i].y + (screenPoints[i + 1].y - screenPoints[i].y) * ratio
             ));
           }
           break;
         }
       }
-
-      traceLine.setLatLngs(drawn);
-      if (progress < 1) {
-        animationFrame = requestAnimationFrame(frame);
-      } else {
-        setTimeout(function() {
-          if (map.hasLayer(traceLine)) map.removeLayer(traceLine);
-        }, 900);
-      }
+      if (drawn.length >= 2) traceRibbon.setLatLngs(makeTaperedRibbon(drawn));
+      if (progress < 1) requestAnimationFrame(frame);
+      // После завершения росчерк остаётся на карте как визуальная обводка поселения.
     }
-    animationFrame = requestAnimationFrame(frame);
+    requestAnimationFrame(frame);
   }
 
   function waitForRouteRevealThenTraceSettlement(cityId) {
     const startedAt = Date.now();
     function check() {
-      if (!routeMarkerAnimations.length || Date.now() - startedAt > 30000) {
-        const area = window.settlementAreas.find(item => item.id === cityId);
+      const routeIsAnimating = typeof window.isRouteRevealRunning === "function" &&
+        window.isRouteRevealRunning();
+      if (!routeIsAnimating || Date.now() - startedAt > 30000) {
+        const area = (window.settlementAreas || []).find(item => item.id === cityId);
         if (area) animateSettlementTrace(area);
         return;
       }
