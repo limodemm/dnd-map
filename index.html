@@ -3133,7 +3133,14 @@ map.on("zoomend", function() {
     // точку границы последней точкой маршрута. Поэтому её расстояние
     // вдоль пути равно полной длине маршрута.
     const boundaryPoint = window.routeDestinationBoundaryPoint;
-    const routeEndDistance = getRouteLength(routePoints);
+    // Считаем длину здесь локально: getRouteLength объявлена в другой
+    // области видимости модуля и недоступна этому обработчику в текущей сборке.
+    let routeEndDistance = 0;
+    for (let i = 1; i < routePoints.length; i++) {
+      const dy = routePoints[i].lat - routePoints[i - 1].lat;
+      const dx = routePoints[i].lng - routePoints[i - 1].lng;
+      routeEndDistance += Math.sqrt(dx * dx + dy * dy);
+    }
     if (!boundaryPoint || routePoints.length < 2) {
       console.warn("Обводка поселения: нет конечной точки маршрута или границы", {
         cityId,
