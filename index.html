@@ -848,6 +848,11 @@ function getRouteMarkerAnimationDelay(distance) {
   return markerRevealTime - (Date.now() - animation.startedAt);
 }
 
+// Firebase-модуль находится в отдельном script type="module" и не видит
+// локальные функции обычного script. Публикуем узкий мост для расчёта
+// момента появления жетонов и синхронного запуска обводки поселения.
+window.getRouteMarkerAnimationDelay = getRouteMarkerAnimationDelay;
+
 // Определяем, используется ли ПК с мышью
 const hasMouse = window.matchMedia(
   "(hover: hover) and (pointer: fine)"
@@ -3171,7 +3176,9 @@ map.on("zoomend", function() {
       const areaNow = (window.settlementAreas || []).find(
         item => String(item.id) === String(cityId)
       );
-      const delay = getRouteMarkerAnimationDelay(routeEndDistance);
+      const delay = typeof window.getRouteMarkerAnimationDelay === "function"
+        ? window.getRouteMarkerAnimationDelay(routeEndDistance)
+        : null;
       const routeIsAnimating = routeMarkerAnimations.length > 0;
 
       if (!loggedStart) {
