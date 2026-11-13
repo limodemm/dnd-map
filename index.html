@@ -3029,8 +3029,10 @@ map.on("zoomend", function() {
   }
 
   function initializeSettlementAreas() {
-    if (settlementListenerStarted) return;
-    settlementListenerStarted = true;
+    // Храним флаг на window, чтобы он был доступен независимо от
+    // области видимости, в которой оказался обработчик инициализации.
+    if (window.settlementListenerStarted) return;
+    window.settlementListenerStarted = true;
     const areasRef = ref(database, "settlements/areas");
     window.dndFirebase.saveSettlementAreas = async function(area) {
       if (!window.dndFirebase.ready || !window.dndFirebase.isGameMaster) {
