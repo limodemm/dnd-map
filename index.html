@@ -258,11 +258,42 @@ updateFrame();
 map.on('zoomend', updateFrame);
 
 // --- ЗАГРУЗКА СОХРАНЁННЫХ МЕТОК ---
+// Личные метки: локальный список остаётся резервной копией и источником
+// для однократного переноса в личное хранилище Firebase.
 var savedMarkers = JSON.parse(localStorage.getItem("markers") || "[]");
 
 savedMarkers.forEach(function(m) {
   addMarker(m);
 });
+
+function persistPersonalMarkers() {
+  localStorage.setItem("markers", JSON.stringify(savedMarkers));
+
+  // Firebase может ещё авторизовывать пользователя. В таком случае
+  // локальная копия сохранится, а перенос будет выполнен после входа.
+  if (window.dndFirebase && typeof window.dndFirebase.savePersonalMarkers === "function") {
+    window.dndFirebase.savePersonalMarkers(savedMarkers).catch(function(error) {
+      console.error("Не удалось синхронизировать личные метки:", error);
+      alert("Не удалось сохранить метки в общей базе. Локальная резервная копия сохранена.");
+    });
+  }
+}
+
+// Вызывается Firebase после загрузки личных меток текущего UID.
+// Удаляются только обычные метки, но не маркер отряда и не другие слои карты.
+window.applyPersonalMarkers = function(markers) {
+  map.eachLayer(function(layer) {
+    if (layer instanceof L.Marker && layer._customId !== undefined) {
+      map.removeLayer(layer);
+    }
+  });
+
+  savedMarkers = Array.isArray(markers) ? markers : [];
+  savedMarkers.forEach(function(markerData) {
+    addMarker(markerData);
+  });
+  localStorage.setItem("markers", JSON.stringify(savedMarkers));
+};
 
 function addMarker(data) {
   var marker = L.marker(
@@ -315,7 +346,7 @@ function deleteMarker(id) {
 
   // удаляем из массива
   savedMarkers = savedMarkers.filter(m => m.id !== id);
-  localStorage.setItem("markers", JSON.stringify(savedMarkers));
+  persistPersonalMarkers();
 
   // удаляем с карты БЕЗ перезагрузки
   map.eachLayer(function(layer) {
@@ -388,7 +419,7 @@ function saveMarker() {
     addMarker(newMarker);
   }
 
-  localStorage.setItem("markers", JSON.stringify(savedMarkers));
+  persistPersonalMarkers();
   closeForm();
 }
 
@@ -438,6 +469,9 @@ document.addEventListener("keydown", function(e) {
   const auth = getAuth(app);
   const database = getDatabase(app);
 
+// UID ведущего. Используется только для разграничения прав.
+  const GAME_MASTER_UID = "fYcCwAM13UQCGwPf4m5oOVPuvvA2";
+
 // =====================================
   // СИСТЕМА ОБЩЕГО МАРКЕРА ОТРЯДА
   // =====================================
@@ -471,8 +505,9 @@ window.routeMode = false;
       // Проверяем, существует ли уже отряд в базе
       const snapshot = await get(partyRef);
 
-      // Если отряда ещё нет — создаём его
-      if (!snapshot.exists()) {
+      // Если отряда ещё нет, начальную позицию создаёт только ведущий.
+      // Игроки не должны перезаписывать положение отряда при открытии карты.
+      if (!snapshot.exists() && window.dndFirebase.uid === GAME_MASTER_UID) {
         await set(partyRef, {
           lat: partyStartPosition.lat,
           lng: partyStartPosition.lng
@@ -2627,14 +2662,74 @@ map.on("zoomend", function() {
     }
   };
 
-  // Делаем Firebase доступным для следующих частей нашей системы
+  // Делаем Firebase доступным для следующих частей нашей системы.
+  // Каждому UID соответствует собственный узел личных меток.
   window.dndFirebase = {
     app: app,
     auth: auth,
     database: database,
     uid: null,
-    ready: false
+    ready: false,
+    isGameMaster: false,
+    savePersonalMarkers: null
   };
+
+  async function initializePersonalMarkers(uid) {
+    const personalMarkersRef = ref(database, "players/" + uid + "/markers");
+
+    // Метод записи доступен только после подтверждённой авторизации.
+    window.dndFirebase.savePersonalMarkers = async function(markers) {
+      if (!window.dndFirebase.ready || window.dndFirebase.uid !== uid) {
+        throw new Error("Firebase ещё не готов для сохранения личных меток");
+      }
+
+      const data = {};
+      (Array.isArray(markers) ? markers : []).forEach(function(marker) {
+        if (marker && marker.id !== undefined && marker.id !== null) {
+          data[String(marker.id)] = marker;
+        }
+      });
+      await set(personalMarkersRef, data);
+    };
+
+    // Переносим локальные метки этого браузера только если у UID
+    // ещё нет личного набора в Firebase. Локальную копию не удаляем.
+    const remoteSnapshot = await get(personalMarkersRef);
+    if (!remoteSnapshot.exists()) {
+      let localMarkers = [];
+      try {
+        localMarkers = JSON.parse(localStorage.getItem("markers") || "[]");
+      } catch (error) {
+        console.warn("Локальный список меток не удалось прочитать:", error);
+      }
+
+      if (Array.isArray(localMarkers) && localMarkers.length > 0) {
+        const migrated = {};
+        localMarkers.forEach(function(marker) {
+          if (marker && marker.id !== undefined && marker.id !== null) {
+            migrated[String(marker.id)] = marker;
+          }
+        });
+        if (Object.keys(migrated).length > 0) {
+          await set(personalMarkersRef, migrated);
+          console.log("Личные метки перенесены в Firebase:", Object.keys(migrated).length);
+        }
+      }
+    }
+
+    // Слушаем только собственный узел. Чужие метки этому клиенту недоступны.
+    onValue(personalMarkersRef, function(snapshot) {
+      const value = snapshot.val() || {};
+      const markers = Object.keys(value).map(function(key) {
+        return value[key];
+      });
+      if (typeof window.applyPersonalMarkers === "function") {
+        window.applyPersonalMarkers(markers);
+      }
+    }, function(error) {
+      console.error("Ошибка чтения личных меток:", error);
+    });
+  }
 
   // Индикатор подключения на экране
   const status = document.createElement("div");
@@ -2659,14 +2754,23 @@ map.on("zoomend", function() {
     if (user) {
       window.dndFirebase.uid = user.uid;
       window.dndFirebase.ready = true;
+      window.dndFirebase.isGameMaster = user.uid === GAME_MASTER_UID;
 
-      status.textContent = "Firebase: авторизация выполнена";
+      status.textContent = window.dndFirebase.isGameMaster
+        ? "Firebase: ведущий авторизован"
+        : "Firebase: игрок авторизован";
       status.style.background = "#245c32";
 
       console.log("Firebase готов. UID:", user.uid);
+      initializePersonalMarkers(user.uid).catch(function(error) {
+        console.error("Ошибка загрузки личных меток:", error);
+        status.textContent = "Firebase: ошибка загрузки меток";
+        status.style.background = "#8b2222";
+      });
       initializeParty();
     } else {
       window.dndFirebase.ready = false;
+      window.dndFirebase.isGameMaster = false;
       status.textContent = "Firebase: выполняется вход...";
 
       signInAnonymously(auth).catch(function(error) {
