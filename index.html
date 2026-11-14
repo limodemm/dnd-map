@@ -327,6 +327,14 @@ function renderPopup() {
 
 // --- ДОБАВЛЕНИЕ МЕТКИ ПО КЛИКУ ---
 map.on('click', function(e) {
+  // В режиме редактора клики по карте добавляют точки контура,
+  // а не создают метки и не прокладывают маршрут.
+  if (window.settlementContourEditorActive) {
+    if (typeof window.handleSettlementContourEditorMapClick === 'function') {
+      window.handleSettlementContourEditorMapClick(e.latlng);
+    }
+    return;
+  }
   if (popupJustClosed || window.settlementDrawingActive || settlementJustDrew) return;
 
   if (window.routeMode) {
@@ -483,6 +491,8 @@ document.addEventListener("keydown", function(e) {
   window.settlementPointerDown = false;
   window.settlementToolbar = null;
   window.settlementListenerStarted = false;
+  window.settlementContourEditorActive = false;
+  window.handleSettlementContourEditorMapClick = null;
   window.routeDestinationCityId = null;
   window.routeDestinationBoundaryPoint = null;
   window.routeDestinationApproachPoint = null;
@@ -3059,8 +3069,14 @@ map.on("zoomend", function() {
   // Постоянный замкнутый контур со смещением в экранных пикселях.
   // Он не меняет форму при наведении/клике и пересчитывается после zoomend.
   function getSettlementDryBrushPath(area) {
-    if (!area || !Array.isArray(area.points) || area.points.length < 3) return [];
-    const points = area.points.map(point => map.latLngToLayerPoint(point));
+    if (!area) return [];
+    // brushPoints — отдельная геометрия только для видимой кисти.
+    // area.points по-прежнему отвечает за обнаружение поселения и маршруты.
+    const contourPoints = Array.isArray(area.brushPoints) && area.brushPoints.length >= 3
+      ? area.brushPoints
+      : area.points;
+    if (!Array.isArray(contourPoints) || contourPoints.length < 3) return [];
+    const points = contourPoints.map(point => map.latLngToLayerPoint(point));
     let signedArea = 0;
     for (let i = 0; i < points.length; i++) {
       const a = points[i], b = points[(i + 1) % points.length];
@@ -3466,6 +3482,7 @@ map.on("zoomend", function() {
   // пикселях, как у маршрутного штриха, поэтому геометрия ленты должна
   // пересчитываться после zoomend, а не масштабироваться вместе с картой.
   map.on("zoomend", function() {
+    if (window.settlementContourEditorActive) drawSettlementContourEditorPreview();
     if (settlementBrushTestEnabled) {
       if (settlementBrushPreviewArea) drawSettlementBrushPreview(settlementBrushPreviewArea);
       if (settlementBrushSelectedArea) {
@@ -3617,6 +3634,247 @@ map.on("zoomend", function() {
     settlementTraceWaitTimer = setTimeout(check, 20);
   }
 
+  // ============================================================
+  // РЕДАКТОР ПОСТОЯННОЙ ГЕОМЕТРИИ СУХОЙ КИСТИ
+  // Изменяет только area.brushPoints. area.points и механика игры
+  // остаются нетронутыми.
+  // ============================================================
+  let settlementContourEditorAreaId = null;
+  let settlementContourEditorPoints = [];
+  let settlementContourEditorSelectedIndex = -1;
+  let settlementContourEditorAddMode = false;
+  let settlementContourEditorHandles = [];
+  let settlementContourEditorBrushLayers = [];
+
+  function getSettlementEditorAreaLabel(area) {
+    const customName = area.name || area.title || area.label;
+    if (customName) return String(customName);
+    const kind = area.type === "city" ? "Город" : area.type === "village" ? "Деревня" : "Поселение";
+    return kind + " · " + String(area.id).slice(-6);
+  }
+
+  function refreshSettlementContourEditorOptions() {
+    const select = document.getElementById("settlement-contour-area-select");
+    if (!select) return;
+    const previous = settlementContourEditorAreaId || select.value;
+    const areas = Array.isArray(window.settlementAreas) ? window.settlementAreas : [];
+    select.innerHTML = "";
+    areas.forEach(area => {
+      const option = document.createElement("option");
+      option.value = String(area.id);
+      option.textContent = getSettlementEditorAreaLabel(area);
+      select.appendChild(option);
+    });
+    if (areas.some(area => String(area.id) === String(previous))) select.value = String(previous);
+    else if (areas.length) select.value = String(areas[0].id);
+    select.disabled = areas.length === 0;
+    const startButton = document.getElementById("settlement-contour-editor-start");
+    if (startButton) startButton.disabled = areas.length === 0;
+  }
+
+  function simplifySettlementEditorPoints(points, tolerance = 8) {
+    if (!Array.isArray(points) || points.length < 3) return [];
+    const screenPoints = points.map(point => map.latLngToLayerPoint(point));
+    let simplified = typeof L.LineUtil.simplify === "function"
+      ? L.LineUtil.simplify(screenPoints, tolerance)
+      : screenPoints;
+    if (!Array.isArray(simplified) || simplified.length < 3) simplified = screenPoints;
+    if (simplified.length > 3 && simplified[0].distanceTo(simplified[simplified.length - 1]) < 2) simplified = simplified.slice(0, -1);
+    // На всякий случай убираем соседние почти совпадающие вершины.
+    const cleaned = [];
+    simplified.forEach(point => {
+      if (!cleaned.length || cleaned[cleaned.length - 1].distanceTo(point) >= 2) cleaned.push(point);
+    });
+    if (cleaned.length > 3 && cleaned[0].distanceTo(cleaned[cleaned.length - 1]) < 2) cleaned.pop();
+    return cleaned.map(point => {
+      const latlng = map.layerPointToLatLng(point);
+      return { lat: latlng.lat, lng: latlng.lng };
+    });
+  }
+
+  function getSelectedSettlementContourEditorArea() {
+    return (window.settlementAreas || []).find(area => String(area.id) === String(settlementContourEditorAreaId)) || null;
+  }
+
+  function ensureSettlementContourEditorPane() {
+    let pane = map.getPane("settlement-contour-editor-pane");
+    if (!pane) pane = map.createPane("settlement-contour-editor-pane");
+    pane.style.zIndex = "690";
+    pane.style.pointerEvents = "auto";
+    return pane;
+  }
+
+  function removeSettlementContourEditorVisuals() {
+    settlementContourEditorHandles.forEach(marker => {
+      if (marker && map.hasLayer(marker)) map.removeLayer(marker);
+    });
+    settlementContourEditorHandles = [];
+    settlementContourEditorBrushLayers = removeSettlementBrushLayers(settlementContourEditorBrushLayers);
+  }
+
+  function drawSettlementContourEditorPreview() {
+    settlementContourEditorBrushLayers = removeSettlementBrushLayers(settlementContourEditorBrushLayers);
+    const area = getSelectedSettlementContourEditorArea();
+    if (!area || settlementContourEditorPoints.length < 3) return;
+    const previewArea = { ...area, brushPoints: settlementContourEditorPoints };
+    settlementContourEditorBrushLayers = createSettlementDryBrushLayers(previewArea, 0.98);
+  }
+
+  function setSettlementContourEditorStatus(message) {
+    const status = document.getElementById("settlement-contour-editor-status");
+    if (status) status.textContent = message;
+    const removeButton = document.getElementById("settlement-contour-editor-remove");
+    if (removeButton) removeButton.disabled = settlementContourEditorSelectedIndex < 0 || settlementContourEditorPoints.length <= 3;
+    const saveButton = document.getElementById("settlement-contour-editor-save");
+    if (saveButton) saveButton.disabled = settlementContourEditorPoints.length < 3;
+    const addButton = document.getElementById("settlement-contour-editor-add");
+    if (addButton) {
+      addButton.textContent = settlementContourEditorAddMode ? "Добавление точек: включено" : "Добавить точки на карте";
+      addButton.style.background = settlementContourEditorAddMode ? "#526044" : "#393027";
+    }
+  }
+
+  function renderSettlementContourEditorHandles() {
+    settlementContourEditorHandles.forEach(marker => {
+      if (marker && map.hasLayer(marker)) map.removeLayer(marker);
+    });
+    settlementContourEditorHandles = [];
+    settlementContourEditorPoints.forEach((point, index) => {
+      const selected = index === settlementContourEditorSelectedIndex;
+      ensureSettlementContourEditorPane();
+      const marker = L.marker([point.lat, point.lng], {
+        pane: "settlement-contour-editor-pane",
+        draggable: true,
+        keyboard: false,
+        zIndexOffset: 1000,
+        icon: L.divIcon({
+          className: "settlement-contour-editor-handle-wrap",
+          html: `<div style="width:${selected ? 18 : 14}px;height:${selected ? 18 : 14}px;border-radius:50%;background:${selected ? "#f0c76a" : "#f5eee0"};border:2px solid #211b16;box-shadow:0 1px 5px #000b;"></div>`,
+          iconSize: [selected ? 22 : 18, selected ? 22 : 18],
+          iconAnchor: [selected ? 11 : 9, selected ? 11 : 9]
+        })
+      });
+      marker.on("click", event => {
+        if (event.originalEvent) L.DomEvent.stopPropagation(event.originalEvent);
+        settlementContourEditorSelectedIndex = index;
+        renderSettlementContourEditorHandles();
+        setSettlementContourEditorStatus("Выбрана точка " + (index + 1) + " из " + settlementContourEditorPoints.length + ". Её можно перетащить или удалить.");
+      });
+      marker.on("drag", event => {
+        const latlng = event.target.getLatLng();
+        settlementContourEditorPoints[index] = { lat: latlng.lat, lng: latlng.lng };
+      });
+      marker.on("dragend", () => {
+        const latlng = marker.getLatLng();
+        settlementContourEditorPoints[index] = { lat: latlng.lat, lng: latlng.lng };
+        drawSettlementContourEditorPreview();
+        setSettlementContourEditorStatus("Точка " + (index + 1) + " перемещена. Не забудь сохранить контур.");
+      });
+      marker.addTo(map);
+      settlementContourEditorHandles.push(marker);
+    });
+  }
+
+  function refreshSettlementContourEditor() {
+    drawSettlementContourEditorPreview();
+    renderSettlementContourEditorHandles();
+    setSettlementContourEditorStatus("Точек: " + settlementContourEditorPoints.length + ". Перетаскивай точки или включи добавление новых.");
+  }
+
+  function closeSettlementContourEditor() {
+    window.settlementContourEditorActive = false;
+    window.handleSettlementContourEditorMapClick = null;
+    settlementContourEditorAddMode = false;
+    settlementContourEditorSelectedIndex = -1;
+    removeSettlementContourEditorVisuals();
+    const panel = document.getElementById("settlement-contour-editor-controls");
+    if (panel) panel.style.display = "none";
+    const startButton = document.getElementById("settlement-contour-editor-start");
+    if (startButton) startButton.textContent = "Открыть редактор контура";
+    const status = document.getElementById("settlement-contour-editor-status");
+    if (status) status.textContent = "Редактор закрыт.";
+  }
+
+  function openSettlementContourEditor() {
+    if (!window.dndFirebase || !window.dndFirebase.isGameMaster) return;
+    if (window.routeMode || window.routePendingConfirmation || window.settlementDrawingActive) {
+      setSettlementContourEditorStatus("Сначала заверши или отмени прокладку маршрута/обводку области.");
+      return;
+    }
+    const select = document.getElementById("settlement-contour-area-select");
+    const areaId = select ? select.value : null;
+    const area = (window.settlementAreas || []).find(item => String(item.id) === String(areaId));
+    if (!area) {
+      setSettlementContourEditorStatus("Сначала выбери поселение.");
+      return;
+    }
+    closeSettlementContourEditor();
+    settlementContourEditorAreaId = String(area.id);
+    settlementContourEditorPoints = Array.isArray(area.brushPoints) && area.brushPoints.length >= 3
+      ? area.brushPoints.map(point => ({ lat: Number(point.lat), lng: Number(point.lng) }))
+      : simplifySettlementEditorPoints(area.points, 8);
+    settlementContourEditorSelectedIndex = -1;
+    settlementContourEditorAddMode = false;
+    window.settlementContourEditorActive = true;
+    window.handleSettlementContourEditorMapClick = function(latlng) {
+      if (!window.settlementContourEditorActive || !settlementContourEditorAddMode) return;
+      const clickPoint = map.latLngToLayerPoint(latlng);
+      let insertIndex = settlementContourEditorPoints.length;
+      let nearestDistance = Infinity;
+      if (settlementContourEditorPoints.length >= 2) {
+        for (let i = 0; i < settlementContourEditorPoints.length; i++) {
+          const nextIndex = (i + 1) % settlementContourEditorPoints.length;
+          const a = map.latLngToLayerPoint(settlementContourEditorPoints[i]);
+          const b = map.latLngToLayerPoint(settlementContourEditorPoints[nextIndex]);
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const lengthSquared = dx * dx + dy * dy || 1;
+          const t = Math.max(0, Math.min(1, ((clickPoint.x - a.x) * dx + (clickPoint.y - a.y) * dy) / lengthSquared));
+          const projected = L.point(a.x + dx * t, a.y + dy * t);
+          const distance = clickPoint.distanceTo(projected);
+          if (distance < nearestDistance) {
+            nearestDistance = distance;
+            insertIndex = nextIndex === 0 ? settlementContourEditorPoints.length : nextIndex;
+          }
+        }
+      }
+      settlementContourEditorPoints.splice(insertIndex, 0, { lat: latlng.lat, lng: latlng.lng });
+      settlementContourEditorSelectedIndex = insertIndex;
+      refreshSettlementContourEditor();
+      setSettlementContourEditorStatus("Добавлена точка " + (insertIndex + 1) + " на ближайшем участке контура. Не забудь сохранить изменения.");
+    };
+    const panel = document.getElementById("settlement-contour-editor-controls");
+    if (panel) panel.style.display = "flex";
+    const startButton = document.getElementById("settlement-contour-editor-start");
+    if (startButton) startButton.textContent = "Редактор открыт";
+    refreshSettlementContourEditor();
+    setSettlementContourEditorStatus("Редактируется: " + getSettlementEditorAreaLabel(area) + ". Перетаскивай вершины; для новых включи добавление точек и нажимай на карту.");
+  }
+
+  async function saveSettlementContourEditor() {
+    const area = getSelectedSettlementContourEditorArea();
+    if (!area || settlementContourEditorPoints.length < 3) {
+      setSettlementContourEditorStatus("Для сохранения нужно не меньше трёх точек.");
+      return;
+    }
+    try {
+      if (!window.dndFirebase || typeof window.dndFirebase.saveSettlementBrushPoints !== "function") {
+        throw new Error("Firebase ещё не готов к сохранению контура");
+      }
+      const cleanPoints = settlementContourEditorPoints.map(point => ({
+        lat: Number(Number(point.lat).toFixed(7)),
+        lng: Number(Number(point.lng).toFixed(7))
+      }));
+      await window.dndFirebase.saveSettlementBrushPoints(area.id, cleanPoints);
+      settlementContourEditorPoints = cleanPoints;
+      drawSettlementContourEditorPreview();
+      setSettlementContourEditorStatus("Контур сохранён. Он записан отдельно от невидимой области поселения.");
+    } catch (error) {
+      console.error("Не удалось сохранить геометрию кисти:", error);
+      setSettlementContourEditorStatus("Ошибка сохранения: " + error.message);
+      alert("Не удалось сохранить контур кисти в Firebase: " + error.message);
+    }
+  }
+
   function createSettlementToolbar() {
     if (window.settlementToolbar || !window.dndFirebase || !window.dndFirebase.isGameMaster) return;
     const toolbar = document.createElement("div");
@@ -3626,7 +3884,7 @@ map.on("zoomend", function() {
       display:flex;flex-direction:column;gap:7px;padding:10px;
       background:#211b16;color:#eee2c8;border:2px solid #d6b46a;
       border-radius:9px;box-shadow:0 3px 14px #0009;font:13px Georgia,serif;
-      max-width:190px;
+      max-width:250px;max-height:82vh;overflow-y:auto;
     `;
     toolbar.innerHTML = `
       <div style="font-weight:bold;text-align:center;">Области поселений</div>
@@ -3634,6 +3892,17 @@ map.on("zoomend", function() {
       <button type="button" data-settlement-type="village">Обвести деревню</button>
       <button type="button" id="settlement-draw-cancel" disabled>Отменить обводку</button>
       <button type="button" id="settlement-brush-test-toggle">Тест кисти А: выключен</button>
+      <div style="border-top:1px solid #756044;padding-top:7px;margin-top:2px;font-weight:bold;">Форма кисти</div>
+      <select id="settlement-contour-area-select" style="width:100%;padding:6px;background:#eee2c8;color:#211b16;border:1px solid #756044;border-radius:4px;"></select>
+      <button type="button" id="settlement-contour-editor-start">Открыть редактор контура</button>
+      <div id="settlement-contour-editor-controls" style="display:none;flex-direction:column;gap:6px;">
+        <button type="button" id="settlement-contour-editor-add">Добавить точки на карте</button>
+        <button type="button" id="settlement-contour-editor-remove" disabled>Удалить выбранную точку</button>
+        <button type="button" id="settlement-contour-editor-reset">Сбросить к границе поселения</button>
+        <button type="button" id="settlement-contour-editor-save" disabled>Сохранить контур</button>
+        <button type="button" id="settlement-contour-editor-close">Закрыть редактор</button>
+        <div id="settlement-contour-editor-status" style="line-height:1.35;opacity:.9;">Редактор готов.</div>
+      </div>
       <div id="settlement-tool-status" style="line-height:1.35;opacity:.85;">Выбери тип поселения, затем зажми кнопку мыши и обведи его.</div>
     `;
     document.body.appendChild(toolbar);
@@ -3673,6 +3942,58 @@ map.on("zoomend", function() {
         }
       }
     });
+
+    const contourSelect = toolbar.querySelector("#settlement-contour-area-select");
+    const editorStart = toolbar.querySelector("#settlement-contour-editor-start");
+    const editorAdd = toolbar.querySelector("#settlement-contour-editor-add");
+    const editorRemove = toolbar.querySelector("#settlement-contour-editor-remove");
+    const editorReset = toolbar.querySelector("#settlement-contour-editor-reset");
+    const editorSave = toolbar.querySelector("#settlement-contour-editor-save");
+    const editorClose = toolbar.querySelector("#settlement-contour-editor-close");
+    [editorStart, editorAdd, editorRemove, editorReset, editorSave, editorClose].forEach(button => {
+      button.style.cssText = "padding:7px;background:#393027;color:#eee2c8;border:1px solid #756044;border-radius:5px;";
+    });
+    editorStart.addEventListener("click", function() {
+      if (window.settlementContourEditorActive) {
+        closeSettlementContourEditor();
+        return;
+      }
+      openSettlementContourEditor();
+    });
+    contourSelect.addEventListener("change", function() {
+      if (window.settlementContourEditorActive) {
+        closeSettlementContourEditor();
+        openSettlementContourEditor();
+      }
+    });
+    editorAdd.addEventListener("click", function() {
+      if (!window.settlementContourEditorActive) return;
+      settlementContourEditorAddMode = !settlementContourEditorAddMode;
+      setSettlementContourEditorStatus(settlementContourEditorAddMode
+        ? "Режим добавления включён: нажимай на карту, чтобы ставить новые точки."
+        : "Режим добавления выключен. Теперь можно спокойно перетаскивать существующие точки.");
+    });
+    editorRemove.addEventListener("click", function() {
+      if (settlementContourEditorSelectedIndex < 0 || settlementContourEditorPoints.length <= 3) return;
+      const removedIndex = settlementContourEditorSelectedIndex;
+      settlementContourEditorPoints.splice(removedIndex, 1);
+      settlementContourEditorSelectedIndex = -1;
+      refreshSettlementContourEditor();
+      setSettlementContourEditorStatus("Точка " + (removedIndex + 1) + " удалена. Не забудь сохранить контур.");
+    });
+    editorReset.addEventListener("click", function() {
+      const area = getSelectedSettlementContourEditorArea();
+      if (!area) return;
+      if (!confirm("Вернуть форму кисти к границе невидимой области поселения? Несохранённые изменения редактора будут потеряны.")) return;
+      settlementContourEditorPoints = simplifySettlementEditorPoints(area.points, 8);
+      settlementContourEditorSelectedIndex = -1;
+      settlementContourEditorAddMode = false;
+      refreshSettlementContourEditor();
+      setSettlementContourEditorStatus("Форма восстановлена по исходной границе. Сохрани её, если результат подходит.");
+    });
+    editorSave.addEventListener("click", saveSettlementContourEditor);
+    editorClose.addEventListener("click", closeSettlementContourEditor);
+    refreshSettlementContourEditorOptions();
 
     map.getContainer().addEventListener("pointerdown", handleSettlementPointerDown, true);
     map.getContainer().addEventListener("pointermove", handleSettlementPointerMove, true);
@@ -3812,6 +4133,15 @@ map.on("zoomend", function() {
       }
       await set(ref(database, "settlements/areas/" + area.id), area);
     };
+    window.dndFirebase.saveSettlementBrushPoints = async function(areaId, brushPoints) {
+      if (!window.dndFirebase.ready || !window.dndFirebase.isGameMaster) {
+        throw new Error("Изменять контур кисти может только ведущий");
+      }
+      if (!Array.isArray(brushPoints) || brushPoints.length < 3) {
+        throw new Error("Контур должен содержать не меньше трёх точек");
+      }
+      await set(ref(database, "settlements/areas/" + areaId + "/brushPoints"), brushPoints);
+    };
 
     onValue(areasRef, function(snapshot) {
       const value = snapshot.val() || {};
@@ -3819,6 +4149,16 @@ map.on("zoomend", function() {
         ...value[key], id: value[key].id || key
       })).filter(area => Array.isArray(area.points) && area.points.length >= 3);
       console.log("Области поселений загружены:", window.settlementAreas.length);
+      refreshSettlementContourEditorOptions();
+      if (window.settlementContourEditorActive) {
+        const updatedArea = getSelectedSettlementContourEditorArea();
+        if (updatedArea && !settlementContourEditorPoints.length) {
+          settlementContourEditorPoints = Array.isArray(updatedArea.brushPoints)
+            ? updatedArea.brushPoints.map(point => ({ lat: Number(point.lat), lng: Number(point.lng) }))
+            : simplifySettlementEditorPoints(updatedArea.points, 8);
+          refreshSettlementContourEditor();
+        }
+      }
     }, function(error) {
       console.error("Ошибка загрузки областей поселений:", error);
     });
