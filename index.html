@@ -2933,63 +2933,15 @@ map.on("zoomend", function() {
     return result;
   }
 
-  // Один случайный вариант контура хранится от первого наведения
-  // до выбора поселения и завершения анимации.
+  // Контур теперь детерминированный: один и тот же отступ для каждого
+  // поселения, без случайных профилей и повторной генерации при движении мыши.
+  const SETTLEMENT_OUTWARD_OFFSET = 18; // CSS-пиксели
   let settlementContourVariant = null;
 
-  // Сглаживаем исходную ломаную Catmull-Rom-кривой, затем равномерно
-  // пересэмплируем её в экранных пикселях. Начальная точка остаётся точной.
-  function smoothSettlementPath(path) {
-    if (!path || path.length < 3) return path || [];
-    const pts = path.map(point => map.latLngToLayerPoint(point));
-    const curved = [pts[0]];
-    const steps = 5;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[Math.max(0, i - 1)];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[Math.min(pts.length - 1, i + 2)];
-      for (let step = 1; step <= steps; step++) {
-        const t = step / steps, t2 = t * t, t3 = t2 * t;
-        const x = 0.5 * ((2*p1.x) + (-p0.x+p2.x)*t + (2*p0.x-5*p1.x+4*p2.x-p3.x)*t2 + (-p0.x+3*p1.x-3*p2.x+p3.x)*t3);
-        const y = 0.5 * ((2*p1.y) + (-p0.y+p2.y)*t + (2*p0.y-5*p1.y+4*p2.y-p3.y)*t2 + (-p0.y+3*p1.y-3*p2.y+p3.y)*t3);
-        curved.push(L.point(x, y));
-      }
-    }
-
-    const result = [curved[0]];
-    let carry = 0;
-    let previous = curved[0];
-    const spacing = 4;
-    for (let i = 1; i < curved.length; i++) {
-      const current = curved[i];
-      const dx = current.x - previous.x, dy = current.y - previous.y;
-      const distance = Math.sqrt(dx*dx + dy*dy);
-      if (distance < 0.001) { previous = current; continue; }
-      let travelled = spacing - carry;
-      while (travelled <= distance) {
-        const t = travelled / distance;
-        result.push(L.point(previous.x + dx*t, previous.y + dy*t));
-        travelled += spacing;
-      }
-      carry = (carry + distance) % spacing;
-      previous = current;
-    }
-    const last = curved[curved.length - 1];
-    if (result[result.length - 1].distanceTo(last) > 1) result.push(last);
-    return result.map(point => map.layerPointToLatLng(point));
-  }
-
   function makeRandomizedSettlementContour(area, startPoint, approachPoint) {
-    const raw = getOpenSettlementContour(area, startPoint, approachPoint);
-    // Не сглаживаем весь контур Catmull-Rom: на неровных многоугольниках
-    // это даёт выбросы и меняет характер росчерка. Оставляем исходную
-    // геометрию, которая визуально была ближе к первоначальному варианту.
-    const base = raw;
+    const base = getOpenSettlementContour(area, startPoint, approachPoint);
     if (!base || base.length < 2) return [];
 
-    // Смещение наружу от границы. Случайный профиль плавно меняется
-    // по длине линии, а первые пиксели остаются привязаны к концу маршрута.
     let signedArea = 0;
     const polygon = area.points;
     for (let i = 0; i < polygon.length; i++) {
@@ -2998,46 +2950,31 @@ map.on("zoomend", function() {
       signedArea += a.x * b.y - b.x * a.y;
     }
     const outwardSign = signedArea >= 0 ? 1 : -1;
-    const totalLength = base.reduce((sum, point, i) => {
-      if (!i) return sum;
-      return sum + map.latLngToLayerPoint(base[i - 1]).distanceTo(map.latLngToLayerPoint(point));
-    }, 0);
-    const anchors = [];
-    const anchorCount = Math.max(4, Math.ceil(totalLength / 75));
-    for (let i = 0; i <= anchorCount; i++) anchors.push(13 + Math.random() * 8);
-
     let travelled = 0;
     return base.map((point, i) => {
       const pixel = map.latLngToLayerPoint(point);
       if (i > 0) travelled += pixel.distanceTo(map.latLngToLayerPoint(base[i - 1]));
-      const position = totalLength > 0 ? travelled / totalLength * anchorCount : 0;
-      const anchor = Math.min(anchorCount - 1, Math.floor(position));
-      const mix = position - anchor;
-      const smoothMix = mix * mix * (3 - 2 * mix);
-      const randomOffset = anchors[anchor] * (1 - smoothMix) + anchors[anchor + 1] * smoothMix;
-      const startRamp = Math.min(1, travelled / 22);
-      const offset = randomOffset * startRamp;
-
       const prev = map.latLngToLayerPoint(base[Math.max(0, i - 1)]);
       const next = map.latLngToLayerPoint(base[Math.min(base.length - 1, i + 1)]);
       const dx = next.x - prev.x, dy = next.y - prev.y;
       const magnitude = Math.sqrt(dx*dx + dy*dy) || 1;
       const nx = (dy / magnitude) * outwardSign;
       const ny = (-dx / magnitude) * outwardSign;
+      // Начальная точка остаётся точно в месте касания маршрута;
+      // далее контур плавно выходит на постоянный экранный отступ.
+      const ramp = Math.min(1, travelled / 22);
+      const offset = SETTLEMENT_OUTWARD_OFFSET * ramp;
       return map.layerPointToLatLng(L.point(pixel.x + nx*offset, pixel.y + ny*offset));
     });
   }
 
   function getSettlementContourVariant(area, startPoint, approachPoint, forceNew) {
     if (!area) return [];
-    const routeAnchored = Boolean(forceNew);
-    const alreadyAnchored = settlementContourVariant && settlementContourVariant.routeAnchored;
-    const needsNew = !settlementContourVariant ||
-      String(settlementContourVariant.areaId) !== String(area.id) ||
-      (routeAnchored && !alreadyAnchored);
+    const needsNew = forceNew || !settlementContourVariant ||
+      String(settlementContourVariant.areaId) !== String(area.id);
     if (needsNew) {
       const path = makeRandomizedSettlementContour(area, startPoint, approachPoint);
-      settlementContourVariant = { areaId: area.id, path: path, routeAnchored: routeAnchored };
+      settlementContourVariant = { areaId: area.id, path, startPoint, approachPoint };
     }
     return settlementContourVariant.path || [];
   }
@@ -3051,7 +2988,7 @@ map.on("zoomend", function() {
     if (!latlngs || latlngs.length < 2) return null;
     const pts = latlngs.map(ll => map.latLngToLayerPoint(ll));
     const left = [], right = [];
-    const baseWidth = SETTLEMENT_TRACE_BASE_WIDTH;
+    const baseWidth = Number.isFinite(maxWidth) ? maxWidth : SETTLEMENT_TRACE_BASE_WIDTH;
     for (let i = 0; i < pts.length; i++) {
       const prev = pts[Math.max(0, i - 1)];
       const next = pts[Math.min(pts.length - 1, i + 1)];
@@ -3082,6 +3019,10 @@ map.on("zoomend", function() {
   let settlementSelectedOutline = null;
   let settlementHoverPath = null;
   let settlementSelectedPath = null;
+  let settlementSelectedArea = null;
+  let settlementHoverAreaId = null;
+  let settlementHoverArea = null;
+  let hiddenRouteLayers = [];
   const settlementTraceLayers = new Map();
   const settlementTracePaths = new Map();
   let activeSettlementTrace = null;
@@ -3090,14 +3031,42 @@ map.on("zoomend", function() {
     if (layer && map.hasLayer(layer)) map.removeLayer(layer);
   }
 
+  function restoreRouteLayersForSettlement() {
+    hiddenRouteLayers.forEach(function(item) {
+      if (item.layer && map.hasLayer(item.layer)) item.layer.setStyle({ opacity: item.opacity });
+    });
+    hiddenRouteLayers = [];
+  }
+
+  function hideRouteDashesInsideSettlement(area) {
+    restoreRouteLayersForSettlement();
+    if (!area || !Array.isArray(area.points)) return;
+    routeRestMarkers.forEach(function(layer) {
+      if (!layer || typeof layer.getLatLngs !== "function" || typeof layer.setStyle !== "function") return;
+      const latlngs = layer.getLatLngs();
+      const flat = Array.isArray(latlngs) ? latlngs.flat(Infinity).filter(point => point && Number.isFinite(point.lat) && Number.isFinite(point.lng)) : [];
+      if (!flat.length) return;
+      // Каждый маршрутный штрих короткий: скрываем штрих, если его середина
+      // проходит внутри поселения, чтобы пунктир не просвечивал под обводкой.
+      const middle = flat[Math.floor(flat.length / 2)];
+      if (pointInSettlement(middle, area.points)) {
+        const opacity = typeof layer.options.opacity === "number" ? layer.options.opacity : 1;
+        hiddenRouteLayers.push({ layer, opacity });
+        layer.setStyle({ opacity: 0 });
+      }
+    });
+  }
+
   function showSettlementOutline(area, opacity) {
     try {
       if (!area || !Array.isArray(area.points) || area.points.length < 3) return;
       const start = window.routeDestinationBoundaryPoint || area.points[0];
       const approach = window.routeDestinationApproachPoint || start;
-      // При выборе пересоздаём вариант ровно от точки касания маршрута.
-      // После этого тот же путь используется финальной анимацией без перегенерации.
-      const path = getSettlementContourVariant(area, start, approach, Boolean(window.routeDestinationBoundaryPoint));
+      // Если поселение уже было под курсором, сохраняем геометрию 1:1:
+      // клик лишь переводит preview в selected, не пересчитывая радиус.
+      const path = settlementHoverPath && String(settlementHoverAreaId) === String(area.id)
+        ? settlementHoverPath.slice()
+        : getSettlementContourVariant(area, start, approach, false);
       if (path.length < 2) return;
       let pane = map.getPane("settlement-preview-pane");
       if (!pane) pane = map.createPane("settlement-preview-pane");
@@ -3105,6 +3074,8 @@ map.on("zoomend", function() {
       removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null;
       removeSettlementLayer(settlementSelectedOutline);
       settlementSelectedPath = path.slice();
+      settlementSelectedArea = area;
+      hideRouteDashesInsideSettlement(area);
       settlementSelectedOutline = makeTaperedSettlementPolygon(path, SETTLEMENT_TRACE_BASE_WIDTH, Number.isFinite(opacity) ? opacity : 0.95);
       if (settlementSelectedOutline) settlementSelectedOutline.addTo(map);
     } catch (error) { console.error("Ошибка выбранной обводки поселения:", error); }
@@ -3118,6 +3089,10 @@ map.on("zoomend", function() {
     settlementSelectedOutline = null;
     settlementHoverPath = null;
     settlementSelectedPath = null;
+    settlementSelectedArea = null;
+    settlementHoverAreaId = null;
+    settlementHoverArea = null;
+    restoreRouteLayersForSettlement();
   }
   window.clearSettlementOutline = clearSettlementOutline;
 
@@ -3132,16 +3107,20 @@ map.on("zoomend", function() {
           removeSettlementLayer(settlementHoverOutline);
           settlementHoverOutline = null;
           settlementHoverPath = null;
-          // Выход из области завершает текущую сессию наведения.
-          // При следующем входе в это поселение появится новый вариант.
+          settlementHoverAreaId = null;
+          settlementHoverArea = null;
+          restoreRouteLayersForSettlement();
           settlementContourVariant = null;
         }
         return;
       }
-      const path = getSettlementContourVariant(area, point);
+      const path = getSettlementContourVariant(area, point, point, false);
       if (path.length < 2) return;
+      hideRouteDashesInsideSettlement(area);
       removeSettlementLayer(settlementHoverOutline);
       settlementHoverPath = path.slice();
+      settlementHoverAreaId = area.id;
+      settlementHoverArea = area;
       settlementHoverOutline = makeTaperedSettlementPolygon(path, SETTLEMENT_TRACE_BASE_WIDTH, 0.68);
       if (settlementHoverOutline) settlementHoverOutline.addTo(map);
     } catch (error) {
@@ -3246,12 +3225,22 @@ map.on("zoomend", function() {
   // пикселях, как у маршрутного штриха, поэтому геометрия ленты должна
   // пересчитываться после zoomend, а не масштабироваться вместе с картой.
   map.on("zoomend", function() {
-    if (settlementHoverPath && settlementHoverOutline) {
+    if (settlementHoverPath && settlementHoverOutline && settlementHoverArea && settlementContourVariant) {
+      settlementHoverPath = makeRandomizedSettlementContour(
+        settlementHoverArea, settlementContourVariant.startPoint, settlementContourVariant.approachPoint
+      );
+      settlementContourVariant.path = settlementHoverPath.slice();
       removeSettlementLayer(settlementHoverOutline);
       settlementHoverOutline = makeTaperedSettlementPolygon(settlementHoverPath, SETTLEMENT_TRACE_BASE_WIDTH, 0.68);
       if (settlementHoverOutline) settlementHoverOutline.addTo(map);
     }
     if (settlementSelectedPath && settlementSelectedOutline) {
+      if (settlementSelectedArea && settlementContourVariant && String(settlementContourVariant.areaId) === String(settlementSelectedArea.id)) {
+        settlementSelectedPath = makeRandomizedSettlementContour(
+          settlementSelectedArea, settlementContourVariant.startPoint, settlementContourVariant.approachPoint
+        );
+        settlementContourVariant.path = settlementSelectedPath.slice();
+      }
       removeSettlementLayer(settlementSelectedOutline);
       settlementSelectedOutline = makeTaperedSettlementPolygon(settlementSelectedPath, SETTLEMENT_TRACE_BASE_WIDTH, 0.95);
       if (settlementSelectedOutline) settlementSelectedOutline.addTo(map);
