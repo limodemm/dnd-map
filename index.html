@@ -2878,7 +2878,7 @@ map.on("zoomend", function() {
   // Единый расчёт открытого контура поселения. Не зависит от внешних
   // диагностических функций: начинает с ближайшей точки границы и обходит
   // исходный полигон в направлении движения к границе.
-  function getOpenSettlementContour(area, startPoint) {
+  function getOpenSettlementContour(area, startPoint, approachPoint) {
     if (!area || !Array.isArray(area.points) || area.points.length < 3 || !startPoint) return [];
     const boundary = findNearestSettlementBoundaryPoint(startPoint, area.points);
     if (!boundary || !boundary.point) return [];
@@ -2888,7 +2888,9 @@ map.on("zoomend", function() {
     const segment = boundary.segmentIndex;
     const start = boundary.point;
     const startPx = map.latLngToLayerPoint(start);
-    const approach = map.latLngToLayerPoint(startPoint);
+    // Для финального построения направление берём из последнего участка маршрута,
+    // а не из нулевого вектора от граничной точки к самой себе.
+    const approach = map.latLngToLayerPoint(approachPoint || startPoint);
     const incoming = L.point(startPx.x - approach.x, startPx.y - approach.y);
     const a = map.latLngToLayerPoint(points[segment]);
     const b = map.latLngToLayerPoint(points[(segment + 1) % count]);
@@ -2935,12 +2937,56 @@ map.on("zoomend", function() {
   // до выбора поселения и завершения анимации.
   let settlementContourVariant = null;
 
-  function makeRandomizedSettlementContour(area, startPoint) {
-    const base = getOpenSettlementContour(area, startPoint);
+  // Сглаживаем исходную ломаную Catmull-Rom-кривой, затем равномерно
+  // пересэмплируем её в экранных пикселях. Начальная точка остаётся точной.
+  function smoothSettlementPath(path) {
+    if (!path || path.length < 3) return path || [];
+    const pts = path.map(point => map.latLngToLayerPoint(point));
+    const curved = [pts[0]];
+    const steps = 5;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[Math.max(0, i - 1)];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[Math.min(pts.length - 1, i + 2)];
+      for (let step = 1; step <= steps; step++) {
+        const t = step / steps, t2 = t * t, t3 = t2 * t;
+        const x = 0.5 * ((2*p1.x) + (-p0.x+p2.x)*t + (2*p0.x-5*p1.x+4*p2.x-p3.x)*t2 + (-p0.x+3*p1.x-3*p2.x+p3.x)*t3);
+        const y = 0.5 * ((2*p1.y) + (-p0.y+p2.y)*t + (2*p0.y-5*p1.y+4*p2.y-p3.y)*t2 + (-p0.y+3*p1.y-3*p2.y+p3.y)*t3);
+        curved.push(L.point(x, y));
+      }
+    }
+
+    const result = [curved[0]];
+    let carry = 0;
+    let previous = curved[0];
+    const spacing = 4;
+    for (let i = 1; i < curved.length; i++) {
+      const current = curved[i];
+      const dx = current.x - previous.x, dy = current.y - previous.y;
+      const distance = Math.sqrt(dx*dx + dy*dy);
+      if (distance < 0.001) { previous = current; continue; }
+      let travelled = spacing - carry;
+      while (travelled <= distance) {
+        const t = travelled / distance;
+        result.push(L.point(previous.x + dx*t, previous.y + dy*t));
+        travelled += spacing;
+      }
+      carry = (carry + distance) % spacing;
+      previous = current;
+    }
+    const last = curved[curved.length - 1];
+    if (result[result.length - 1].distanceTo(last) > 1) result.push(last);
+    return result.map(point => map.layerPointToLatLng(point));
+  }
+
+  function makeRandomizedSettlementContour(area, startPoint, approachPoint) {
+    const raw = getOpenSettlementContour(area, startPoint, approachPoint);
+    const base = smoothSettlementPath(raw);
     if (!base || base.length < 2) return [];
 
-    // Знак площади определяет сторону обхода исходного полигона.
-    // Смещаем линию наружу, перпендикулярно локальному направлению контура.
+    // Смещение наружу от границы. Случайный профиль плавно меняется
+    // по длине линии, а первые пиксели остаются привязаны к концу маршрута.
     let signedArea = 0;
     const polygon = area.points;
     for (let i = 0; i < polygon.length; i++) {
@@ -2949,37 +2995,46 @@ map.on("zoomend", function() {
       signedArea += a.x * b.y - b.x * a.y;
     }
     const outwardSign = signedArea >= 0 ? 1 : -1;
+    const totalLength = base.reduce((sum, point, i) => {
+      if (!i) return sum;
+      return sum + map.latLngToLayerPoint(base[i - 1]).distanceTo(map.latLngToLayerPoint(point));
+    }, 0);
+    const anchors = [];
+    const anchorCount = Math.max(4, Math.ceil(totalLength / 75));
+    for (let i = 0; i <= anchorCount; i++) anchors.push(3.5 + Math.random() * 4.5);
 
-    // Сначала генерируем редкие случайные значения, затем сглаживаем их,
-    // чтобы смещение менялось плавно, без резких зубцов.
-    const randomOffsets = base.map(() => 3.5 + Math.random() * 4.5); // 3.5–8 px
-    const smoothOffsets = randomOffsets.map((value, i) => {
-      const before = randomOffsets[Math.max(0, i - 1)];
-      const after = randomOffsets[Math.min(randomOffsets.length - 1, i + 1)];
-      return (before + value * 2 + after) / 4;
-    });
-
+    let travelled = 0;
     return base.map((point, i) => {
+      const pixel = map.latLngToLayerPoint(point);
+      if (i > 0) travelled += pixel.distanceTo(map.latLngToLayerPoint(base[i - 1]));
+      const position = totalLength > 0 ? travelled / totalLength * anchorCount : 0;
+      const anchor = Math.min(anchorCount - 1, Math.floor(position));
+      const mix = position - anchor;
+      const smoothMix = mix * mix * (3 - 2 * mix);
+      const randomOffset = anchors[anchor] * (1 - smoothMix) + anchors[anchor + 1] * smoothMix;
+      const startRamp = Math.min(1, travelled / 22);
+      const offset = randomOffset * startRamp;
+
       const prev = map.latLngToLayerPoint(base[Math.max(0, i - 1)]);
       const next = map.latLngToLayerPoint(base[Math.min(base.length - 1, i + 1)]);
-      let dx = next.x - prev.x;
-      let dy = next.y - prev.y;
-      const magnitude = Math.sqrt(dx * dx + dy * dy) || 1;
-      // Для положительной площади (обход по часовой стрелке на экране)
-      // наружная нормаль направлена вправо от касательной.
+      const dx = next.x - prev.x, dy = next.y - prev.y;
+      const magnitude = Math.sqrt(dx*dx + dy*dy) || 1;
       const nx = (dy / magnitude) * outwardSign;
       const ny = (-dx / magnitude) * outwardSign;
-      const offset = smoothOffsets[i];
-      const pixel = map.latLngToLayerPoint(point);
-      return map.layerPointToLatLng(L.point(pixel.x + nx * offset, pixel.y + ny * offset));
+      return map.layerPointToLatLng(L.point(pixel.x + nx*offset, pixel.y + ny*offset));
     });
   }
 
-  function getSettlementContourVariant(area, startPoint) {
+  function getSettlementContourVariant(area, startPoint, approachPoint, forceNew) {
     if (!area) return [];
-    if (!settlementContourVariant || String(settlementContourVariant.areaId) !== String(area.id)) {
-      const path = makeRandomizedSettlementContour(area, startPoint);
-      settlementContourVariant = { areaId: area.id, path: path };
+    const routeAnchored = Boolean(forceNew);
+    const alreadyAnchored = settlementContourVariant && settlementContourVariant.routeAnchored;
+    const needsNew = !settlementContourVariant ||
+      String(settlementContourVariant.areaId) !== String(area.id) ||
+      (routeAnchored && !alreadyAnchored);
+    if (needsNew) {
+      const path = makeRandomizedSettlementContour(area, startPoint, approachPoint);
+      settlementContourVariant = { areaId: area.id, path: path, routeAnchored: routeAnchored };
     }
     return settlementContourVariant.path || [];
   }
@@ -3023,7 +3078,10 @@ map.on("zoomend", function() {
     try {
       if (!area || !Array.isArray(area.points) || area.points.length < 3) return;
       const start = window.routeDestinationBoundaryPoint || area.points[0];
-      const path = getSettlementContourVariant(area, start);
+      const approach = window.routeDestinationApproachPoint || start;
+      // При выборе пересоздаём вариант ровно от точки касания маршрута.
+      // После этого тот же путь используется финальной анимацией без перегенерации.
+      const path = getSettlementContourVariant(area, start, approach, Boolean(window.routeDestinationBoundaryPoint));
       if (path.length < 2) return;
       let pane = map.getPane("settlement-preview-pane");
       if (!pane) pane = map.createPane("settlement-preview-pane");
@@ -3051,7 +3109,13 @@ map.on("zoomend", function() {
       }
       const area = findSettlementAt(point);
       if (!area || settlementSelectedOutline) {
-        if (!area) { removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null; }
+        if (!area) {
+          removeSettlementLayer(settlementHoverOutline);
+          settlementHoverOutline = null;
+          // Выход из области завершает текущую сессию наведения.
+          // При следующем входе в это поселение появится новый вариант.
+          settlementContourVariant = null;
+        }
         return;
       }
       const path = getSettlementContourVariant(area, point);
@@ -3069,14 +3133,19 @@ map.on("zoomend", function() {
     try {
       const startPoint = window.routeDestinationBoundaryPoint;
       if (!startPoint) return;
-      const contour = getSettlementContourVariant(area, startPoint);
+      const contour = getSettlementContourVariant(
+        area,
+        startPoint,
+        window.routeDestinationApproachPoint || startPoint,
+        false
+      );
       if (contour.length < 2) return;
       const previousTrace = settlementTraceLayers.get(area.id);
       removeSettlementLayer(previousTrace);
       removeSettlementLayer(settlementSelectedOutline);
       settlementSelectedOutline = null;
 
-      const trace = makeTaperedSettlementPolygon([contour[0], contour[0], contour[1]], 6.4, 1);
+      const trace = makeTaperedSettlementPolygon([contour[0], contour[0], contour[1]], 10.5, 1);
       if (!trace) return;
       trace.addTo(map);
       settlementTraceLayers.set(area.id, trace);
@@ -3092,9 +3161,19 @@ map.on("zoomend", function() {
       const duration = Math.max(1800, Math.min(8000, totalLength * 4));
       const startedAt = performance.now();
 
+      // По расстоянию: первая треть — обычный темп, следующие 12% —
+      // небольшое замедление, оставшаяся часть — резкое ускорение к финалу.
+      function getTraceDistanceProgress(timeProgress) {
+        if (timeProgress <= 0.45) return (timeProgress / 0.45) * 0.33;
+        if (timeProgress <= 0.80) return 0.33 + ((timeProgress - 0.45) / 0.35) * 0.12;
+        const fast = (timeProgress - 0.80) / 0.20;
+        return 0.45 + 0.55 * (1 - Math.pow(1 - fast, 3));
+      }
+
       function frame(now) {
         if (!map.hasLayer(trace)) return;
-        const progress = Math.min(1, (now - startedAt) / duration);
+        const timeProgress = Math.min(1, (now - startedAt) / duration);
+        const progress = getTraceDistanceProgress(timeProgress);
         let remaining = totalLength * progress;
         const drawn = [contour[0]];
         for (let i = 0; i < lengths.length; i++) {
@@ -3107,7 +3186,7 @@ map.on("zoomend", function() {
             break;
           }
         }
-        const next = makeTaperedSettlementPolygon(drawn, 6.4, 1);
+        const next = makeTaperedSettlementPolygon(drawn, 10.5, 1);
         if (next) {
           const latlngs = next.getLatLngs();
           trace.setLatLngs(latlngs);
