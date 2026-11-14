@@ -3133,7 +3133,7 @@ map.on("zoomend", function() {
     const outwardSign = contourArea >= 0 ? 1 : -1;
     // Толщина, длина мазков и промежутки плавно уменьшаются при отдалении.
     const zoomScale = map.getZoomScale(map.getZoom(), 0);
-    const brushScale = Math.pow(zoomScale, 0.48);
+    const brushScale = Math.pow(zoomScale, 0.53);
     const sampledData = sampleSettlementBrushPath(path, 3.2 * brushScale);
     const samples = sampledData.samples;
     const total = sampledData.total;
@@ -3265,28 +3265,140 @@ map.on("zoomend", function() {
 
   function restoreRouteLayersForSettlement() {
     hiddenRouteLayers.forEach(function(item) {
-      if (item.layer && map.hasLayer(item.layer)) item.layer.setStyle({ opacity: item.opacity });
+      if (!item.layer || !map.hasLayer(item.layer)) return;
+      if (item.latlngs && typeof item.layer.setLatLngs === "function") {
+        item.layer.setLatLngs(item.latlngs);
+      }
+      if (item.markerOpacity !== undefined && typeof item.layer.setOpacity === "function") {
+        item.layer.setOpacity(item.markerOpacity);
+      }
+      if (item.style && typeof item.layer.setStyle === "function") {
+        item.layer.setStyle(item.style);
+      }
     });
     hiddenRouteLayers = [];
+  }
+
+  // Для стирания маршрута используем не невидимую область поселения,
+  // а фактическую внешнюю геометрию кисти. Так маршрут исчезает и в
+  // пространстве между границей города и увеличенной визуальной обводкой.
+  function getSettlementBrushErasePolygon(area, extraPixels) {
+    const path = getSettlementDryBrushPath(area);
+    if (path.length < 4) return [];
+    const points = path.slice(0, -1).map(point => L.point(point.x, point.y));
+    let signedArea = 0;
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i], b = points[(i + 1) % points.length];
+      signedArea += a.x * b.y - b.x * a.y;
+    }
+    const outwardSign = signedArea >= 0 ? 1 : -1;
+    const padding = Math.max(0, Number(extraPixels) || 0);
+    return points.map((point, i) => {
+      const previous = points[(i - 1 + points.length) % points.length];
+      const next = points[(i + 1) % points.length];
+      const dx = next.x - previous.x, dy = next.y - previous.y;
+      const length = Math.sqrt(dx * dx + dy * dy) || 1;
+      const nx = (dy / length) * outwardSign;
+      const ny = (-dx / length) * outwardSign;
+      return map.layerPointToLatLng(L.point(point.x + nx * padding, point.y + ny * padding));
+    });
+  }
+
+  function splitRoutePathOutsideSettlement(path, polygon) {
+    if (!Array.isArray(path) || path.length < 2) return [];
+    const result = [];
+    let current = [];
+    let hadInsidePoint = false;
+    const pushCurrent = () => {
+      if (current.length >= 2) result.push(current);
+      current = [];
+    };
+
+    for (let i = 1; i < path.length; i++) {
+      const a = map.latLngToLayerPoint(path[i - 1]);
+      const b = map.latLngToLayerPoint(path[i]);
+      const distance = a.distanceTo(b);
+      const steps = Math.max(1, Math.ceil(distance / 2));
+      for (let step = 0; step <= steps; step++) {
+        if (i > 1 && step === 0) continue;
+        const t = step / steps;
+        const sample = map.layerPointToLatLng(L.point(
+          a.x + (b.x - a.x) * t,
+          a.y + (b.y - a.y) * t
+        ));
+        const inside = pointInSettlement(sample, polygon);
+        if (inside) {
+          hadInsidePoint = true;
+          pushCurrent();
+        } else {
+          if (!current.length || current[current.length - 1].distanceTo(sample) > 0.05) {
+            current.push(sample);
+          }
+        }
+      }
+    }
+    pushCurrent();
+    return { paths: result, changed: hadInsidePoint };
   }
 
   function hideRouteDashesInsideSettlement(area) {
     restoreRouteLayersForSettlement();
     if (!area || !Array.isArray(area.points)) return;
+
+    // Линия обрезается по внешнему краю кисти. Для круглых жетонов
+    // добавляем запас по радиусу, чтобы их края тоже не заходили внутрь.
+    const lineErasePolygon = getSettlementBrushErasePolygon(area, 1.5);
+    const markerErasePolygon = getSettlementBrushErasePolygon(area, 9);
+    if (lineErasePolygon.length < 3 || markerErasePolygon.length < 3) return;
+
     const routeLayers = Array.isArray(window.routeRestMarkers) ? window.routeRestMarkers : [];
     routeLayers.forEach(function(layer) {
-      if (!layer || typeof layer.getLatLngs !== "function" || typeof layer.setStyle !== "function") return;
-      const latlngs = layer.getLatLngs();
-      const flat = Array.isArray(latlngs) ? latlngs.flat(Infinity).filter(point => point && Number.isFinite(point.lat) && Number.isFinite(point.lng)) : [];
-      if (!flat.length) return;
-      // Каждый маршрутный штрих короткий: скрываем штрих, если его середина
-      // проходит внутри поселения, чтобы пунктир не просвечивал под обводкой.
-      const middle = flat[Math.floor(flat.length / 2)];
-      if (pointInSettlement(middle, area.points)) {
-        const opacity = typeof layer.options.opacity === "number" ? layer.options.opacity : 1;
-        hiddenRouteLayers.push({ layer, opacity });
-        layer.setStyle({ opacity: 0 });
+      if (!layer || !map.hasLayer(layer)) return;
+
+      // Крестики и жетоны-привалы — отдельные маркеры, у них нет getLatLngs.
+      if (typeof layer.getLatLng === "function") {
+        const position = layer.getLatLng();
+        if (!position || !pointInSettlement(position, markerErasePolygon)) return;
+        if (typeof layer.setOpacity === "function") {
+          const markerOpacity = typeof layer.options.opacity === "number" ? layer.options.opacity : 1;
+          hiddenRouteLayers.push({ layer, markerOpacity });
+          layer.setOpacity(0);
+        } else if (typeof layer.setStyle === "function") {
+          const style = {
+            opacity: typeof layer.options.opacity === "number" ? layer.options.opacity : 1,
+            fillOpacity: typeof layer.options.fillOpacity === "number" ? layer.options.fillOpacity : 1
+          };
+          hiddenRouteLayers.push({ layer, style });
+          layer.setStyle({ opacity: 0, fillOpacity: 0 });
+        }
+        return;
       }
+
+      if (typeof layer.getLatLngs !== "function" || typeof layer.setLatLngs !== "function") return;
+      const original = layer.getLatLngs();
+      const paths = [];
+      const collectPaths = value => {
+        if (!Array.isArray(value) || !value.length) return;
+        if (value[0] && Number.isFinite(value[0].lat) && Number.isFinite(value[0].lng)) {
+          paths.push(value);
+        } else {
+          value.forEach(collectPaths);
+        }
+      };
+      collectPaths(original);
+      if (!paths.length) return;
+
+      let changed = false;
+      const visiblePaths = [];
+      paths.forEach(path => {
+        const clipped = splitRoutePathOutsideSettlement(path, lineErasePolygon);
+        if (clipped.changed) changed = true;
+        visiblePaths.push(...clipped.paths);
+      });
+      if (!changed) return;
+
+      hiddenRouteLayers.push({ layer, latlngs: original });
+      layer.setLatLngs(visiblePaths);
     });
   }
 
