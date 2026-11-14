@@ -3249,6 +3249,16 @@ map.on("zoomend", function() {
     if (area) settlementBrushSelectedLayers = createSettlementDryBrushLayers(area, Number.isFinite(opacity) ? opacity : 0.96);
   }
 
+  // Новая постоянная форма включается только для тех поселений,
+  // которым ведущий уже сохранил отдельный brushPoints в редакторе.
+  // Остальные поселения продолжают использовать прежнюю обводку.
+  function shouldUseSettlementDryBrush(area) {
+    return !!area && (
+      (Array.isArray(area.brushPoints) && area.brushPoints.length >= 3) ||
+      settlementBrushTestEnabled
+    );
+  }
+
   function removeSettlementLayer(layer) {
     if (layer && map.hasLayer(layer)) map.removeLayer(layer);
   }
@@ -3283,17 +3293,26 @@ map.on("zoomend", function() {
   function showSettlementOutline(area, opacity) {
     try {
       if (!area || !Array.isArray(area.points) || area.points.length < 3) return;
-      if (settlementBrushTestEnabled) {
+
+      if (shouldUseSettlementDryBrush(area)) {
+        // Для отредактированного поселения клик лишь переводит
+        // предварительную кисть в выбранное состояние. Геометрия
+        // берётся из тех же brushPoints и не пересчитывается.
         removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null;
         removeSettlementLayer(settlementSelectedOutline); settlementSelectedOutline = null;
+        settlementHoverPath = null;
+        settlementSelectedPath = null;
+        settlementHoverAreaId = null;
+        settlementHoverArea = null;
+        settlementSelectedArea = area;
         hideRouteDashesInsideSettlement(area);
         drawSettlementBrushSelected(area, Number.isFinite(opacity) ? opacity : 0.96);
         return;
       }
+
+      // Старый способ остаётся для поселений, которые ещё не редактировали.
       const start = window.routeDestinationBoundaryPoint || area.points[0];
       const approach = window.routeDestinationApproachPoint || start;
-      // Если поселение уже было под курсором, сохраняем геометрию 1:1:
-      // клик лишь переводит preview в selected, не пересчитывая радиус.
       const path = settlementHoverPath && String(settlementHoverAreaId) === String(area.id)
         ? settlementHoverPath.slice()
         : getSettlementContourVariant(area, start, approach, false);
@@ -3333,44 +3352,60 @@ map.on("zoomend", function() {
 
   window.previewSettlementAt = function(point) {
     try {
-      if (settlementBrushTestEnabled) {
-        if (!window.routeMode) {
-          settlementBrushPreviewLayers = removeSettlementBrushLayers(settlementBrushPreviewLayers);
-          settlementBrushPreviewArea = null;
-          restoreRouteLayersForSettlement();
-          return;
-        }
-        const brushArea = findSettlementAt(point);
-        if (!brushArea || settlementBrushSelectedAreaId) {
-          if (!brushArea) {
-            settlementBrushPreviewLayers = removeSettlementBrushLayers(settlementBrushPreviewLayers);
-            settlementBrushPreviewArea = null;
-            restoreRouteLayersForSettlement();
-          }
-          return;
-        }
-        if (!settlementBrushPreviewArea || String(settlementBrushPreviewArea.id) !== String(brushArea.id)) {
-          hideRouteDashesInsideSettlement(brushArea);
-          drawSettlementBrushPreview(brushArea);
-        }
+      if (!window.routeMode) {
+        settlementBrushPreviewLayers = removeSettlementBrushLayers(settlementBrushPreviewLayers);
+        settlementBrushPreviewArea = null;
+        removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null;
+        settlementHoverPath = null;
+        settlementHoverAreaId = null;
+        settlementHoverArea = null;
+        // Если поселение уже выбрано для назначения маршрута, не показываем
+        // пунктир поверх него и не восстанавливаем скрытые штрихи до очистки.
+        if (!settlementBrushSelectedAreaId && !settlementSelectedOutline) restoreRouteLayersForSettlement();
         return;
       }
-      if (!window.routeMode) {
-        removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null; return;
-      }
+
       const area = findSettlementAt(point);
-      if (!area || settlementSelectedOutline) {
-        if (!area) {
-          removeSettlementLayer(settlementHoverOutline);
-          settlementHoverOutline = null;
-          settlementHoverPath = null;
-          settlementHoverAreaId = null;
-          settlementHoverArea = null;
+
+      if (!area) {
+        settlementBrushPreviewLayers = removeSettlementBrushLayers(settlementBrushPreviewLayers);
+        settlementBrushPreviewArea = null;
+        removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null;
+        settlementHoverPath = null;
+        settlementHoverAreaId = null;
+        settlementHoverArea = null;
+        if (!settlementBrushSelectedAreaId && !settlementSelectedOutline) {
           restoreRouteLayersForSettlement();
           settlementContourVariant = null;
         }
         return;
       }
+
+      // После выбора места назначения не переключаем обводку при движении
+      // курсора: выбранная кисть остаётся на месте до завершения маршрута.
+      if (settlementBrushSelectedAreaId || settlementSelectedOutline) return;
+
+      if (shouldUseSettlementDryBrush(area)) {
+        removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null;
+        settlementHoverPath = null;
+        settlementHoverAreaId = null;
+        settlementHoverArea = null;
+        if (!settlementBrushPreviewArea ||
+            String(settlementBrushPreviewArea.id) !== String(area.id)) {
+          hideRouteDashesInsideSettlement(area);
+          drawSettlementBrushPreview(area);
+        }
+        return;
+      }
+
+      // При переходе с нового рендерера на старый сначала убираем кисть
+      // и возвращаем стили маршрута, затем рисуем прежний контур.
+      if (settlementBrushPreviewArea) {
+        settlementBrushPreviewLayers = removeSettlementBrushLayers(settlementBrushPreviewLayers);
+        settlementBrushPreviewArea = null;
+        restoreRouteLayersForSettlement();
+      }
+
       const path = getSettlementContourVariant(area, point, point, false);
       if (path.length < 2) return;
       hideRouteDashesInsideSettlement(area);
@@ -3382,12 +3417,21 @@ map.on("zoomend", function() {
       if (settlementHoverOutline) settlementHoverOutline.addTo(map);
     } catch (error) {
       console.error("Ошибка предварительной обводки поселения:", error);
+      settlementBrushPreviewLayers = removeSettlementBrushLayers(settlementBrushPreviewLayers);
+      settlementBrushPreviewArea = null;
       removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null;
     }
   };
 
   function animateSettlementTrace(area) {
     try {
+      // Статичная выбранная кисть нужна для этапа наведения/клика.
+      // При старте пока ещё старой анимации убираем её, чтобы не перекрывать росчерк.
+      if (settlementBrushSelectedAreaId && String(settlementBrushSelectedAreaId) === String(area.id)) {
+        settlementBrushSelectedLayers = removeSettlementBrushLayers(settlementBrushSelectedLayers);
+        settlementBrushSelectedArea = null;
+        settlementBrushSelectedAreaId = null;
+      }
       const startPoint = window.routeDestinationBoundaryPoint;
       if (!startPoint) return;
       const contour = getSettlementContourVariant(
@@ -3483,13 +3527,11 @@ map.on("zoomend", function() {
   // пересчитываться после zoomend, а не масштабироваться вместе с картой.
   map.on("zoomend", function() {
     if (window.settlementContourEditorActive) drawSettlementContourEditorPreview();
-    if (settlementBrushTestEnabled) {
-      if (settlementBrushPreviewArea) drawSettlementBrushPreview(settlementBrushPreviewArea);
-      if (settlementBrushSelectedArea) {
-        const selectedArea = settlementBrushSelectedArea;
-        settlementBrushSelectedLayers = removeSettlementBrushLayers(settlementBrushSelectedLayers);
-        settlementBrushSelectedLayers = createSettlementDryBrushLayers(selectedArea, 0.96);
-      }
+    if (settlementBrushPreviewArea) drawSettlementBrushPreview(settlementBrushPreviewArea);
+    if (settlementBrushSelectedArea) {
+      const selectedArea = settlementBrushSelectedArea;
+      settlementBrushSelectedLayers = removeSettlementBrushLayers(settlementBrushSelectedLayers);
+      settlementBrushSelectedLayers = createSettlementDryBrushLayers(selectedArea, 0.96);
     }
     if (settlementHoverPath && settlementHoverOutline && settlementHoverArea && settlementContourVariant) {
       settlementHoverPath = makeRandomizedSettlementContour(
