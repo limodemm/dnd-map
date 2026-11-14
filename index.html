@@ -3044,7 +3044,7 @@ map.on("zoomend", function() {
     let pane = map.getPane("settlement-dry-brush-pane");
     if (!pane) pane = map.createPane("settlement-dry-brush-pane");
     // Выше обычных маршрутных линий и привалов, но ниже флажков маршрута.
-    pane.style.zIndex = "680";
+    pane.style.zIndex = "675";
     pane.style.pointerEvents = "none";
     return pane;
   }
@@ -3067,8 +3067,7 @@ map.on("zoomend", function() {
       signedArea += a.x * b.y - b.x * a.y;
     }
     const outwardSign = signedArea >= 0 ? 1 : -1;
-    // Смещение уменьшается вместе с картой при отдалении, чтобы кисть
-    // не начинала наезжать на подписи, нанесённые на изображение карты.
+    // Наружное смещение постепенно уменьшается при отдалении карты.
     const zoomScale = map.getZoomScale(map.getZoom(), 0);
     const offset = 4.5 * Math.pow(zoomScale, 0.65);
     const result = points.map((point, i) => {
@@ -3116,8 +3115,7 @@ map.on("zoomend", function() {
       contourArea += a.x * b.y - b.x * a.y;
     }
     const outwardSign = contourArea >= 0 ? 1 : -1;
-    // Фактура и длина мазков масштабируются мягче, чем сама карта:
-    // при отдалении кисть становится компактнее, но не исчезает.
+    // Толщина, длина мазков и промежутки плавно уменьшаются при отдалении.
     const zoomScale = map.getZoomScale(map.getZoom(), 0);
     const brushScale = Math.pow(zoomScale, 0.48);
     const sampledData = sampleSettlementBrushPath(path, 3.2 * brushScale);
@@ -3128,46 +3126,36 @@ map.on("zoomend", function() {
     const layers = [];
     const toLatLngs = pts => pts.map(pt => map.layerPointToLatLng(pt));
 
-    // Короткие мазки с почти постоянной базовой толщиной.
-    // Внутренняя кромка остаётся достаточно цельной, а внешняя
-    // прорисована суше: местами сужается и теряет часть краски.
+    // Короткие перекрывающиеся мазки с тонкими концами вместо сплошной толстой полосы.
     let cursor = 0;
     let strokeIndex = 0;
     while (cursor < total) {
       const seed = strokeIndex + 1;
-      const strokeLength = (34 + (Math.sin(seed * 12.9898) * 0.5 + 0.5) * 22) * brushScale;
-      const gap = (1.0 + (Math.sin(seed * 7.233) * 0.5 + 0.5) * 2.2) * brushScale;
+      const strokeLength = (27 + (Math.sin(seed * 12.9898) * 0.5 + 0.5) * 25) * brushScale;
+      const gap = (1.5 + (Math.sin(seed * 7.233) * 0.5 + 0.5) * 4.5) * brushScale;
       const end = Math.min(total, cursor + strokeLength);
       const section = samples.filter(sample => sample.distance >= cursor && sample.distance <= end);
       if (section.length >= 2) {
-        const outerEdge = [], innerEdge = [];
-        const baseWidth = (5.0 + (Math.sin(seed * 3.17) * 0.5 + 0.5) * 0.55) * brushScale;
+        const left = [], right = [];
+        const baseWidth = (3.7 + (Math.sin(seed * 3.17) * 0.5 + 0.5) * 0.95) * brushScale;
         section.forEach((sample, index) => {
           const prev = section[Math.max(0, index - 1)].point;
           const next = section[Math.min(section.length - 1, index + 1)].point;
           const dx = next.x - prev.x, dy = next.y - prev.y;
           const mag = Math.sqrt(dx * dx + dy * dy) || 1;
-          const nx = (dy / mag) * outwardSign;
-          const ny = (-dx / mag) * outwardSign;
+          const nx = -dy / mag, ny = dx / mag;
           const t = index / Math.max(1, section.length - 1);
-          // Концы мазка мягко сходят на нет, середина сохраняет почти
-          // одинаковую толщину, а не превращается в череду толстых/тонких пятен.
-          const endTaper = 0.58 + 0.42 * Math.pow(Math.sin(Math.PI * t), 0.58);
-          const grain = 0.96 + 0.04 * Math.sin((index + seed) * 1.37);
-          const half = baseWidth * endTaper * grain / 2;
-          // Асимметрия только на внешней кромке: не торчащие наружу палочки,
-          // а небольшие участки, где кисть хуже набрала краску.
-          const edgeWave = 0.5 + 0.5 * Math.sin(sample.distance * 0.19 + seed * 1.71);
-          const edgeNotch = Math.pow(Math.max(0, (edgeWave - 0.68) / 0.32), 1.45);
-          const outerQuality = 0.82 - edgeNotch * 0.48 + (edgeWave - 0.5) * 0.12;
-          const outerHalf = half * Math.max(0.28, Math.min(0.94, outerQuality));
-          const innerHalf = half * 0.94;
-          outerEdge.push(L.point(sample.point.x + nx * outerHalf, sample.point.y + ny * outerHalf));
-          innerEdge.push(L.point(sample.point.x - nx * innerHalf, sample.point.y - ny * innerHalf));
+          // Сужение на обоих концах — характерный след сухой кисти.
+          const taper = Math.pow(Math.sin(Math.PI * t), 0.72);
+          const grain = 0.86 + 0.14 * Math.sin((index + seed) * 1.71);
+          const half = Math.max(0.18, baseWidth * taper * grain / 2);
+          const rough = Math.sin((index + seed * 2) * 2.37) * 0.28;
+          left.push(L.point(sample.point.x + nx * (half + rough), sample.point.y + ny * (half + rough)));
+          right.push(L.point(sample.point.x - nx * (half - rough), sample.point.y - ny * (half - rough)));
         });
-        const stroke = L.polygon(toLatLngs(outerEdge.concat(innerEdge.reverse())), {
+        const stroke = L.polygon(toLatLngs(left.concat(right.reverse())), {
           pane: "settlement-dry-brush-pane", stroke: false, fill: true,
-          fillColor: "#17130f", fillOpacity: alpha * (0.82 + (Math.sin(seed * 5.41) * 0.5 + 0.5) * 0.12),
+          fillColor: "#17130f", fillOpacity: alpha * (0.72 + (Math.sin(seed * 5.41) * 0.5 + 0.5) * 0.22),
           interactive: false, bubblingMouseEvents: false, smoothFactor: 0
         });
         layers.push(stroke);
@@ -3176,31 +3164,53 @@ map.on("zoomend", function() {
       strokeIndex++;
     }
 
-    // Короткие продольные просветы внутри внешней половины мазка.
-    // Они идут вдоль линии, а не торчат перпендикулярно наружу.
-    const dryMarks = [];
-    for (let i = 3; i < samples.length; i += 6) {
+    // Тонкие внешние следы щетины: короткие прочерки снаружи основного мазка.
+    const bristles = [];
+    for (let i = 0; i < samples.length; i += 3) {
       const sample = samples[i];
       const prev = samples[Math.max(0, i - 1)].point;
       const next = samples[Math.min(samples.length - 1, i + 1)].point;
       const dx = next.x - prev.x, dy = next.y - prev.y;
       const mag = Math.sqrt(dx * dx + dy * dy) || 1;
-      const tx = dx / mag, ty = dy / mag;
       const nx = (dy / mag) * outwardSign;
       const ny = (-dx / mag) * outwardSign;
+      const seed = i + 3;
+      const reach = (2.2 + (Math.sin(seed * 8.31) * 0.5 + 0.5) * 3.8) * brushScale;
+      const tangent = (Math.sin(seed * 4.73) * 0.5) * 3.2 * brushScale;
+      const length = (3.5 + (Math.sin(seed * 6.17) * 0.5 + 0.5) * 7.5) * brushScale;
+      const start = L.point(sample.point.x + nx * reach, sample.point.y + ny * reach);
+      const finish = L.point(start.x + nx * length * 0.45 - dy / mag * tangent, start.y + ny * length * 0.45 + dx / mag * tangent);
+      bristles.push([map.layerPointToLatLng(start), map.layerPointToLatLng(finish)]);
+    }
+    if (bristles.length) {
+      layers.push(L.polyline(bristles, {
+        pane: "settlement-dry-brush-pane", color: "#17130f", weight: 0.85 * brushScale,
+        opacity: alpha * 0.58, lineCap: "butt", lineJoin: "round",
+        interactive: false, bubblingMouseEvents: false, smoothFactor: 0
+      }));
+    }
+
+    // Редкие тонкие внутренние просветы разбивают мазок и добавляют сухую фактуру.
+    const dryMarks = [];
+    for (let i = 2; i < samples.length; i += 7) {
+      const sample = samples[i];
+      const prev = samples[Math.max(0, i - 1)].point;
+      const next = samples[Math.min(samples.length - 1, i + 1)].point;
+      const dx = next.x - prev.x, dy = next.y - prev.y;
+      const mag = Math.sqrt(dx * dx + dy * dy) || 1;
+      const nx = -dy / mag, ny = dx / mag;
       const seed = i + 17;
-      const along = (3.5 + (Math.sin(seed * 7.13) * 0.5 + 0.5) * 5.0) * brushScale;
-      const across = (0.45 + (Math.sin(seed * 2.91) * 0.5 + 0.5) * 0.85) * brushScale;
-      const center = L.point(sample.point.x + nx * across, sample.point.y + ny * across);
-      const a = L.point(center.x - tx * along / 2, center.y - ty * along / 2);
-      const b = L.point(center.x + tx * along / 2, center.y + ty * along / 2);
+      const shift = ((Math.sin(seed * 2.91) * 0.5 + 0.5) * 1.7 - 0.85) * brushScale;
+      const length = (3 + (Math.sin(seed * 7.13) * 0.5 + 0.5) * 5) * brushScale;
+      const a = L.point(sample.point.x + nx * shift, sample.point.y + ny * shift);
+      const b = L.point(a.x + dx / mag * length, a.y + dy / mag * length);
       dryMarks.push([map.layerPointToLatLng(a), map.layerPointToLatLng(b)]);
     }
     if (dryMarks.length) {
       layers.push(L.polyline(dryMarks, {
-        pane: "settlement-dry-brush-pane", color: "#eee2c8", weight: 0.8 * brushScale,
-        opacity: alpha * 0.34, lineCap: "butt", lineJoin: "round",
-        interactive: false, bubblingMouseEvents: false, smoothFactor: 0
+        pane: "settlement-dry-brush-pane", color: "#eee2c8", weight: 0.65 * brushScale,
+        opacity: alpha * 0.26, lineCap: "butt", interactive: false,
+        bubblingMouseEvents: false, smoothFactor: 0
       }));
     }
 
