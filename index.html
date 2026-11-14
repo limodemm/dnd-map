@@ -2931,6 +2931,59 @@ map.on("zoomend", function() {
     return result;
   }
 
+  // Один случайный вариант контура хранится от первого наведения
+  // до выбора поселения и завершения анимации.
+  let settlementContourVariant = null;
+
+  function makeRandomizedSettlementContour(area, startPoint) {
+    const base = getOpenSettlementContour(area, startPoint);
+    if (!base || base.length < 2) return [];
+
+    // Знак площади определяет сторону обхода исходного полигона.
+    // Смещаем линию наружу, перпендикулярно локальному направлению контура.
+    let signedArea = 0;
+    const polygon = area.points;
+    for (let i = 0; i < polygon.length; i++) {
+      const a = map.latLngToLayerPoint(polygon[i]);
+      const b = map.latLngToLayerPoint(polygon[(i + 1) % polygon.length]);
+      signedArea += a.x * b.y - b.x * a.y;
+    }
+    const outwardSign = signedArea >= 0 ? 1 : -1;
+
+    // Сначала генерируем редкие случайные значения, затем сглаживаем их,
+    // чтобы смещение менялось плавно, без резких зубцов.
+    const randomOffsets = base.map(() => 3.5 + Math.random() * 4.5); // 3.5–8 px
+    const smoothOffsets = randomOffsets.map((value, i) => {
+      const before = randomOffsets[Math.max(0, i - 1)];
+      const after = randomOffsets[Math.min(randomOffsets.length - 1, i + 1)];
+      return (before + value * 2 + after) / 4;
+    });
+
+    return base.map((point, i) => {
+      const prev = map.latLngToLayerPoint(base[Math.max(0, i - 1)]);
+      const next = map.latLngToLayerPoint(base[Math.min(base.length - 1, i + 1)]);
+      let dx = next.x - prev.x;
+      let dy = next.y - prev.y;
+      const magnitude = Math.sqrt(dx * dx + dy * dy) || 1;
+      // Для положительной площади (обход по часовой стрелке на экране)
+      // наружная нормаль направлена вправо от касательной.
+      const nx = (dy / magnitude) * outwardSign;
+      const ny = (-dx / magnitude) * outwardSign;
+      const offset = smoothOffsets[i];
+      const pixel = map.latLngToLayerPoint(point);
+      return map.layerPointToLatLng(L.point(pixel.x + nx * offset, pixel.y + ny * offset));
+    });
+  }
+
+  function getSettlementContourVariant(area, startPoint) {
+    if (!area) return [];
+    if (!settlementContourVariant || String(settlementContourVariant.areaId) !== String(area.id)) {
+      const path = makeRandomizedSettlementContour(area, startPoint);
+      settlementContourVariant = { areaId: area.id, path: path };
+    }
+    return settlementContourVariant.path || [];
+  }
+
   function makeTaperedSettlementPolygon(latlngs, maxWidth, opacity) {
     if (!latlngs || latlngs.length < 2) return null;
     const pts = latlngs.map(ll => map.latLngToLayerPoint(ll));
@@ -2942,7 +2995,9 @@ map.on("zoomend", function() {
       const mag = Math.sqrt(dx*dx + dy*dy) || 1;
       const nx = -dy / mag, ny = dx / mag;
       const t = i / Math.max(1, pts.length - 1);
-      const width = Math.max(0.18, maxWidth * Math.pow(1 - t, 1.35));
+      // Более толстое начало и мягкое сужение: к последней точке
+      // остаётся заметная толщина, а не почти нулевой волосок.
+      const width = 1.35 + (maxWidth - 1.35) * Math.pow(1 - t, 0.62);
       left.push(map.layerPointToLatLng(L.point(pts[i].x + nx*width/2, pts[i].y + ny*width/2)));
       right.push(map.layerPointToLatLng(L.point(pts[i].x - nx*width/2, pts[i].y - ny*width/2)));
     }
@@ -2968,14 +3023,14 @@ map.on("zoomend", function() {
     try {
       if (!area || !Array.isArray(area.points) || area.points.length < 3) return;
       const start = window.routeDestinationBoundaryPoint || area.points[0];
-      const path = getOpenSettlementContour(area, start);
+      const path = getSettlementContourVariant(area, start);
       if (path.length < 2) return;
       let pane = map.getPane("settlement-preview-pane");
       if (!pane) pane = map.createPane("settlement-preview-pane");
       pane.style.zIndex = "675";
       removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null;
       removeSettlementLayer(settlementSelectedOutline);
-      settlementSelectedOutline = makeTaperedSettlementPolygon(path, 3.6, Number.isFinite(opacity) ? opacity : 0.95);
+      settlementSelectedOutline = makeTaperedSettlementPolygon(path, 5.2, Number.isFinite(opacity) ? opacity : 0.95);
       if (settlementSelectedOutline) settlementSelectedOutline.addTo(map);
     } catch (error) { console.error("Ошибка выбранной обводки поселения:", error); }
   }
@@ -2999,10 +3054,10 @@ map.on("zoomend", function() {
         if (!area) { removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null; }
         return;
       }
-      const path = getOpenSettlementContour(area, point);
+      const path = getSettlementContourVariant(area, point);
       if (path.length < 2) return;
       removeSettlementLayer(settlementHoverOutline);
-      settlementHoverOutline = makeTaperedSettlementPolygon(path, 2.8, 0.52);
+      settlementHoverOutline = makeTaperedSettlementPolygon(path, 4.4, 0.68);
       if (settlementHoverOutline) settlementHoverOutline.addTo(map);
     } catch (error) {
       console.error("Ошибка предварительной обводки поселения:", error);
@@ -3014,14 +3069,14 @@ map.on("zoomend", function() {
     try {
       const startPoint = window.routeDestinationBoundaryPoint;
       if (!startPoint) return;
-      const contour = getOpenSettlementContour(area, startPoint);
+      const contour = getSettlementContourVariant(area, startPoint);
       if (contour.length < 2) return;
       const previousTrace = settlementTraceLayers.get(area.id);
       removeSettlementLayer(previousTrace);
       removeSettlementLayer(settlementSelectedOutline);
       settlementSelectedOutline = null;
 
-      const trace = makeTaperedSettlementPolygon([contour[0], contour[0]], 4.2, 1);
+      const trace = makeTaperedSettlementPolygon([contour[0], contour[0], contour[1]], 6.4, 1);
       if (!trace) return;
       trace.addTo(map);
       settlementTraceLayers.set(area.id, trace);
@@ -3052,7 +3107,7 @@ map.on("zoomend", function() {
             break;
           }
         }
-        const next = makeTaperedSettlementPolygon(drawn, 4.2, 1);
+        const next = makeTaperedSettlementPolygon(drawn, 6.4, 1);
         if (next) {
           const latlngs = next.getLatLngs();
           trace.setLatLngs(latlngs);
