@@ -621,7 +621,7 @@ routePoints = [partyMarker.getLatLng()];
 
 let routePoints = [];
 let routeLine = null;
-let routeRestMarkers = [];
+window.routeRestMarkers = [];
 let routeEndMarker = null;
 
 // Невидимые области поселений и состояние маршрута обрабатываются ниже.
@@ -1950,11 +1950,11 @@ function clearRouteDrawing() {
     routeLine = null;
   }
 
-  routeRestMarkers.forEach(marker => {
+  window.routeRestMarkers.forEach(marker => {
     map.removeLayer(marker);
   });
 
-  routeRestMarkers = [];
+  window.routeRestMarkers = [];
   if (routeEndMarker) {
   map.removeLayer(routeEndMarker);
   routeEndMarker = null;
@@ -2278,7 +2278,7 @@ function updateRouteLine(cursorPosition = null) {
             lineJoin: "round",
             className: "route-line-raised"
           }).addTo(map);
-          routeRestMarkers.push(line);
+          window.routeRestMarkers.push(line);
           continue;
         }
 
@@ -2361,7 +2361,7 @@ function updateRouteLine(cursorPosition = null) {
             path.style.animationDuration = `${routeLineRevealFadeDuration}ms`;
             path.style.animationDelay = `${delay}ms`;
           }
-          routeRestMarkers.push(line);
+          window.routeRestMarkers.push(line);
         }
       }
     }
@@ -2456,7 +2456,7 @@ function updateRouteLine(cursorPosition = null) {
       keyboard: false,
       zIndexOffset: 1100
     }).addTo(map);
-    routeRestMarkers.push(boundaryMarker);
+    window.routeRestMarkers.push(boundaryMarker);
 
     // Крестики истощения — каждые 1/8 дневной нормы после черты.
     const interval = segment.dailyLimit / 8;
@@ -2511,7 +2511,7 @@ function updateRouteLine(cursorPosition = null) {
         keyboard: false,
         zIndexOffset: 1100
       }).addTo(map);
-      routeRestMarkers.push(marker);
+      window.routeRestMarkers.push(marker);
     });
   });
 
@@ -2552,7 +2552,7 @@ function updateRouteLine(cursorPosition = null) {
 
     // Привал находится в отдельном слое выше крестиков.
     marker.bringToFront();
-    routeRestMarkers.push(marker);
+    window.routeRestMarkers.push(marker);
   });
 
   // Флажок конечной точки.
@@ -3041,7 +3041,8 @@ map.on("zoomend", function() {
   function hideRouteDashesInsideSettlement(area) {
     restoreRouteLayersForSettlement();
     if (!area || !Array.isArray(area.points)) return;
-    routeRestMarkers.forEach(function(layer) {
+    const routeLayers = Array.isArray(window.routeRestMarkers) ? window.routeRestMarkers : [];
+    routeLayers.forEach(function(layer) {
       if (!layer || typeof layer.getLatLngs !== "function" || typeof layer.setStyle !== "function") return;
       const latlngs = layer.getLatLngs();
       const flat = Array.isArray(latlngs) ? latlngs.flat(Infinity).filter(point => point && Number.isFinite(point.lat) && Number.isFinite(point.lng)) : [];
