@@ -3044,7 +3044,7 @@ map.on("zoomend", function() {
     let pane = map.getPane("settlement-dry-brush-pane");
     if (!pane) pane = map.createPane("settlement-dry-brush-pane");
     // Выше обычных маршрутных линий и привалов, но ниже флажков маршрута.
-    pane.style.zIndex = "680";
+    pane.style.zIndex = "675";
     pane.style.pointerEvents = "none";
     return pane;
   }
@@ -3067,10 +3067,7 @@ map.on("zoomend", function() {
       signedArea += a.x * b.y - b.x * a.y;
     }
     const outwardSign = signedArea >= 0 ? 1 : -1;
-    // Смещение уменьшается вместе с картой при отдалении, чтобы кисть
-    // не начинала наезжать на подписи, нанесённые на изображение карты.
-    const zoomScale = map.getZoomScale(map.getZoom(), 0);
-    const offset = 4.5 * Math.pow(zoomScale, 0.65);
+    const offset = 4.5; // небольшой постоянный экранный отступ
     const result = points.map((point, i) => {
       const previous = points[(i - 1 + points.length) % points.length];
       const next = points[(i + 1) % points.length];
@@ -3108,37 +3105,112 @@ map.on("zoomend", function() {
   function createSettlementDryBrushLayers(area, opacity) {
     const path = getSettlementDryBrushPath(area);
     if (path.length < 4) return [];
-    ensureSettlementDryBrushPane();
-
-    // Обводка использует тот же визуальный стиль, что и золотая линия маршрута:
-    // тот же цвет, скруглённые края и такая же лёгкая тёмная тень.
-    // Отличается только тем, что линия сплошная, а её толщина сохранена
-    // на уровне предыдущего варианта кисти.
-    const zoomScale = map.getZoomScale(map.getZoom(), 0);
-    const brushScale = Math.pow(zoomScale, 0.48);
+    const pane = ensureSettlementDryBrushPane();
+    const screenPoints = path.slice(0, -1);
+    let contourArea = 0;
+    for (let i = 0; i < screenPoints.length; i++) {
+      const a = screenPoints[i], b = screenPoints[(i + 1) % screenPoints.length];
+      contourArea += a.x * b.y - b.x * a.y;
+    }
+    const outwardSign = contourArea >= 0 ? 1 : -1;
+    const sampledData = sampleSettlementBrushPath(path, 3.2);
+    const samples = sampledData.samples;
+    const total = sampledData.total;
+    if (total < 12) return [];
     const alpha = Number.isFinite(opacity) ? opacity : 1;
-    const outline = L.polyline(
-      path.map(point => map.layerPointToLatLng(point)),
-      {
-        pane: "settlement-dry-brush-pane",
-        color: "#e2b95f",
-        weight: 5.3 * brushScale,
-        opacity: alpha,
-        lineCap: "round",
-        lineJoin: "round",
-        className: "route-line-raised settlement-solid-route-line",
-        interactive: false,
-        bubblingMouseEvents: false,
-        smoothFactor: 0
+    const layers = [];
+    const toLatLngs = pts => pts.map(pt => map.layerPointToLatLng(pt));
+
+    // Короткие перекрывающиеся мазки с тонкими концами вместо сплошной толстой полосы.
+    let cursor = 0;
+    let strokeIndex = 0;
+    while (cursor < total) {
+      const seed = strokeIndex + 1;
+      const strokeLength = 27 + (Math.sin(seed * 12.9898) * 0.5 + 0.5) * 25;
+      const gap = 1.5 + (Math.sin(seed * 7.233) * 0.5 + 0.5) * 4.5;
+      const end = Math.min(total, cursor + strokeLength);
+      const section = samples.filter(sample => sample.distance >= cursor && sample.distance <= end);
+      if (section.length >= 2) {
+        const left = [], right = [];
+        const baseWidth = 3.4 + (Math.sin(seed * 3.17) * 0.5 + 0.5) * 1.25;
+        section.forEach((sample, index) => {
+          const prev = section[Math.max(0, index - 1)].point;
+          const next = section[Math.min(section.length - 1, index + 1)].point;
+          const dx = next.x - prev.x, dy = next.y - prev.y;
+          const mag = Math.sqrt(dx * dx + dy * dy) || 1;
+          const nx = -dy / mag, ny = dx / mag;
+          const t = index / Math.max(1, section.length - 1);
+          // Сужение на обоих концах — характерный след сухой кисти.
+          const taper = Math.pow(Math.sin(Math.PI * t), 0.72);
+          const grain = 0.86 + 0.14 * Math.sin((index + seed) * 1.71);
+          const half = Math.max(0.18, baseWidth * taper * grain / 2);
+          const rough = Math.sin((index + seed * 2) * 2.37) * 0.28;
+          left.push(L.point(sample.point.x + nx * (half + rough), sample.point.y + ny * (half + rough)));
+          right.push(L.point(sample.point.x - nx * (half - rough), sample.point.y - ny * (half - rough)));
+        });
+        const stroke = L.polygon(toLatLngs(left.concat(right.reverse())), {
+          pane: "settlement-dry-brush-pane", stroke: false, fill: true,
+          fillColor: "#17130f", fillOpacity: alpha * (0.72 + (Math.sin(seed * 5.41) * 0.5 + 0.5) * 0.22),
+          interactive: false, bubblingMouseEvents: false, smoothFactor: 0
+        });
+        layers.push(stroke);
       }
-    ).addTo(map);
+      cursor = end + gap;
+      strokeIndex++;
+    }
 
-    // У пользовательской панели свой DOM-контейнер, поэтому задаём тот же
-    // drop-shadow напрямую, что используется CSS-классом маршрутной линии.
-    const element = outline.getElement && outline.getElement();
-    if (element) element.style.filter = "drop-shadow(0px 1px 0px rgba(0, 0, 0, 0.65))";
+    // Тонкие внешние следы щетины: короткие прочерки снаружи основного мазка.
+    const bristles = [];
+    for (let i = 0; i < samples.length; i += 3) {
+      const sample = samples[i];
+      const prev = samples[Math.max(0, i - 1)].point;
+      const next = samples[Math.min(samples.length - 1, i + 1)].point;
+      const dx = next.x - prev.x, dy = next.y - prev.y;
+      const mag = Math.sqrt(dx * dx + dy * dy) || 1;
+      const nx = (dy / mag) * outwardSign;
+      const ny = (-dx / mag) * outwardSign;
+      const seed = i + 3;
+      const reach = 2.2 + (Math.sin(seed * 8.31) * 0.5 + 0.5) * 3.8;
+      const tangent = (Math.sin(seed * 4.73) * 0.5) * 3.2;
+      const length = 3.5 + (Math.sin(seed * 6.17) * 0.5 + 0.5) * 7.5;
+      const start = L.point(sample.point.x + nx * reach, sample.point.y + ny * reach);
+      const finish = L.point(start.x + nx * length * 0.45 - dy / mag * tangent, start.y + ny * length * 0.45 + dx / mag * tangent);
+      bristles.push([map.layerPointToLatLng(start), map.layerPointToLatLng(finish)]);
+    }
+    if (bristles.length) {
+      layers.push(L.polyline(bristles, {
+        pane: "settlement-dry-brush-pane", color: "#17130f", weight: 0.85,
+        opacity: alpha * 0.58, lineCap: "butt", lineJoin: "round",
+        interactive: false, bubblingMouseEvents: false, smoothFactor: 0
+      }));
+    }
 
-    return [outline];
+    // Редкие тонкие внутренние просветы разбивают мазок и добавляют сухую фактуру.
+    const dryMarks = [];
+    for (let i = 2; i < samples.length; i += 7) {
+      const sample = samples[i];
+      const prev = samples[Math.max(0, i - 1)].point;
+      const next = samples[Math.min(samples.length - 1, i + 1)].point;
+      const dx = next.x - prev.x, dy = next.y - prev.y;
+      const mag = Math.sqrt(dx * dx + dy * dy) || 1;
+      const nx = -dy / mag, ny = dx / mag;
+      const seed = i + 17;
+      const shift = (Math.sin(seed * 2.91) * 0.5 + 0.5) * 1.7 - 0.85;
+      const length = 3 + (Math.sin(seed * 7.13) * 0.5 + 0.5) * 5;
+      const a = L.point(sample.point.x + nx * shift, sample.point.y + ny * shift);
+      const b = L.point(a.x + dx / mag * length, a.y + dy / mag * length);
+      dryMarks.push([map.layerPointToLatLng(a), map.layerPointToLatLng(b)]);
+    }
+    if (dryMarks.length) {
+      layers.push(L.polyline(dryMarks, {
+        pane: "settlement-dry-brush-pane", color: "#eee2c8", weight: 0.65,
+        opacity: alpha * 0.26, lineCap: "butt", interactive: false,
+        bubblingMouseEvents: false, smoothFactor: 0
+      }));
+    }
+
+    layers.forEach(layer => layer.addTo(map));
+    return layers;
   }
 
   function drawSettlementBrushPreview(area) {
