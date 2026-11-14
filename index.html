@@ -2982,7 +2982,10 @@ map.on("zoomend", function() {
 
   function makeRandomizedSettlementContour(area, startPoint, approachPoint) {
     const raw = getOpenSettlementContour(area, startPoint, approachPoint);
-    const base = smoothSettlementPath(raw);
+    // Не сглаживаем весь контур Catmull-Rom: на неровных многоугольниках
+    // это даёт выбросы и меняет характер росчерка. Оставляем исходную
+    // геометрию, которая визуально была ближе к первоначальному варианту.
+    const base = raw;
     if (!base || base.length < 2) return [];
 
     // Смещение наружу от границы. Случайный профиль плавно меняется
@@ -3001,7 +3004,7 @@ map.on("zoomend", function() {
     }, 0);
     const anchors = [];
     const anchorCount = Math.max(4, Math.ceil(totalLength / 75));
-    for (let i = 0; i <= anchorCount; i++) anchors.push(3.5 + Math.random() * 4.5);
+    for (let i = 0; i <= anchorCount; i++) anchors.push(13 + Math.random() * 8);
 
     let travelled = 0;
     return base.map((point, i) => {
@@ -3039,10 +3042,16 @@ map.on("zoomend", function() {
     return settlementContourVariant.path || [];
   }
 
+  // Толщина совпадает с обычной пунктирной линией маршрута (4.5 CSS px).
+  // Геометрия ленты строится в экранных координатах, поэтому ширина
+  // остаётся визуально постоянной при любом масштабе карты.
+  const SETTLEMENT_TRACE_BASE_WIDTH = 4.5;
+
   function makeTaperedSettlementPolygon(latlngs, maxWidth, opacity) {
     if (!latlngs || latlngs.length < 2) return null;
     const pts = latlngs.map(ll => map.latLngToLayerPoint(ll));
     const left = [], right = [];
+    const baseWidth = SETTLEMENT_TRACE_BASE_WIDTH;
     for (let i = 0; i < pts.length; i++) {
       const prev = pts[Math.max(0, i - 1)];
       const next = pts[Math.min(pts.length - 1, i + 1)];
@@ -3050,9 +3059,12 @@ map.on("zoomend", function() {
       const mag = Math.sqrt(dx*dx + dy*dy) || 1;
       const nx = -dy / mag, ny = dx / mag;
       const t = i / Math.max(1, pts.length - 1);
-      // Более толстое начало и мягкое сужение: к последней точке
-      // остаётся заметная толщина, а не почти нулевой волосок.
-      const width = 1.35 + (maxWidth - 1.35) * Math.pow(1 - t, 0.62);
+
+      // До середины сохраняем почти полную толщину. После середины
+      // сужение сначала едва заметно, а ближе к концу резко усиливается.
+      const taperProgress = Math.max(0, Math.min(1, (t - 0.5) / 0.5));
+      const taper = Math.pow(taperProgress, 2.8);
+      const width = baseWidth * (1 - 0.96 * taper);
       left.push(map.layerPointToLatLng(L.point(pts[i].x + nx*width/2, pts[i].y + ny*width/2)));
       right.push(map.layerPointToLatLng(L.point(pts[i].x - nx*width/2, pts[i].y - ny*width/2)));
     }
@@ -3068,7 +3080,11 @@ map.on("zoomend", function() {
 
   let settlementHoverOutline = null;
   let settlementSelectedOutline = null;
+  let settlementHoverPath = null;
+  let settlementSelectedPath = null;
   const settlementTraceLayers = new Map();
+  const settlementTracePaths = new Map();
+  let activeSettlementTrace = null;
 
   function removeSettlementLayer(layer) {
     if (layer && map.hasLayer(layer)) map.removeLayer(layer);
@@ -3088,7 +3104,8 @@ map.on("zoomend", function() {
       pane.style.zIndex = "675";
       removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null;
       removeSettlementLayer(settlementSelectedOutline);
-      settlementSelectedOutline = makeTaperedSettlementPolygon(path, 5.2, Number.isFinite(opacity) ? opacity : 0.95);
+      settlementSelectedPath = path.slice();
+      settlementSelectedOutline = makeTaperedSettlementPolygon(path, SETTLEMENT_TRACE_BASE_WIDTH, Number.isFinite(opacity) ? opacity : 0.95);
       if (settlementSelectedOutline) settlementSelectedOutline.addTo(map);
     } catch (error) { console.error("Ошибка выбранной обводки поселения:", error); }
   }
@@ -3099,6 +3116,8 @@ map.on("zoomend", function() {
     removeSettlementLayer(settlementSelectedOutline);
     settlementHoverOutline = null;
     settlementSelectedOutline = null;
+    settlementHoverPath = null;
+    settlementSelectedPath = null;
   }
   window.clearSettlementOutline = clearSettlementOutline;
 
@@ -3112,6 +3131,7 @@ map.on("zoomend", function() {
         if (!area) {
           removeSettlementLayer(settlementHoverOutline);
           settlementHoverOutline = null;
+          settlementHoverPath = null;
           // Выход из области завершает текущую сессию наведения.
           // При следующем входе в это поселение появится новый вариант.
           settlementContourVariant = null;
@@ -3121,7 +3141,8 @@ map.on("zoomend", function() {
       const path = getSettlementContourVariant(area, point);
       if (path.length < 2) return;
       removeSettlementLayer(settlementHoverOutline);
-      settlementHoverOutline = makeTaperedSettlementPolygon(path, 4.4, 0.68);
+      settlementHoverPath = path.slice();
+      settlementHoverOutline = makeTaperedSettlementPolygon(path, SETTLEMENT_TRACE_BASE_WIDTH, 0.68);
       if (settlementHoverOutline) settlementHoverOutline.addTo(map);
     } catch (error) {
       console.error("Ошибка предварительной обводки поселения:", error);
@@ -3145,12 +3166,14 @@ map.on("zoomend", function() {
       removeSettlementLayer(settlementSelectedOutline);
       settlementSelectedOutline = null;
 
-      const trace = makeTaperedSettlementPolygon([contour[0], contour[0], contour[1]], 10.5, 1);
+      let trace = makeTaperedSettlementPolygon([contour[0], contour[0], contour[1]], SETTLEMENT_TRACE_BASE_WIDTH, 1);
       if (!trace) return;
       trace.addTo(map);
       settlementTraceLayers.set(area.id, trace);
+      settlementTracePaths.set(area.id, [contour[0], contour[0], contour[1]]);
+      activeSettlementTrace = { areaId: area.id, layer: trace };
 
-      const layerPoints = contour.map(point => map.latLngToLayerPoint(point));
+      let layerPoints = contour.map(point => map.latLngToLayerPoint(point));
       const lengths = [];
       let totalLength = 0;
       for (let i = 1; i < layerPoints.length; i++) {
@@ -3161,17 +3184,30 @@ map.on("zoomend", function() {
       const duration = Math.max(1800, Math.min(8000, totalLength * 4));
       const startedAt = performance.now();
 
-      // По расстоянию: первая треть — обычный темп, следующие 12% —
-      // небольшое замедление, оставшаяся часть — резкое ускорение к финалу.
+      // Четыре темповых участка по пройденному расстоянию:
+      // 1) первая треть — обычная скорость;
+      // 2) короткое, но более заметное замедление;
+      // 3) небольшой участок примерно в 1.5 раза быстрее начального;
+      // 4) сильное плавное ускорение до самого острого конца.
+      // Доли времени подобраны отдельно от долей расстояния, чтобы
+      // скорость действительно ощущалась разной, а не просто менялась формально.
       function getTraceDistanceProgress(timeProgress) {
-        if (timeProgress <= 0.45) return (timeProgress / 0.45) * 0.33;
-        if (timeProgress <= 0.80) return 0.33 + ((timeProgress - 0.45) / 0.35) * 0.12;
-        const fast = (timeProgress - 0.80) / 0.20;
-        return 0.45 + 0.55 * (1 - Math.pow(1 - fast, 3));
+        const t1 = 0.35, t2 = 0.57, t3 = 0.68;
+        const d1 = 0.33, d2 = 0.39, d3 = 0.54;
+        if (timeProgress <= t1) return (timeProgress / t1) * d1;
+        if (timeProgress <= t2) return d1 + ((timeProgress - t1) / (t2 - t1)) * (d2 - d1);
+        if (timeProgress <= t3) return d2 + ((timeProgress - t2) / (t3 - t2)) * (d3 - d2);
+        const fast = (timeProgress - t3) / (1 - t3);
+        return d3 + (1 - d3) * (1 - Math.pow(1 - fast, 3));
       }
 
       function frame(now) {
-        if (!map.hasLayer(trace)) return;
+        if (!activeSettlementTrace || String(activeSettlementTrace.areaId) !== String(area.id)) return;
+        trace = activeSettlementTrace.layer;
+        if (!trace || !map.hasLayer(trace)) return;
+        // Перепроецируем линию на каждом кадре: её толщина остаётся
+        // равной толщине маршрутной линии даже после смены масштаба.
+        layerPoints = contour.map(point => map.latLngToLayerPoint(point));
         const timeProgress = Math.min(1, (now - startedAt) / duration);
         const progress = getTraceDistanceProgress(timeProgress);
         let remaining = totalLength * progress;
@@ -3186,14 +3222,18 @@ map.on("zoomend", function() {
             break;
           }
         }
-        const next = makeTaperedSettlementPolygon(drawn, 10.5, 1);
+        const next = makeTaperedSettlementPolygon(drawn, SETTLEMENT_TRACE_BASE_WIDTH, 1);
         if (next) {
           const latlngs = next.getLatLngs();
           trace.setLatLngs(latlngs);
           trace.setStyle({stroke:false, fill:true, fillColor:"#171512", fillOpacity:1});
+          settlementTracePaths.set(area.id, drawn.slice());
         }
         if (progress < 1) requestAnimationFrame(frame);
-        else console.log("Обводка поселения: анимация росчерка завершена", area.id);
+        else {
+          activeSettlementTrace = null;
+          console.log("Обводка поселения: анимация росчерка завершена", area.id);
+        }
       }
       requestAnimationFrame(frame);
       console.log("Обводка поселения: анимация чёрного сужающегося росчерка началась", area.id);
@@ -3201,6 +3241,34 @@ map.on("zoomend", function() {
       console.error("Диагностика: ошибка анимации контура поселения", error);
     }
   }
+
+  // Пересобираем контуры при смене масштаба. Все ширины заданы в экранных
+  // пикселях, как у маршрутного штриха, поэтому геометрия ленты должна
+  // пересчитываться после zoomend, а не масштабироваться вместе с картой.
+  map.on("zoomend", function() {
+    if (settlementHoverPath && settlementHoverOutline) {
+      removeSettlementLayer(settlementHoverOutline);
+      settlementHoverOutline = makeTaperedSettlementPolygon(settlementHoverPath, SETTLEMENT_TRACE_BASE_WIDTH, 0.68);
+      if (settlementHoverOutline) settlementHoverOutline.addTo(map);
+    }
+    if (settlementSelectedPath && settlementSelectedOutline) {
+      removeSettlementLayer(settlementSelectedOutline);
+      settlementSelectedOutline = makeTaperedSettlementPolygon(settlementSelectedPath, SETTLEMENT_TRACE_BASE_WIDTH, 0.95);
+      if (settlementSelectedOutline) settlementSelectedOutline.addTo(map);
+    }
+    settlementTracePaths.forEach(function(path, id) {
+      const oldLayer = settlementTraceLayers.get(id);
+      removeSettlementLayer(oldLayer);
+      const newLayer = makeTaperedSettlementPolygon(path, SETTLEMENT_TRACE_BASE_WIDTH, 1);
+      if (newLayer) {
+        newLayer.addTo(map);
+        settlementTraceLayers.set(id, newLayer);
+        if (activeSettlementTrace && String(activeSettlementTrace.areaId) === String(id)) {
+          activeSettlementTrace.layer = newLayer;
+        }
+      }
+    });
+  });
 
   // Запускаем обводку не после всей анимации маршрута, а в тот момент,
   // когда анимированный пунктир доходит до конечной точки у границы поселения.
