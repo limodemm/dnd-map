@@ -2982,10 +2982,7 @@ map.on("zoomend", function() {
 
   function makeRandomizedSettlementContour(area, startPoint, approachPoint) {
     const raw = getOpenSettlementContour(area, startPoint, approachPoint);
-    // Не сглаживаем весь контур Catmull-Rom: на неровных многоугольниках
-    // это даёт выбросы и меняет характер росчерка. Оставляем исходную
-    // геометрию, которая визуально была ближе к первоначальному варианту.
-    const base = raw;
+    const base = smoothSettlementPath(raw);
     if (!base || base.length < 2) return [];
 
     // Смещение наружу от границы. Случайный профиль плавно меняется
@@ -3164,21 +3161,13 @@ map.on("zoomend", function() {
       const duration = Math.max(1800, Math.min(8000, totalLength * 4));
       const startedAt = performance.now();
 
-      // Четыре темповых участка по пройденному расстоянию:
-      // 1) первая треть — обычная скорость;
-      // 2) короткое, но более заметное замедление;
-      // 3) небольшой участок примерно в 1.5 раза быстрее начального;
-      // 4) сильное плавное ускорение до самого острого конца.
-      // Доли времени подобраны отдельно от долей расстояния, чтобы
-      // скорость действительно ощущалась разной, а не просто менялась формально.
+      // По расстоянию: первая треть — обычный темп, следующие 12% —
+      // небольшое замедление, оставшаяся часть — резкое ускорение к финалу.
       function getTraceDistanceProgress(timeProgress) {
-        const t1 = 0.35, t2 = 0.57, t3 = 0.68;
-        const d1 = 0.33, d2 = 0.39, d3 = 0.54;
-        if (timeProgress <= t1) return (timeProgress / t1) * d1;
-        if (timeProgress <= t2) return d1 + ((timeProgress - t1) / (t2 - t1)) * (d2 - d1);
-        if (timeProgress <= t3) return d2 + ((timeProgress - t2) / (t3 - t2)) * (d3 - d2);
-        const fast = (timeProgress - t3) / (1 - t3);
-        return d3 + (1 - d3) * (1 - Math.pow(1 - fast, 3));
+        if (timeProgress <= 0.45) return (timeProgress / 0.45) * 0.33;
+        if (timeProgress <= 0.80) return 0.33 + ((timeProgress - 0.45) / 0.35) * 0.12;
+        const fast = (timeProgress - 0.80) / 0.20;
+        return 0.45 + 0.55 * (1 - Math.pow(1 - fast, 3));
       }
 
       function frame(now) {
