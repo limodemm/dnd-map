@@ -122,6 +122,23 @@ body {
   background: #555;
 }
 
+
+/* Тестовая текстура сухой кисти А. При отсутствии SVG-фильтров
+   остаются обычные видимые штрихи Leaflet как безопасный fallback. */
+.leaflet-overlay-pane .settlement-dry-brush-base,
+.leaflet-overlay-pane .settlement-dry-brush-grain,
+.leaflet-overlay-pane .settlement-dry-brush-fine {
+  filter: url(#settlementDryBrushFilter);
+  mix-blend-mode: multiply;
+}
+.leaflet-overlay-pane .settlement-dry-brush-base {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.leaflet-overlay-pane .settlement-dry-brush-grain,
+.leaflet-overlay-pane .settlement-dry-brush-fine {
+  stroke-linecap: butt;
+}
   </style>
 </head>
 
@@ -3027,6 +3044,114 @@ map.on("zoomend", function() {
   const settlementTracePaths = new Map();
   let activeSettlementTrace = null;
 
+  // Изолированный тестовый рендерер сухой кисти А.
+  // Он использует уже сохранённую геометрию area.points и не меняет
+  // маршруты, Firebase, выбор поселения или существующую анимацию.
+  let settlementBrushTestEnabled = false;
+  let settlementBrushPreviewLayers = [];
+  let settlementBrushSelectedLayers = [];
+  let settlementBrushPreviewArea = null;
+  let settlementBrushSelectedArea = null;
+  let settlementBrushSelectedAreaId = null;
+
+  function ensureSettlementDryBrushFilter() {
+    if (document.getElementById("settlement-dry-brush-defs")) return;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.id = "settlement-dry-brush-defs";
+    svg.setAttribute("aria-hidden", "true");
+    svg.style.cssText = "position:absolute;width:0;height:0;overflow:hidden;pointer-events:none;";
+    svg.innerHTML = `
+      <defs>
+        <filter id="settlementDryBrushFilter" x="-18%" y="-18%" width="136%" height="136%" color-interpolation-filters="sRGB">
+          <feTurbulence type="fractalNoise" baseFrequency="0.035 0.28" numOctaves="2" seed="11" result="brushNoise" />
+          <feDisplacementMap in="SourceGraphic" in2="brushNoise" scale="1.7" xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+      </defs>`;
+    document.body.appendChild(svg);
+  }
+
+  function removeSettlementBrushLayers(layers) {
+    (layers || []).forEach(layer => {
+      if (layer && map.hasLayer(layer)) map.removeLayer(layer);
+    });
+    return [];
+  }
+
+  // Строит постоянную замкнутую линию с небольшим наружным отступом.
+  // Отступ рассчитывается в экранных пикселях, а не в координатах карты.
+  function getSettlementDryBrushPath(area) {
+    if (!area || !Array.isArray(area.points) || area.points.length < 3) return [];
+    const points = area.points.map(point => map.latLngToLayerPoint(point));
+    let signedArea = 0;
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i], b = points[(i + 1) % points.length];
+      signedArea += a.x * b.y - b.x * a.y;
+    }
+    const outwardSign = signedArea >= 0 ? 1 : -1;
+    const offset = 7; // CSS-пиксели: не увеличивается при отдалении карты
+    const result = points.map((point, i) => {
+      const previous = points[(i - 1 + points.length) % points.length];
+      const next = points[(i + 1) % points.length];
+      const dx = next.x - previous.x;
+      const dy = next.y - previous.y;
+      const length = Math.sqrt(dx * dx + dy * dy) || 1;
+      const nx = (dy / length) * outwardSign;
+      const ny = (-dx / length) * outwardSign;
+      return map.layerPointToLatLng(L.point(point.x + nx * offset, point.y + ny * offset));
+    });
+    result.push(result[0]);
+    return result;
+  }
+
+  function createSettlementDryBrushLayers(area, opacity) {
+    const path = getSettlementDryBrushPath(area);
+    if (path.length < 4) return [];
+    ensureSettlementDryBrushFilter();
+    const common = {
+      color: "#17130f",
+      lineCap: "round",
+      lineJoin: "round",
+      smoothFactor: 0,
+      interactive: false,
+      bubblingMouseEvents: false
+    };
+    const layers = [
+      L.polyline(path, {
+        ...common, weight: 8.2, opacity: (Number.isFinite(opacity) ? opacity : 1) * 0.88,
+        className: "settlement-dry-brush-base"
+      }),
+      L.polyline(path, {
+        ...common, weight: 4.8, opacity: (Number.isFinite(opacity) ? opacity : 1) * 0.72,
+        dashArray: "19 1.5 4 2 11 1.5 3 2.5",
+        lineCap: "butt",
+        className: "settlement-dry-brush-grain"
+      }),
+      L.polyline(path, {
+        ...common, weight: 1.8, opacity: (Number.isFinite(opacity) ? opacity : 1) * 0.42,
+        dashArray: "3 2 1 4 8 2 2 3",
+        lineCap: "butt",
+        className: "settlement-dry-brush-fine"
+      })
+    ];
+    layers.forEach(layer => layer.addTo(map));
+    return layers;
+  }
+
+  function drawSettlementBrushPreview(area) {
+    settlementBrushPreviewLayers = removeSettlementBrushLayers(settlementBrushPreviewLayers);
+    settlementBrushPreviewArea = area || null;
+    if (area) settlementBrushPreviewLayers = createSettlementDryBrushLayers(area, 0.76);
+  }
+
+  function drawSettlementBrushSelected(area, opacity) {
+    settlementBrushPreviewLayers = removeSettlementBrushLayers(settlementBrushPreviewLayers);
+    settlementBrushPreviewArea = null;
+    settlementBrushSelectedLayers = removeSettlementBrushLayers(settlementBrushSelectedLayers);
+    settlementBrushSelectedArea = area || null;
+    settlementBrushSelectedAreaId = area ? String(area.id) : null;
+    if (area) settlementBrushSelectedLayers = createSettlementDryBrushLayers(area, Number.isFinite(opacity) ? opacity : 0.96);
+  }
+
   function removeSettlementLayer(layer) {
     if (layer && map.hasLayer(layer)) map.removeLayer(layer);
   }
@@ -3061,6 +3186,13 @@ map.on("zoomend", function() {
   function showSettlementOutline(area, opacity) {
     try {
       if (!area || !Array.isArray(area.points) || area.points.length < 3) return;
+      if (settlementBrushTestEnabled) {
+        removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null;
+        removeSettlementLayer(settlementSelectedOutline); settlementSelectedOutline = null;
+        hideRouteDashesInsideSettlement(area);
+        drawSettlementBrushSelected(area, Number.isFinite(opacity) ? opacity : 0.96);
+        return;
+      }
       const start = window.routeDestinationBoundaryPoint || area.points[0];
       const approach = window.routeDestinationApproachPoint || start;
       // Если поселение уже было под курсором, сохраняем геометрию 1:1:
@@ -3084,6 +3216,11 @@ map.on("zoomend", function() {
   window.showSettlementOutline = showSettlementOutline;
 
   function clearSettlementOutline() {
+    settlementBrushPreviewLayers = removeSettlementBrushLayers(settlementBrushPreviewLayers);
+    settlementBrushSelectedLayers = removeSettlementBrushLayers(settlementBrushSelectedLayers);
+    settlementBrushPreviewArea = null;
+    settlementBrushSelectedArea = null;
+    settlementBrushSelectedAreaId = null;
     removeSettlementLayer(settlementHoverOutline);
     removeSettlementLayer(settlementSelectedOutline);
     settlementHoverOutline = null;
@@ -3099,6 +3236,28 @@ map.on("zoomend", function() {
 
   window.previewSettlementAt = function(point) {
     try {
+      if (settlementBrushTestEnabled) {
+        if (!window.routeMode) {
+          settlementBrushPreviewLayers = removeSettlementBrushLayers(settlementBrushPreviewLayers);
+          settlementBrushPreviewArea = null;
+          restoreRouteLayersForSettlement();
+          return;
+        }
+        const brushArea = findSettlementAt(point);
+        if (!brushArea || settlementBrushSelectedAreaId) {
+          if (!brushArea) {
+            settlementBrushPreviewLayers = removeSettlementBrushLayers(settlementBrushPreviewLayers);
+            settlementBrushPreviewArea = null;
+            restoreRouteLayersForSettlement();
+          }
+          return;
+        }
+        if (!settlementBrushPreviewArea || String(settlementBrushPreviewArea.id) !== String(brushArea.id)) {
+          hideRouteDashesInsideSettlement(brushArea);
+          drawSettlementBrushPreview(brushArea);
+        }
+        return;
+      }
       if (!window.routeMode) {
         removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null; return;
       }
@@ -3226,6 +3385,14 @@ map.on("zoomend", function() {
   // пикселях, как у маршрутного штриха, поэтому геометрия ленты должна
   // пересчитываться после zoomend, а не масштабироваться вместе с картой.
   map.on("zoomend", function() {
+    if (settlementBrushTestEnabled) {
+      if (settlementBrushPreviewArea) drawSettlementBrushPreview(settlementBrushPreviewArea);
+      if (settlementBrushSelectedArea) {
+        const selectedArea = settlementBrushSelectedArea;
+        settlementBrushSelectedLayers = removeSettlementBrushLayers(settlementBrushSelectedLayers);
+        settlementBrushSelectedLayers = createSettlementDryBrushLayers(selectedArea, 0.96);
+      }
+    }
     if (settlementHoverPath && settlementHoverOutline && settlementHoverArea && settlementContourVariant) {
       settlementHoverPath = makeRandomizedSettlementContour(
         settlementHoverArea, settlementContourVariant.startPoint, settlementContourVariant.approachPoint
@@ -3385,6 +3552,7 @@ map.on("zoomend", function() {
       <button type="button" data-settlement-type="city">Обвести город</button>
       <button type="button" data-settlement-type="village">Обвести деревню</button>
       <button type="button" id="settlement-draw-cancel" disabled>Отменить обводку</button>
+      <button type="button" id="settlement-brush-test-toggle">Тест кисти А: выключен</button>
       <div id="settlement-tool-status" style="line-height:1.35;opacity:.85;">Выбери тип поселения, затем зажми кнопку мыши и обведи его.</div>
     `;
     document.body.appendChild(toolbar);
@@ -3399,6 +3567,31 @@ map.on("zoomend", function() {
     const cancel = toolbar.querySelector("#settlement-draw-cancel");
     cancel.style.cssText = "padding:6px;background:#4a2924;color:#fff;border:1px solid #8d5146;border-radius:5px;";
     cancel.addEventListener("click", cancelSettlementDrawing);
+
+    const brushToggle = toolbar.querySelector("#settlement-brush-test-toggle");
+    brushToggle.style.cssText = "padding:7px;background:#393027;color:#eee2c8;border:1px solid #756044;border-radius:5px;";
+    brushToggle.addEventListener("click", function() {
+      settlementBrushTestEnabled = !settlementBrushTestEnabled;
+      this.textContent = settlementBrushTestEnabled ? "Тест кисти А: включён" : "Тест кисти А: выключен";
+      this.style.background = settlementBrushTestEnabled ? "#526044" : "#393027";
+      // Убираем только графические слои теста; маршрутная механика остаётся нетронутой.
+      settlementBrushPreviewLayers = removeSettlementBrushLayers(settlementBrushPreviewLayers);
+      settlementBrushSelectedLayers = removeSettlementBrushLayers(settlementBrushSelectedLayers);
+      settlementBrushPreviewArea = null;
+      settlementBrushSelectedArea = null;
+      settlementBrushSelectedAreaId = null;
+      restoreRouteLayersForSettlement();
+      removeSettlementLayer(settlementHoverOutline); settlementHoverOutline = null;
+      removeSettlementLayer(settlementSelectedOutline); settlementSelectedOutline = null;
+      if (settlementBrushTestEnabled) {
+        setSettlementToolStatus("Тест сухой кисти А включён. Начни прокладку маршрута и наведи курсор на поселение.");
+      } else {
+        setSettlementToolStatus("Тест кисти выключен. Возвращён прежний способ отображения обводки.");
+        if (window.routeMode && lastCursorPosition && window.previewSettlementAt) {
+          window.previewSettlementAt(lastCursorPosition);
+        }
+      }
+    });
 
     map.getContainer().addEventListener("pointerdown", handleSettlementPointerDown, true);
     map.getContainer().addEventListener("pointermove", handleSettlementPointerMove, true);
