@@ -3754,23 +3754,106 @@ map.on("zoomend", function() {
     });
   }
 
+  function findNearestRoutePointOnSettlementBrush(origin, area) {
+    if (!origin || !area) return null;
+
+    // Используем тот же контур, который считается препятствием для маршрута.
+    const polygon = getSettlementBrushErasePolygon(area, 4);
+    if (!Array.isArray(polygon) || polygon.length < 3) return null;
+
+    const originPx = map.latLngToLayerPoint(origin);
+    const screenPolygon = polygon.map(point => map.latLngToLayerPoint(point));
+    let signedArea = 0;
+    for (let i = 0; i < screenPolygon.length; i++) {
+      const a = screenPolygon[i];
+      const b = screenPolygon[(i + 1) % screenPolygon.length];
+      signedArea += a.x * b.y - b.x * a.y;
+    }
+    const outwardSign = signedArea >= 0 ? 1 : -1;
+
+    let bestPoint = null;
+    let bestDistance = Infinity;
+    let bestNormal = null;
+
+    for (let i = 0; i < screenPolygon.length; i++) {
+      const a = screenPolygon[i];
+      const b = screenPolygon[(i + 1) % screenPolygon.length];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const lengthSquared = dx * dx + dy * dy;
+      const t = lengthSquared > 0
+        ? Math.max(0, Math.min(1,
+            ((originPx.x - a.x) * dx + (originPx.y - a.y) * dy) / lengthSquared
+          ))
+        : 0;
+      const projected = L.point(a.x + dx * t, a.y + dy * t);
+      const distance = originPx.distanceTo(projected);
+
+      if (distance < bestDistance) {
+        const length = Math.sqrt(lengthSquared) || 1;
+        bestDistance = distance;
+        bestPoint = projected;
+        bestNormal = L.point(
+          (dy / length) * outwardSign,
+          (-dx / length) * outwardSign
+        );
+      }
+    }
+
+    if (!bestPoint || !bestNormal) return null;
+
+    // Небольшой отступ наружу не даёт новой опорной точке оказаться
+    // внутри маски кисти из-за погрешности округления координат.
+    const safePoint = L.point(
+      bestPoint.x + bestNormal.x * 2.5,
+      bestPoint.y + bestNormal.y * 2.5
+    );
+    return map.layerPointToLatLng(safePoint);
+  }
+
   function activateIntermediateRouteCity(area) {
     if (!area || !area.id) return;
     if (!Array.isArray(window.routeIntermediateCityIds)) {
       window.routeIntermediateCityIds = [];
     }
-    if (!window.routeIntermediateCityIds.some(
+
+    // Повторный клик по уже выбранному городу не должен добавлять
+    // вторую опорную точку в том же месте.
+    if (window.routeIntermediateCityIds.some(
       id => String(id) === String(area.id)
-    )) {
-      window.routeIntermediateCityIds.push(area.id);
+    )) return;
+
+    const previousPoint = routePoints[routePoints.length - 1];
+    if (!previousPoint) return;
+
+    // Одиночный клик подтверждает путь ДО ближайшей точки внешней
+    // границы кисти. Эта точка становится новым началом следующего участка.
+    const approachPoint = findNearestRoutePointOnSettlementBrush(previousPoint, area);
+    if (!approachPoint) {
+      console.warn("Не удалось определить точку подхода к промежуточному городу.");
+      return;
     }
 
+    // Если до этого уже были выбраны другие промежуточные города,
+    // подходим к новому городу с учётом всех прежних препятствий.
+    const approachSegment = getRouteSegmentAroundIntermediateCities(
+      previousPoint,
+      approachPoint
+    );
+    if (!approachSegment || approachSegment.length < 2) {
+      console.warn("Не удалось зафиксировать путь до промежуточного города.");
+      return;
+    }
+    routePoints.push(...approachSegment.slice(1));
+
+    window.routeIntermediateCityIds.push(area.id);
+    lastCursorPosition = null;
     refreshRouteIntermediateCityOutlines();
 
-    // Не фиксируем точку в самом городе. Оставляем маршрут открытым:
-    // следующий выход курсора за кисть покажет кратчайший обход.
-    updateRouteLine(lastCursorPosition);
-    console.log("Город добавлен как промежуточный:", area.id);
+    // Перерисовываем только что подтверждённый участок. Дальнейший маршрут
+    // после движения мыши будет начинаться уже от approachPoint.
+    updateRouteLine(null, true);
+    console.log("Город добавлен как промежуточный:", area.id, "точка подхода:", approachPoint);
   }
 
   // Используется updateRouteLine для проверки самих игровых жетонов.
