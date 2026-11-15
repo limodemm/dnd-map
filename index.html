@@ -790,37 +790,9 @@ function rebaseRouteMarkerAnimationsForZoom() {
   const now = Date.now();
 
   routeMarkerAnimations.forEach(animation => {
+    const oldDuration = Math.max(1, animation.duration);
     const elapsed = Math.max(0, now - animation.startedAt);
-    const oldLineLength = Math.max(0, animation.lineEndScreen - animation.lineStartScreen);
-    const oldLastDashIndex = Math.max(
-      0,
-      Math.floor((oldLineLength - 2) / routeLineDashStep)
-    );
-
-    // Сохраняем не долю прошедшего времени, а реальное положение
-    // фронта прорисовки вдоль маршрута. При зуме число экранных штрихов
-    // меняется, поэтому простое сохранение процента времени сдвигало
-    // момент достижения конечной точки.
-    let oldFrontDashIndex = 0;
-    let low = 0;
-    let high = oldLastDashIndex;
-    while (low <= high) {
-      const middle = Math.floor((low + high) / 2);
-      if (getRouteLineRevealDelay(middle) <= elapsed) {
-        oldFrontDashIndex = middle;
-        low = middle + 1;
-      } else {
-        high = middle - 1;
-      }
-    }
-    const oldFrontProgress = oldLastDashIndex > 0
-      ? oldFrontDashIndex / oldLastDashIndex
-      : (elapsed > 0 ? 1 : 0);
-    const oldFrontStart = getRouteLineRevealDelay(oldFrontDashIndex);
-    const fadeProgress = Math.max(0, Math.min(
-      1,
-      (elapsed - oldFrontStart) / routeLineRevealFadeDuration
-    ));
+    const progress = Math.max(0, Math.min(1, elapsed / oldDuration));
 
     const lineStartScreen = getRouteScreenDistanceAtDistance(
       animation.displayPoints,
@@ -830,29 +802,16 @@ function rebaseRouteMarkerAnimationsForZoom() {
       animation.displayPoints,
       animation.end / animation.routeTotalLength * animation.displayTotalLength
     );
-    const newLineLength = Math.max(0, lineEndScreen - lineStartScreen);
-    const newLastDashIndex = Math.max(
-      0,
-      Math.floor((newLineLength - 2) / routeLineDashStep)
-    );
-    const newFrontDashIndex = Math.min(
-      newLastDashIndex,
-      Math.round(oldFrontProgress * newLastDashIndex)
-    );
-    const newElapsed = Math.min(
-      getRouteLineRevealDuration(newLineLength) + routeRevealFadeDuration,
-      getRouteLineRevealDelay(newFrontDashIndex) + fadeProgress * routeLineRevealFadeDuration
-    );
-    const lineDuration = getRouteLineRevealDuration(newLineLength);
+    const lineDuration = getRouteLineRevealDuration(lineEndScreen - lineStartScreen);
     const newDuration = lineDuration + routeRevealFadeDuration;
 
     animation.lineStartScreen = lineStartScreen;
     animation.lineEndScreen = lineEndScreen;
     animation.duration = newDuration;
-    animation.startedAt = now - newElapsed;
+    animation.startedAt = now - progress * newDuration;
 
     if (animation.timer) clearTimeout(animation.timer);
-    const remaining = Math.max(0, newDuration - newElapsed);
+    const remaining = Math.max(0, newDuration - progress * newDuration);
     animation.timer = setTimeout(function() {
       routeMarkerAnimations = routeMarkerAnimations.filter(item => item !== animation);
       updateRouteLine(lastCursorPosition);
@@ -3775,12 +3734,11 @@ map.on("zoomend", function() {
     const dashStep = Number(window.routeLineDashStep) || 18;
     const revealFadeDuration = Number(window.routeLineRevealFadeDuration) || 220;
     const minimumDashDelay = Number(window.routeLineMinimumDashDelay) || 95;
-    // Обводка немного быстрее последнего интервала маршрута (примерно на 14%),
-    // чтобы она ощущалась продолжением движения, но не отставала от него.
     const routeDashInterval = Math.max(
       minimumDashDelay,
       Number(window.settlementTraceDashInterval) || minimumDashDelay
     );
+    // Обводка примерно на 14% быстрее последнего интервала маршрута.
     const dashInterval = routeDashInterval * 0.88;
     const duration = Math.max(
       revealFadeDuration,
@@ -4095,14 +4053,9 @@ map.on("zoomend", function() {
       }
 
       // Положительное значение означает, что пунктир ещё не дошёл до
-      // позиции поселения. Если активная анимация есть, но расчёт задержки
-      // временно не нашёл её конечный штрих (например, сразу после зума),
-      // не запускаем контур преждевременно — ждём следующей проверки.
-      if ((delay !== null && delay > 0) || (delay === null && routeIsAnimating)) {
-        const nextCheckDelay = delay !== null
-          ? Math.min(40, Math.max(12, delay))
-          : 40;
-        settlementTraceWaitTimer = setTimeout(check, nextCheckDelay);
+      // позиции поселения. Проверяем часто, чтобы запуск был почти точным.
+      if (delay !== null && delay > 0) {
+        settlementTraceWaitTimer = setTimeout(check, Math.min(40, Math.max(12, delay)));
         return;
       }
 
