@@ -769,9 +769,9 @@ function beginRouteMarkerAnimation(startDistance, endDistance, synchronizedStart
   // последовательность штрихов дошла до его позиции.
   // Экранные координаты нужны, чтобы размер штрихов и их интервалы
   // оставались одинаковыми при разных уровнях масштаба карты.
-  const routeTotalLength = getRouteLength(routePoints);
+  const routeTotalLength = getRouteTravelLength(routePoints);
   const displayPoints = createRouteDisplayPoints(routePoints, []);
-  const displayTotalLength = getRouteLength(displayPoints);
+  const displayTotalLength = getRouteTravelLength(displayPoints);
   const displayStart = routeTotalLength > 0.001
     ? startDistance / routeTotalLength * displayTotalLength
     : 0;
@@ -1388,7 +1388,7 @@ forcedMarchButton.addEventListener("click", function() {
   // После установки флажка переключатель недоступен.
   if (routeFinished || window.routePendingConfirmation) return;
 
-  const fixedLength = getRouteLength(routePoints);
+  const fixedLength = getRouteTravelLength(routePoints);
   const dailyLimit =
     routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
 
@@ -1529,7 +1529,7 @@ window.routePendingConfirmation = false;
       pendingRouteClickPosition = null;
     }
 
-    const totalLength = getRouteLength(routePoints);
+    const totalLength = getRouteTravelLength(routePoints);
     const dailyLimit =
       routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
 
@@ -1561,7 +1561,7 @@ window.routePendingConfirmation = false;
 
 // Синхронизируем историю форсированных маршей
 // с фактической длиной обрезанного маршрута.
-const actualLength = getRouteLength(routePoints);
+const actualLength = getRouteTravelLength(routePoints);
 
 routeForcedSegments = routeForcedSegments.filter(segment => {
   const recalculated = getForcedSegmentDistances(segment, dailyLimit);
@@ -1604,36 +1604,148 @@ function getRouteLength(points) {
   return total;
 }
 
+// =====================================
+// ТРУДНОПРОХОДИМАЯ МЕСТНОСТЬ: МЕТРИКА ПУТИ
+// =====================================
+
+// Внутри зоны местности каждый пройденный отрезок считается за двойное
+// расстояние для расчёта времени, дневных переходов и привалов.
+// Геометрическая длина маршрута при этом остаётся прежней.
+function isPointInsideTerrain(point) {
+  const areas = Array.isArray(window.terrainAreas) ? window.terrainAreas : [];
+  return areas.some(area => {
+    const polygon = area && Array.isArray(area.points) ? area.points : [];
+    if (polygon.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = Number(polygon[i].lng), yi = Number(polygon[i].lat);
+      const xj = Number(polygon[j].lng), yj = Number(polygon[j].lat);
+      const intersects = ((yi > point.lat) !== (yj > point.lat)) &&
+        (point.lng < (xj - xi) * (point.lat - yi) / ((yj - yi) || 0.0000001) + xi);
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  });
+}
+
+function getRouteSegmentTerrainParts(start, end) {
+  const dx = end.lng - start.lng;
+  const dy = end.lat - start.lat;
+  const rawLength = Math.hypot(dx, dy);
+  if (rawLength < 0.000001) return [];
+
+  const cuts = [0, 1];
+  const areas = Array.isArray(window.terrainAreas) ? window.terrainAreas : [];
+
+  // Находим пересечения отрезка маршрута со всеми границами зон.
+  areas.forEach(area => {
+    const polygon = area && Array.isArray(area.points) ? area.points : [];
+    if (polygon.length < 3) return;
+    for (let i = 0; i < polygon.length; i++) {
+      const a = polygon[i];
+      const b = polygon[(i + 1) % polygon.length];
+      const ex = Number(b.lng) - Number(a.lng);
+      const ey = Number(b.lat) - Number(a.lat);
+      const denominator = dx * ey - dy * ex;
+      if (Math.abs(denominator) < 1e-12) continue;
+      const ax = Number(a.lng) - start.lng;
+      const ay = Number(a.lat) - start.lat;
+      const t = (ax * ey - ay * ex) / denominator;
+      const u = (ax * dy - ay * dx) / denominator;
+      if (t > 0.000001 && t < 0.999999 && u >= -0.000001 && u <= 1.000001) {
+        cuts.push(t);
+      }
+    }
+  });
+
+  cuts.sort((a, b) => a - b);
+  const uniqueCuts = cuts.filter((value, index) =>
+    index === 0 || Math.abs(value - cuts[index - 1]) > 0.000001
+  );
+
+  const parts = [];
+  for (let i = 1; i < uniqueCuts.length; i++) {
+    const t0 = uniqueCuts[i - 1];
+    const t1 = uniqueCuts[i];
+    if (t1 - t0 < 0.000001) continue;
+    const middleT = (t0 + t1) / 2;
+    const middle = {
+      lat: start.lat + dy * middleT,
+      lng: start.lng + dx * middleT
+    };
+    const inside = isPointInsideTerrain(middle);
+    const rawPartLength = rawLength * (t1 - t0);
+    parts.push({
+      t0,
+      t1,
+      inside,
+      rawLength: rawPartLength,
+      travelLength: rawPartLength * (inside ? 2 : 1)
+    });
+  }
+  return parts;
+}
+
+function getRouteTravelLength(points) {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    getRouteSegmentTerrainParts(points[i - 1], points[i]).forEach(part => {
+      total += part.travelLength;
+    });
+  }
+  return total;
+}
+
+// Получает интервалы внутри труднопроходимых зон в шкале времени пути.
+function getTerrainTravelIntervals(points) {
+  const intervals = [];
+  let travelPassed = 0;
+  for (let i = 1; i < points.length; i++) {
+    const start = points[i - 1];
+    const end = points[i];
+    const dx = end.lng - start.lng;
+    const dy = end.lat - start.lat;
+    getRouteSegmentTerrainParts(start, end).forEach(part => {
+      const partTravelStart = travelPassed;
+      const partTravelEnd = partTravelStart + part.travelLength;
+      if (part.inside && partTravelEnd > partTravelStart + 0.001) {
+        intervals.push({ start: partTravelStart, end: partTravelEnd });
+      }
+      travelPassed = partTravelEnd;
+    });
+  }
+  return intervals;
+}
+
 // Экранное расстояние вдоль визуальной линии. Используется только для
 // равномерного по пикселям проявления штрихов, а не для расчёта пути.
 function getRouteScreenDistanceAtDistance(points, targetDistance) {
   if (!points || points.length < 2) return 0;
-
-  let routePassed = 0;
+  let travelPassed = 0;
   let screenPassed = 0;
-
   for (let i = 1; i < points.length; i++) {
     const previous = points[i - 1];
     const current = points[i];
-    const routeLength = Math.hypot(
-      current.lat - previous.lat,
-      current.lng - previous.lng
-    );
-    if (routeLength < 0.000001) continue;
-
     const a = map.latLngToLayerPoint(previous);
     const b = map.latLngToLayerPoint(current);
-    const screenLength = a.distanceTo(b);
-
-    if (routePassed + routeLength >= targetDistance) {
-      const part = Math.max(0, Math.min(1, (targetDistance - routePassed) / routeLength));
-      return screenPassed + screenLength * part;
+    const fullScreenLength = a.distanceTo(b);
+    const parts = getRouteSegmentTerrainParts(previous, current);
+    const fullRawLength = Math.hypot(current.lat - previous.lat, current.lng - previous.lng);
+    for (const part of parts) {
+      const partTravelLength = part.travelLength;
+      const partScreenLength = fullRawLength > 0
+        ? fullScreenLength * (part.t1 - part.t0)
+        : 0;
+      if (travelPassed + partTravelLength >= targetDistance - 0.001) {
+        const fraction = partTravelLength > 0
+          ? Math.max(0, Math.min(1, (targetDistance - travelPassed) / partTravelLength))
+          : 0;
+        return screenPassed + partScreenLength * fraction;
+      }
+      travelPassed += partTravelLength;
+      screenPassed += partScreenLength;
     }
-
-    routePassed += routeLength;
-    screenPassed += screenLength;
   }
-
   return screenPassed;
 }
 
@@ -1659,9 +1771,7 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
       // Не скругляем вершину, если на ней расположен привал или другой маркер.
       let cornerDistance = 0;
       for (let k = 1; k <= i; k++) {
-        const dy = points[k].lat - points[k - 1].lat;
-        const dx = points[k].lng - points[k - 1].lng;
-        cornerDistance += Math.sqrt(dx * dx + dy * dy);
+        cornerDistance += getRouteTravelLength([points[k - 1], points[k]]);
       }
       // Не сглаживаем повороты рядом с привалом/маркером: иначе
       // следующий резкий изгиб может визуально утянуть линию от точки привала.
@@ -1776,82 +1886,62 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
 // Получение координаты на определённом расстоянии пути
 function getRoutePointAtDistance(points, targetDistance) {
   let passed = 0;
-
   for (let i = 1; i < points.length; i++) {
     const start = points[i - 1];
     const end = points[i];
-
-    const dy = end.lat - start.lat;
     const dx = end.lng - start.lng;
-
-    const segmentLength = Math.sqrt(dx * dx + dy * dy);
-
-    // Пропускаем нулевые отрезки, чтобы не получить деление на ноль.
-    if (segmentLength < 0.001) continue;
-
-    if (passed + segmentLength >= targetDistance) {
-      const part = (targetDistance - passed) / segmentLength;
-
-      return L.latLng(
-        start.lat + dy * part,
-        start.lng + dx * part
-      );
+    const dy = end.lat - start.lat;
+    const parts = getRouteSegmentTerrainParts(start, end);
+    for (const part of parts) {
+      if (passed + part.travelLength >= targetDistance - 0.000001) {
+        const withinPart = Math.max(0, targetDistance - passed);
+        const rawWithinPart = withinPart / (part.inside ? 2 : 1);
+        const rawLength = Math.hypot(dx, dy);
+        const t = rawLength > 0 ? part.t0 + rawWithinPart / rawLength : part.t0;
+        return L.latLng(start.lat + dy * t, start.lng + dx * t);
+      }
+      passed += part.travelLength;
     }
-
-    passed += segmentLength;
   }
-
-  return null;
+  return points.length ? points[points.length - 1] : null;
 }
 
 // Возвращает часть маршрута до указанного расстояния
 function getRoutePointsUpToDistance(points, targetDistance) {
   if (!points.length) return [];
-
-  if (targetDistance <= 0) {
-    return [points[0]];
-  }
-
-  const totalLength = getRouteLength(points);
-
-  if (targetDistance >= totalLength) {
-    return [...points];
-  }
+  if (targetDistance <= 0) return [points[0]];
+  const totalLength = getRouteTravelLength(points);
+  if (targetDistance >= totalLength) return [...points];
 
   const result = [points[0]];
   let passed = 0;
-
   for (let i = 1; i < points.length; i++) {
     const start = points[i - 1];
     const end = points[i];
-
-    const dy = end.lat - start.lat;
     const dx = end.lng - start.lng;
-    const segmentLength = Math.sqrt(dx * dx + dy * dy);
-
-    if (passed + segmentLength <= targetDistance + 0.001) {
-      result.push(end);
-      passed += segmentLength;
-
-      if (passed >= targetDistance - 0.001) {
-        break;
+    const dy = end.lat - start.lat;
+    for (const part of getRouteSegmentTerrainParts(start, end)) {
+      if (passed + part.travelLength <= targetDistance + 0.001) {
+        const partEnd = L.latLng(
+          start.lat + dy * part.t1,
+          start.lng + dx * part.t1
+        );
+        const last = result[result.length - 1];
+        if (!last || Math.hypot(last.lat - partEnd.lat, last.lng - partEnd.lng) > 0.000001) {
+          result.push(partEnd);
+        }
+        passed += part.travelLength;
+        if (passed >= targetDistance - 0.001) return result;
+      } else {
+        const remainingTravel = Math.max(0, targetDistance - passed);
+        const rawWithin = remainingTravel / (part.inside ? 2 : 1);
+        const rawLength = Math.hypot(dx, dy);
+        const t = part.t0 + (rawLength > 0 ? rawWithin / rawLength : 0);
+        result.push(L.latLng(start.lat + dy * t, start.lng + dx * t));
+        return result;
       }
-    } else {
-      const remaining = targetDistance - passed;
-
-      if (segmentLength > 0) {
-        const part = remaining / segmentLength;
-
-        result.push(L.latLng(
-          start.lat + dy * part,
-          start.lng + dx * part
-        ));
-      }
-
-      break;
     }
   }
-
   return result;
 }
 
@@ -1859,30 +1949,24 @@ function getRoutePointsUpToDistance(points, targetDistance) {
 // Это гарантирует, что привалы, черты и крестики лежат непосредственно на линии.
 function getRoutePointsWithDistanceAnchors(points, distances) {
   if (points.length < 2) return [...points];
-
-  const totalLength = getRouteLength(points);
   const entries = [];
   let passed = 0;
-
   points.forEach((point, index) => {
     if (index > 0) {
-      const previous = points[index - 1];
-      passed += Math.hypot(point.lat - previous.lat, point.lng - previous.lng);
+      passed += getRouteTravelLength([points[index - 1], point]);
     }
-    entries.push({ distance: passed, point: point });
+    entries.push({ distance: passed, point });
   });
-
   distances.forEach(distance => {
-    if (distance < -0.001 || distance > totalLength + 0.001) return;
-    const point = getRoutePointAtDistance(points, Math.max(0, Math.min(totalLength, distance)));
-    if (point) entries.push({ distance: Math.max(0, Math.min(totalLength, distance)), point });
+    if (distance < -0.001 || distance > passed + 0.001) return;
+    const point = getRoutePointAtDistance(points, Math.max(0, Math.min(passed, distance)));
+    if (point) entries.push({ distance: Math.max(0, Math.min(passed, distance)), point });
   });
-
   entries.sort((a, b) => a.distance - b.distance);
   const result = [];
   entries.forEach(entry => {
     const last = result[result.length - 1];
-    if (!last || Math.hypot(entry.point.lat - last.lat, entry.point.lng - last.lng) > 0.001) {
+    if (!last || Math.hypot(entry.point.lat - last.lat, entry.point.lng - last.lng) > 0.000001) {
       result.push(entry.point);
     }
   });
@@ -1891,18 +1975,14 @@ function getRoutePointsWithDistanceAnchors(points, distances) {
 
 // Возвращает исходную геометрию маршрута между двумя расстояниями.
 function getRoutePointsBetweenDistances(points, startDistance, endDistance) {
-  const totalLength = getRouteLength(points);
+  const totalLength = getRouteTravelLength(points);
   const start = Math.max(0, Math.min(totalLength, startDistance));
   const end = Math.max(start, Math.min(totalLength, endDistance));
   const anchored = getRoutePointsWithDistanceAnchors(points, [start, end]);
   const result = [];
   let passed = 0;
-
   anchored.forEach((point, index) => {
-    if (index > 0) {
-      const previous = anchored[index - 1];
-      passed += Math.hypot(point.lat - previous.lat, point.lng - previous.lng);
-    }
+    if (index > 0) passed += getRouteTravelLength([anchored[index - 1], point]);
     if (passed >= start - 0.01 && passed <= end + 0.01) result.push(point);
   });
   return result;
@@ -1914,10 +1994,7 @@ function getPerpendicularRouteAngle(points, targetDistance) {
   for (let i = 1; i < points.length; i++) {
     const previous = points[i - 1];
     const current = points[i];
-    const routeLength = Math.hypot(
-      current.lat - previous.lat,
-      current.lng - previous.lng
-    );
+    const routeLength = getRouteTravelLength([previous, current]);
     if (routeLength < 0.001) continue;
 
     if (passed + routeLength >= targetDistance - 0.001) {
@@ -2175,7 +2252,7 @@ function updateRouteLine(cursorPosition = null) {
 
   clearRouteDrawing();
 
-  const totalLength = getRouteLength(pointsToDraw);
+  const totalLength = getRouteTravelLength(pointsToDraw);
   const dailyLimit =
     routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
 
@@ -2252,7 +2329,11 @@ function updateRouteLine(cursorPosition = null) {
     });
   }
 
+  const terrainIntervals = getTerrainTravelIntervals(pointsToDraw);
   const protectedDistances = [...restDistancesToDraw];
+  terrainIntervals.forEach(interval => {
+    protectedDistances.push(interval.start, interval.end);
+  });
   forcedVisualSegments.forEach(segment => {
     const boundary = segment.start + segment.dailyLimit;
     if (boundary <= segment.end + 0.01) protectedDistances.push(boundary);
@@ -2276,7 +2357,7 @@ function updateRouteLine(cursorPosition = null) {
     pointsToDraw,
     protectedDistances
   );
-  const displayRouteLength = getRouteLength(displayRoutePoints);
+  const displayRouteLength = getRouteTravelLength(displayRoutePoints);
 
   // Основная линия маршрута.
   // Разделяем маршрут на золотые и чёрные участки.
@@ -2306,12 +2387,36 @@ function updateRouteLine(cursorPosition = null) {
     }
   });
 
+  // Интервалы труднопроходимой местности в шкале пути.
+  const mergedTerrainIntervals = [];
+  terrainIntervals.forEach(interval => {
+    const previous = mergedTerrainIntervals[mergedTerrainIntervals.length - 1];
+    if (previous && interval.start <= previous.end + 0.001) {
+      previous.end = Math.max(previous.end, interval.end);
+    } else {
+      mergedTerrainIntervals.push({ start: interval.start, end: interval.end });
+    }
+  });
+
+  // Золотая линия прерывается и на форсированном марше, и на труднопроходимой местности.
+  const allNonGoldIntervals = [...mergedBlackIntervals, ...mergedTerrainIntervals]
+    .sort((a, b) => a.start - b.start);
+  const mergedNonGoldIntervals = [];
+  allNonGoldIntervals.forEach(interval => {
+    const previous = mergedNonGoldIntervals[mergedNonGoldIntervals.length - 1];
+    if (previous && interval.start <= previous.end + 0.001) {
+      previous.end = Math.max(previous.end, interval.end);
+    } else {
+      mergedNonGoldIntervals.push({ start: interval.start, end: interval.end });
+    }
+  });
+
   // При движении мыши отделяем уже зафиксированный маршрут
   // от полупрозрачного предпросмотра.
   const previewIsActive =
     Boolean(cursorPosition && hasMouse && window.routeMode);
 
-  const committedLength = getRouteLength(routePoints);
+  const committedLength = getRouteTravelLength(routePoints);
 
   // Универсальное создание отрезка маршрута.
   function drawRoutePiece(
@@ -2502,7 +2607,7 @@ function updateRouteLine(cursorPosition = null) {
   // Рисуем золотые участки, пропуская все чёрные интервалы.
   let goldStart = 0;
 
-  mergedBlackIntervals.forEach(interval => {
+  mergedNonGoldIntervals.forEach(interval => {
     if (interval.start > goldStart + 0.001) {
       drawRoutePiece(
         goldStart,
@@ -2526,6 +2631,18 @@ function updateRouteLine(cursorPosition = null) {
       0.22
     );
   }
+
+  // Красная линия внутри труднопроходимой местности.
+  // Форсированный марш рисуется поверх неё прежним чёрным оформлением.
+  mergedTerrainIntervals.forEach(interval => {
+    drawRoutePiece(
+      interval.start,
+      interval.end,
+      "#d9473f",
+      1.0,
+      0.22
+    );
+  });
 
   // Визуал форсированных маршей остаётся на карте и после их завершения.
   forcedVisualSegments.forEach(segment => {
@@ -2650,7 +2767,7 @@ function updateRouteLine(cursorPosition = null) {
       radius: 7,
       color: "#211b16",
       weight: 2,
-      fillColor: "#e6c77d",
+      fillColor: isPointInsideTerrain(position) ? "#d9473f" : "#e6c77d",
       fillOpacity: restIsPreview ? 0.72 : 1,
       opacity: restIsPreview ? 0.78 : 1,
       interactive: false,
@@ -2675,7 +2792,7 @@ function updateRouteLine(cursorPosition = null) {
   // Флажок конечной точки.
   if (routeFinished && routePoints.length >= 2 && !window.routeDestinationCityId) {
     const endPoint = routePoints[routePoints.length - 1];
-    const routeEndDistance = getRouteLength(routePoints);
+    const routeEndDistance = getRouteTravelLength(routePoints);
     const flagAnimation = getRouteMarkerAnimation(routeEndDistance);
     const flagAnimationDelay = flagAnimation
       ? getRouteMarkerAnimationDelay(routeEndDistance)
@@ -2718,7 +2835,7 @@ function updateRouteLine(cursorPosition = null) {
     document.getElementById("route-daily-limit").textContent =
       (dailyLimit * KM_PER_PIXEL).toFixed(1) + " км";
     document.getElementById("route-distance").textContent =
-      (totalLength * KM_PER_PIXEL).toFixed(1) + " км";
+      (getRouteLength(pointsToDraw) * KM_PER_PIXEL).toFixed(1) + " км";
 
     const completedDays = routeForcedMarch
       ? getNormalRestDistances(routeForcedMarchStartDistance, dailyLimit).length
@@ -2784,7 +2901,7 @@ window.applySynchronizedPartyRoute = function(data) {
   map.doubleClickZoom.enable();
   if (window.clearSettlementOutline) window.clearSettlementOutline();
 
-  const total = getRouteLength(routePoints);
+  const total = getRouteTravelLength(routePoints);
   if (total > 0.001) {
     beginRouteMarkerAnimation(0, total, Number(data.startedAt) || Date.now());
   }
@@ -5143,6 +5260,9 @@ map.on("zoomend", function() {
       })).filter(area => area.type === "terrain" && Array.isArray(area.points) && area.points.length >= 3);
       console.log("Зоны труднопроходимой местности загружены:", window.terrainAreas.length);
       refreshSettlementContourEditorOptions();
+      if (window.updateRouteLine && Array.isArray(window.routePoints) && window.routePoints.length > 1) {
+        window.updateRouteLine(null);
+      }
       if (window.settlementContourEditorActive) {
         const updatedArea = getSelectedSettlementContourEditorArea();
         if (updatedArea && updatedArea.type === "terrain" && !settlementContourEditorPoints.length) {
