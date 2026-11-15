@@ -695,6 +695,16 @@ let routeStatus = null;
 let routeConfirmButton = null;
 let lastCursorPosition = null;
 
+Object.defineProperty(window, "lastCursorPosition", {
+  configurable: true,
+  get: function() {
+    return lastCursorPosition;
+  },
+  set: function(value) {
+    lastCursorPosition = value;
+  }
+});
+
 // Анимация маршрута. Линия раскрывается последовательно от начала
 // нового отрезка к его концу; жетоны синхронизированы с достижением
 // пунктиром их позиции. Перерисовка не сбрасывает анимацию.
@@ -3837,7 +3847,7 @@ map.on("zoomend", function() {
     )) return;
 
     const currentRoutePoints = window.routePoints;
-    const previousPoint = currentRoutePoints[currentRoutePoints.length - 1];
+    const previousPoint = window.routePoints[window.routePoints.length - 1];
     if (!previousPoint) return;
 
     // Одиночный клик подтверждает путь ДО ближайшей точки внешней
@@ -3858,10 +3868,10 @@ map.on("zoomend", function() {
       console.warn("Не удалось зафиксировать путь до промежуточного города.");
       return;
     }
-    currentRoutePoints.push(...approachSegment.slice(1));
+    window.routePoints.push(...approachSegment.slice(1));
 
     window.routeIntermediateCityIds.push(area.id);
-    lastCursorPosition = null;
+    window.lastCursorPosition = null;
     refreshRouteIntermediateCityOutlines();
 
     // Перерисовываем только что подтверждённый участок. Дальнейший маршрут
