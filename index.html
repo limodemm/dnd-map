@@ -494,8 +494,7 @@ document.addEventListener("keydown", function(e) {
   // Глобальное состояние поселений. Оно хранится на window, чтобы все
   // обработчики и вложенные функции карты обращались к одному экземпляру.
   window.settlementAreas = window.settlementAreas || [];
-  // Отдельные области труднопроходимой местности.
-  // Они никогда не попадают в список поселений.
+  // Отдельные невидимые зоны труднопроходимой местности.
   window.terrainAreas = window.terrainAreas || [];
   window.settlementDrawingMode = null;
   window.settlementDraft = [];
@@ -648,19 +647,12 @@ routePoints = [partyMarker.getLatLng()];
 // =====================================
 
 let routePoints = [];
-
-// Делаем текущие точки маршрута доступными другим функциям,
-// находящимся за пределами этой области видимости.
+// Доступ к тому же массиву маршрута из обработчиков вне этой области.
 Object.defineProperty(window, "routePoints", {
   configurable: true,
-  get: function() {
-    return routePoints;
-  },
-  set: function(value) {
-    routePoints = Array.isArray(value) ? value : [];
-  }
+  get: function() { return routePoints; },
+  set: function(value) { routePoints = Array.isArray(value) ? value : []; }
 });
-
 let routeLine = null;
 window.routeRestMarkers = [];
 let routeEndMarker = null;
@@ -697,15 +689,10 @@ let routePanel = null;
 let routeStatus = null;
 let routeConfirmButton = null;
 let lastCursorPosition = null;
-
 Object.defineProperty(window, "lastCursorPosition", {
   configurable: true,
-  get: function() {
-    return lastCursorPosition;
-  },
-  set: function(value) {
-    lastCursorPosition = value;
-  }
+  get: function() { return lastCursorPosition; },
+  set: function(value) { lastCursorPosition = value; }
 });
 
 // Анимация маршрута. Линия раскрывается последовательно от начала
@@ -2765,6 +2752,9 @@ function updateRouteLine(cursorPosition = null) {
   console.log("Длина маршрута:", Math.round(totalLength));
 }
 
+// Доступ к перерисовке из обработчиков, находящихся во вложенной области.
+window.updateRouteLine = updateRouteLine;
+
 // Применение подтверждённого маршрута, полученного из Firebase.
 // Эта функция вызывается одинаково на всех подключённых клиентах.
 window.applySynchronizedPartyRoute = function(data) {
@@ -3850,7 +3840,7 @@ map.on("zoomend", function() {
     )) return;
 
     const currentRoutePoints = window.routePoints;
-    const previousPoint = window.routePoints[window.routePoints.length - 1];
+    const previousPoint = currentRoutePoints[currentRoutePoints.length - 1];
     if (!previousPoint) return;
 
     // Одиночный клик подтверждает путь ДО ближайшей точки внешней
@@ -3871,7 +3861,7 @@ map.on("zoomend", function() {
       console.warn("Не удалось зафиксировать путь до промежуточного города.");
       return;
     }
-    window.routePoints.push(...approachSegment.slice(1));
+    currentRoutePoints.push(...approachSegment.slice(1));
 
     window.routeIntermediateCityIds.push(area.id);
     window.lastCursorPosition = null;
@@ -3879,7 +3869,9 @@ map.on("zoomend", function() {
 
     // Перерисовываем только что подтверждённый участок. Дальнейший маршрут
     // после движения мыши будет начинаться уже от approachPoint.
-    updateRouteLine(null, true);
+    if (typeof window.updateRouteLine === "function") {
+      window.updateRouteLine(null, true);
+    }
     console.log("Город добавлен как промежуточный:", area.id, "точка подхода:", approachPoint);
   }
 
@@ -4557,58 +4549,33 @@ map.on("zoomend", function() {
   let settlementContourEditorBrushLayers = [];
 
   function getSettlementEditorAreaLabel(area) {
-  if (area.type === "terrain") {
-    const terrainName = area.name || area.title || area.label;
-    return (terrainName || "Труднопроходимая местность") +
-      " · " + String(area.id).slice(-6);
+    const customName = area.name || area.title || area.label;
+    if (customName) return String(customName);
+    if (area.type === "terrain") return "Труднопроходимая местность · " + String(area.id).slice(-6);
+    const kind = area.type === "city" ? "Город" : area.type === "village" ? "Деревня" : "Поселение";
+    return kind + " · " + String(area.id).slice(-6);
   }
-
-  const customName = area.name || area.title || area.label;
-  if (customName) return String(customName);
-
-  const kind = area.type === "city"
-    ? "Город"
-    : area.type === "village"
-      ? "Деревня"
-      : "Поселение";
-
-  return kind + " · " + String(area.id).slice(-6);
-}
 
   function refreshSettlementContourEditorOptions() {
-  const select = document.getElementById("settlement-contour-area-select");
-  if (!select) return;
-
-  const previous = settlementContourEditorAreaId || select.value;
-
-  const settlements = Array.isArray(window.settlementAreas)
-    ? window.settlementAreas : [];
-
-  const terrain = Array.isArray(window.terrainAreas)
-    ? window.terrainAreas : [];
-
-  const areas = [...settlements, ...terrain];
-
-  select.innerHTML = "";
-
-  areas.forEach(area => {
-    const option = document.createElement("option");
-    option.value = String(area.id);
-    option.textContent = getSettlementEditorAreaLabel(area);
-    select.appendChild(option);
-  });
-
-  if (areas.some(area => String(area.id) === String(previous))) {
-    select.value = String(previous);
-  } else if (areas.length) {
-    select.value = String(areas[0].id);
+    const select = document.getElementById("settlement-contour-area-select");
+    if (!select) return;
+    const previous = settlementContourEditorAreaId || select.value;
+    const settlements = Array.isArray(window.settlementAreas) ? window.settlementAreas : [];
+    const terrain = Array.isArray(window.terrainAreas) ? window.terrainAreas : [];
+    const areas = [...settlements, ...terrain];
+    select.innerHTML = "";
+    areas.forEach(area => {
+      const option = document.createElement("option");
+      option.value = String(area.id);
+      option.textContent = getSettlementEditorAreaLabel(area);
+      select.appendChild(option);
+    });
+    if (areas.some(area => String(area.id) === String(previous))) select.value = String(previous);
+    else if (areas.length) select.value = String(areas[0].id);
+    select.disabled = areas.length === 0;
+    const startButton = document.getElementById("settlement-contour-editor-start");
+    if (startButton) startButton.disabled = areas.length === 0;
   }
-
-  select.disabled = areas.length === 0;
-
-  const startButton = document.getElementById("settlement-contour-editor-start");
-  if (startButton) startButton.disabled = areas.length === 0;
-}
 
   function simplifySettlementEditorPoints(points, tolerance = 8) {
     if (!Array.isArray(points) || points.length < 3) return [];
@@ -4631,18 +4598,11 @@ map.on("zoomend", function() {
   }
 
   function getSelectedSettlementContourEditorArea() {
-  const id = String(settlementContourEditorAreaId);
-
-  const settlement = (window.settlementAreas || []).find(
-    area => String(area.id) === id
-  );
-
-  if (settlement) return settlement;
-
-  return (window.terrainAreas || []).find(
-    area => String(area.id) === id
-  ) || null;
-}
+    const id = String(settlementContourEditorAreaId);
+    const settlement = (window.settlementAreas || []).find(area => String(area.id) === id);
+    if (settlement) return settlement;
+    return (window.terrainAreas || []).find(area => String(area.id) === id) || null;
+  }
 
   function ensureSettlementContourEditorPane() {
     let pane = map.getPane("settlement-contour-editor-pane");
@@ -4661,19 +4621,11 @@ map.on("zoomend", function() {
   }
 
   function drawSettlementContourEditorPreview() {
-  settlementContourEditorBrushLayers =
-    removeSettlementBrushLayers(settlementContourEditorBrushLayers);
-
-  const area = getSelectedSettlementContourEditorArea();
-
-  if (!area || settlementContourEditorPoints.length < 3) return;
-
-  if (area.type === "terrain") {
-    // Для местности фактический и визуальный контуры совпадают.
-    // Обычный полигон существует только пока открыт редактор.
-    const polygon = L.polygon(
-      settlementContourEditorPoints,
-      {
+    settlementContourEditorBrushLayers = removeSettlementBrushLayers(settlementContourEditorBrushLayers);
+    const area = getSelectedSettlementContourEditorArea();
+    if (!area || settlementContourEditorPoints.length < 3) return;
+    if (area.type === "terrain") {
+      const polygon = L.polygon(settlementContourEditorPoints, {
         color: "#e5bd70",
         weight: 2,
         opacity: 0.95,
@@ -4681,22 +4633,13 @@ map.on("zoomend", function() {
         fillOpacity: 0.12,
         dashArray: "6 5",
         interactive: false
-      }
-    ).addTo(map);
-
-    settlementContourEditorBrushLayers.push(polygon);
-    return;
+      }).addTo(map);
+      settlementContourEditorBrushLayers.push(polygon);
+      return;
+    }
+    const previewArea = { ...area, brushPoints: settlementContourEditorPoints };
+    settlementContourEditorBrushLayers = createSettlementDryBrushLayers(previewArea, 0.98);
   }
-
-  // Для поселений сохраняем прежнюю сухую кисть.
-  const previewArea = {
-    ...area,
-    brushPoints: settlementContourEditorPoints
-  };
-
-  settlementContourEditorBrushLayers =
-    createSettlementDryBrushLayers(previewArea, 0.98);
-}
 
   function setSettlementContourEditorStatus(message) {
     const status = document.getElementById("settlement-contour-editor-status");
@@ -4781,27 +4724,23 @@ map.on("zoomend", function() {
     }
     const select = document.getElementById("settlement-contour-area-select");
     const areaId = select ? select.value : null;
-    const area = (window.settlementAreas || []).find(item => String(item.id) === String(areaId));
+    const area = [...(window.settlementAreas || []), ...(window.terrainAreas || [])]
+      .find(item => String(item.id) === String(areaId));
     if (!area) {
-      setSettlementContourEditorStatus("Сначала выбери поселение.");
+      setSettlementContourEditorStatus("Сначала выбери область в списке.");
       return;
     }
     closeSettlementContourEditor();
     settlementContourEditorAreaId = String(area.id);
     if (area.type === "terrain") {
-  settlementContourEditorPoints = area.points.map(point => ({
-    lat: Number(point.lat),
-    lng: Number(point.lng)
-  }));
-} else {
-  settlementContourEditorPoints =
-    Array.isArray(area.brushPoints) && area.brushPoints.length >= 3
-      ? area.brushPoints.map(point => ({
-          lat: Number(point.lat),
-          lng: Number(point.lng)
-        }))
-      : simplifySettlementEditorPoints(area.points, 8);
-}
+      settlementContourEditorPoints = (area.points || []).map(point => ({
+        lat: Number(point.lat), lng: Number(point.lng)
+      }));
+    } else {
+      settlementContourEditorPoints = Array.isArray(area.brushPoints) && area.brushPoints.length >= 3
+        ? area.brushPoints.map(point => ({ lat: Number(point.lat), lng: Number(point.lng) }))
+        : simplifySettlementEditorPoints(area.points, 8);
+    }
     settlementContourEditorSelectedIndex = -1;
     settlementContourEditorAddMode = false;
     window.settlementContourEditorActive = true;
@@ -4846,26 +4785,27 @@ map.on("zoomend", function() {
       return;
     }
     try {
-      if (!window.dndFirebase || typeof window.dndFirebase.saveSettlementBrushPoints !== "function") {
-        throw new Error("Firebase ещё не готов к сохранению контура");
-      }
       const cleanPoints = settlementContourEditorPoints.map(point => ({
         lat: Number(Number(point.lat).toFixed(7)),
         lng: Number(Number(point.lng).toFixed(7))
       }));
       if (area.type === "terrain") {
-  await window.dndFirebase.saveTerrainPoints(area.id, cleanPoints);
-  area.points = cleanPoints;
-} else {
-  await window.dndFirebase.saveSettlementBrushPoints(area.id, cleanPoints);
-}
+        if (typeof window.dndFirebase.saveTerrainPoints !== "function") {
+          throw new Error("Firebase ещё не готов к сохранению местности");
+        }
+        await window.dndFirebase.saveTerrainPoints(area.id, cleanPoints);
+        area.points = cleanPoints;
+      } else {
+        if (typeof window.dndFirebase.saveSettlementBrushPoints !== "function") {
+          throw new Error("Firebase ещё не готов к сохранению контура");
+        }
+        await window.dndFirebase.saveSettlementBrushPoints(area.id, cleanPoints);
+      }
       settlementContourEditorPoints = cleanPoints;
       drawSettlementContourEditorPreview();
-      setSettlementContourEditorStatus(
-  area.type === "terrain"
-    ? "Контур местности сохранён."
-    : "Контур сохранён. Он записан отдельно от невидимой области поселения."
-);
+      setSettlementContourEditorStatus(area.type === "terrain"
+        ? "Контур местности сохранён."
+        : "Контур сохранён. Он записан отдельно от невидимой области поселения.");
     } catch (error) {
       console.error("Не удалось сохранить геометрию кисти:", error);
       setSettlementContourEditorStatus("Ошибка сохранения: " + error.message);
@@ -4985,11 +4925,8 @@ map.on("zoomend", function() {
       if (!area) return;
       if (!confirm("Вернуть форму кисти к границе невидимой области поселения? Несохранённые изменения редактора будут потеряны.")) return;
       settlementContourEditorPoints = area.type === "terrain"
-  ? area.points.map(point => ({
-      lat: Number(point.lat),
-      lng: Number(point.lng)
-    }))
-  : simplifySettlementEditorPoints(area.points, 8);
+        ? (area.points || []).map(point => ({ lat: Number(point.lat), lng: Number(point.lng) }))
+        : simplifySettlementEditorPoints(area.points, 8);
       settlementContourEditorSelectedIndex = -1;
       settlementContourEditorAddMode = false;
       refreshSettlementContourEditor();
@@ -5023,7 +4960,9 @@ map.on("zoomend", function() {
     map.getContainer().style.touchAction = "none";
     setSettlementToolStatus(type === "city"
       ? "Зажми левую кнопку и обведи весь город. Отпусти, чтобы сохранить."
-      : "Зажми левую кнопку и обведи всю деревню. Отпусти, чтобы сохранить.");
+      : type === "village"
+        ? "Зажми левую кнопку и обведи всю деревню. Отпусти, чтобы сохранить."
+        : "Зажми левую кнопку и обведи участок труднопроходимой местности. Отпусти, чтобы сохранить.");
   }
 
   function handleSettlementPointerDown(event) {
@@ -5077,37 +5016,31 @@ map.on("zoomend", function() {
     // Замыкаем область автоматически; после сохранения линия исчезнет.
     const type = window.settlementDrawingMode;
     const area = {
-  id: (type === "terrain" ? "terrain_" : "settlement_") +
-    Date.now() + "_" + Math.floor(Math.random() * 100000),
-
-  type: type,
-
-  points: window.settlementDraft.map(point => ({
-    lat: point.lat,
-    lng: point.lng
-  })),
-
-  entrancePoints: [],
-  exitPoints: [],
-  createdAt: Date.now()
-};
+      id: (type === "terrain" ? "terrain_" : "settlement_") + Date.now() + "_" + Math.floor(Math.random() * 100000),
+      type: type,
+      points: window.settlementDraft.map(point => ({ lat: point.lat, lng: point.lng })),
+      entrancePoints: [],
+      exitPoints: [],
+      createdAt: Date.now()
+    };
 
     try {
-      if (!window.dndFirebase || typeof window.dndFirebase.saveSettlementAreas !== "function") {
-        throw new Error("Firebase ещё не готов к сохранению поселений");
-      }
+      if (!window.dndFirebase) throw new Error("Firebase ещё не готов");
       if (type === "terrain") {
-  await window.dndFirebase.saveTerrainArea(area);
-} else {
-  await window.dndFirebase.saveSettlementAreas(area);
-}
-      setSettlementToolStatus(
-  type === "city"
-    ? "Город сохранён. Его контур теперь невидим для всех игроков."
-    : type === "village"
-      ? "Деревня сохранена. Её контур теперь невидим для всех игроков."
-      : "Зона труднопроходимой местности сохранена."
-);
+        if (typeof window.dndFirebase.saveTerrainArea !== "function") {
+          throw new Error("Firebase ещё не готов к сохранению местности");
+        }
+        await window.dndFirebase.saveTerrainArea(area);
+        setSettlementToolStatus("Зона труднопроходимой местности сохранена.");
+      } else {
+        if (typeof window.dndFirebase.saveSettlementAreas !== "function") {
+          throw new Error("Firebase ещё не готов к сохранению поселений");
+        }
+        await window.dndFirebase.saveSettlementAreas(area);
+        setSettlementToolStatus(type === "city"
+          ? "Город сохранён. Его контур теперь невидим для всех игроков."
+          : "Деревня сохранена. Её контур теперь невидим для всех игроков.");
+      }
     } catch (error) {
       console.error("Не удалось сохранить область поселения:", error);
       setSettlementToolStatus("Ошибка сохранения: " + error.message);
@@ -5122,13 +5055,11 @@ map.on("zoomend", function() {
     map.dragging.enable();
     map.doubleClickZoom.enable();
     map.getContainer().style.touchAction = "";
-    setSettlementToolStatus(
-  type === "city"
-    ? "Город сохранён. Можно обвести следующий город, деревню или зону местности."
-    : type === "village"
-      ? "Деревня сохранена. Можно обвести следующую область."
-      : "Зона местности сохранена. Можно обвести следующую область."
-    );
+      setSettlementToolStatus(type === "city"
+        ? "Город сохранён. Можно обвести следующий город, деревню или зону местности."
+        : type === "village"
+          ? "Деревня сохранена. Можно обвести следующую область."
+          : "Зона местности сохранена. Можно обвести следующую область.");
   }
 
   function cancelSettlementDrawing() {
@@ -5166,26 +5097,21 @@ map.on("zoomend", function() {
       await set(ref(database, "settlements/areas/" + areaId + "/brushPoints"), brushPoints);
     };
 
-    // Отдельное хранилище труднопроходимой местности.
-window.dndFirebase.saveTerrainArea = async function(area) {
-  if (!window.dndFirebase.ready || !window.dndFirebase.isGameMaster) {
-    throw new Error("Создавать зоны местности может только ведущий");
-  }
-
-  await set(ref(database, "terrain/areas/" + area.id), area);
-};
-
-window.dndFirebase.saveTerrainPoints = async function(areaId, points) {
-  if (!window.dndFirebase.ready || !window.dndFirebase.isGameMaster) {
-    throw new Error("Изменять зоны местности может только ведущий");
-  }
-
-  if (!Array.isArray(points) || points.length < 3) {
-    throw new Error("Контур должен содержать не меньше трёх точек");
-  }
-
-  await set(ref(database, "terrain/areas/" + areaId + "/points"), points);
-};
+    window.dndFirebase.saveTerrainArea = async function(area) {
+      if (!window.dndFirebase.ready || !window.dndFirebase.isGameMaster) {
+        throw new Error("Создавать зоны местности может только ведущий");
+      }
+      await set(ref(database, "terrain/areas/" + area.id), area);
+    };
+    window.dndFirebase.saveTerrainPoints = async function(areaId, points) {
+      if (!window.dndFirebase.ready || !window.dndFirebase.isGameMaster) {
+        throw new Error("Изменять зоны местности может только ведущий");
+      }
+      if (!Array.isArray(points) || points.length < 3) {
+        throw new Error("Контур должен содержать не меньше трёх точек");
+      }
+      await set(ref(database, "terrain/areas/" + areaId + "/points"), points);
+    };
 
     onValue(areasRef, function(snapshot) {
       const value = snapshot.val() || {};
@@ -5197,9 +5123,11 @@ window.dndFirebase.saveTerrainPoints = async function(areaId, points) {
       if (window.settlementContourEditorActive) {
         const updatedArea = getSelectedSettlementContourEditorArea();
         if (updatedArea && !settlementContourEditorPoints.length) {
-          settlementContourEditorPoints = Array.isArray(updatedArea.brushPoints)
-            ? updatedArea.brushPoints.map(point => ({ lat: Number(point.lat), lng: Number(point.lng) }))
-            : simplifySettlementEditorPoints(updatedArea.points, 8);
+          settlementContourEditorPoints = updatedArea.type === "terrain"
+            ? (updatedArea.points || []).map(point => ({ lat: Number(point.lat), lng: Number(point.lng) }))
+            : Array.isArray(updatedArea.brushPoints)
+              ? updatedArea.brushPoints.map(point => ({ lat: Number(point.lat), lng: Number(point.lng) }))
+              : simplifySettlementEditorPoints(updatedArea.points, 8);
           refreshSettlementContourEditor();
         }
       }
@@ -5207,30 +5135,26 @@ window.dndFirebase.saveTerrainPoints = async function(areaId, points) {
       console.error("Ошибка загрузки областей поселений:", error);
     });
 
-    // Загружаем труднопроходимую местность отдельно от поселений.
-const terrainRef = ref(database, "terrain/areas");
-
-onValue(terrainRef, function(snapshot) {
-  const value = snapshot.val() || {};
-
-  window.terrainAreas = Object.keys(value).map(key => ({
-    ...value[key],
-    id: value[key].id || key
-  })).filter(area =>
-    area.type === "terrain" &&
-    Array.isArray(area.points) &&
-    area.points.length >= 3
-  );
-
-  console.log(
-    "Зоны труднопроходимой местности загружены:",
-    window.terrainAreas.length
-  );
-
-  refreshSettlementContourEditorOptions();
-}, function(error) {
-  console.error("Ошибка загрузки труднопроходимой местности:", error);
-});
+    const terrainRef = ref(database, "terrain/areas");
+    onValue(terrainRef, function(snapshot) {
+      const value = snapshot.val() || {};
+      window.terrainAreas = Object.keys(value).map(key => ({
+        ...value[key], id: value[key].id || key
+      })).filter(area => area.type === "terrain" && Array.isArray(area.points) && area.points.length >= 3);
+      console.log("Зоны труднопроходимой местности загружены:", window.terrainAreas.length);
+      refreshSettlementContourEditorOptions();
+      if (window.settlementContourEditorActive) {
+        const updatedArea = getSelectedSettlementContourEditorArea();
+        if (updatedArea && updatedArea.type === "terrain" && !settlementContourEditorPoints.length) {
+          settlementContourEditorPoints = (updatedArea.points || []).map(point => ({
+            lat: Number(point.lat), lng: Number(point.lng)
+          }));
+          refreshSettlementContourEditor();
+        }
+      }
+    }, function(error) {
+      console.error("Ошибка загрузки труднопроходимой местности:", error);
+    });
 
     createSettlementToolbar();
   }
@@ -5265,7 +5189,9 @@ onValue(terrainRef, function(snapshot) {
     ready: false,
     isGameMaster: false,
     savePersonalMarkers: null,
-    saveSettlementAreas: null
+    saveSettlementAreas: null,
+    saveTerrainArea: null,
+    saveTerrainPoints: null
   };
 
   async function initializePersonalMarkers(uid) {
