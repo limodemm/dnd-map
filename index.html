@@ -2232,6 +2232,15 @@ function getExhaustionMarkerClusters(markers, markerSize = 28, routeGeometry = r
   });
 }
 
+function getExhaustionClusterDisplaySize() {
+  const zoom = map && typeof map.getZoom === "function" ? map.getZoom() : -1;
+  // При максимальном масштабе сохраняем прежний размер;
+  // на среднем уменьшаем немного, на минимальном — заметнее.
+  if (zoom <= -1.5) return 36;
+  if (zoom <= -0.5) return 46;
+  return 56;
+}
+
 function updateRouteLine(cursorPosition = null) {
   // Перерисовка карты не отменяет и не перезапускает анимацию жетонов.
   // Время анимации учитывается при создании каждого нового DOM-элемента.
@@ -2396,6 +2405,35 @@ function updateRouteLine(cursorPosition = null) {
     } else {
       mergedTerrainIntervals.push({ start: interval.start, end: interval.end });
     }
+  });
+
+  // Красная линия не строится на участках форсированного марша вообще.
+  // Не полагаемся на визуальное перекрытие чёрной линией: исключаем
+  // пересекающиеся интервалы ещё до создания красных полилиний.
+  const terrainRedIntervals = [];
+  mergedTerrainIntervals.forEach(terrainInterval => {
+    let remaining = [{ start: terrainInterval.start, end: terrainInterval.end }];
+
+    mergedBlackIntervals.forEach(blackInterval => {
+      const nextRemaining = [];
+      remaining.forEach(part => {
+        if (blackInterval.end <= part.start + 0.001 ||
+            blackInterval.start >= part.end - 0.001) {
+          nextRemaining.push(part);
+          return;
+        }
+
+        if (blackInterval.start > part.start + 0.001) {
+          nextRemaining.push({ start: part.start, end: Math.min(part.end, blackInterval.start) });
+        }
+        if (blackInterval.end < part.end - 0.001) {
+          nextRemaining.push({ start: Math.max(part.start, blackInterval.end), end: part.end });
+        }
+      });
+      remaining = nextRemaining;
+    });
+
+    terrainRedIntervals.push(...remaining.filter(part => part.end > part.start + 0.001));
   });
 
   // Золотая линия прерывается и на форсированном марше, и на труднопроходимой местности.
@@ -2632,13 +2670,12 @@ function updateRouteLine(cursorPosition = null) {
     );
   }
 
-  // Красная линия внутри труднопроходимой местности.
-  // Форсированный марш рисуется поверх неё прежним чёрным оформлением.
-  mergedTerrainIntervals.forEach(interval => {
+  // Красная линия внутри труднопроходимой местности, кроме форсированного марша.
+  terrainRedIntervals.forEach(interval => {
     drawRoutePiece(
       interval.start,
       interval.end,
-      "#d9473f",
+      "#b85b55",
       1.0,
       0.22
     );
@@ -2731,13 +2768,16 @@ function updateRouteLine(cursorPosition = null) {
         ? `<span class="route-exhaustion-count">${cluster.count}</span>`
         : "";
 
+      const clusterDisplaySize = cluster.count > 1
+        ? getExhaustionClusterDisplaySize()
+        : 28;
       const exhaustionIcon = L.divIcon({
         className:
           "route-exhaustion-mark" +
           (exhaustionIsPreview ? " route-preview-marker" : ""),
-        html: `<div class="${exhaustionShouldAnimate ? "route-token-appear" : ""}" style="--route-animation-delay:${exhaustionAnimationDelay || 0}ms;width:${cluster.count > 1 ? 56 : 28}px;height:${cluster.count > 1 ? 56 : 28}px;"><div class="route-exhaustion-cluster${cluster.count > 1 ? " route-exhaustion-clustered" : ""}"><span class="route-exhaustion-glyph">×</span>${countBadge}</div></div>`,
-        iconSize: cluster.count > 1 ? [56, 56] : [28, 28],
-        iconAnchor: cluster.count > 1 ? [28, 28] : [14, 14]
+        html: `<div class="${exhaustionShouldAnimate ? "route-token-appear" : ""}" style="--route-animation-delay:${exhaustionAnimationDelay || 0}ms;width:${clusterDisplaySize}px;height:${clusterDisplaySize}px;"><div class="route-exhaustion-cluster${cluster.count > 1 ? " route-exhaustion-clustered" : ""}" style="${cluster.count > 1 ? `width:${clusterDisplaySize}px;height:${clusterDisplaySize}px;` : ""}"><span class="route-exhaustion-glyph" style="${cluster.count > 1 ? `font-size:${clusterDisplaySize}px;line-height:${clusterDisplaySize}px;` : ""}">×</span>${countBadge}</div></div>`,
+        iconSize: [clusterDisplaySize, clusterDisplaySize],
+        iconAnchor: [clusterDisplaySize / 2, clusterDisplaySize / 2]
       });
       const marker = L.marker(cluster.position, {
         icon: exhaustionIcon,
@@ -2767,7 +2807,7 @@ function updateRouteLine(cursorPosition = null) {
       radius: 7,
       color: "#211b16",
       weight: 2,
-      fillColor: isPointInsideTerrain(position) ? "#d9473f" : "#e6c77d",
+      fillColor: isPointInsideTerrain(position) ? "#b85b55" : "#e6c77d",
       fillOpacity: restIsPreview ? 0.72 : 1,
       opacity: restIsPreview ? 0.78 : 1,
       interactive: false,
