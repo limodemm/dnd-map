@@ -2634,6 +2634,26 @@ function updateRouteLine(cursorPosition = null) {
     document.getElementById("route-undo").disabled = routePoints.length <= 1;
   }
 
+  // После любой перерисовки заново применяем обрезку маршрута
+  // по визуальной границе поселения.
+  let settlementAreaToErase = null;
+
+  if (window.routeDestinationCityId) {
+    settlementAreaToErase = (
+      Array.isArray(window.settlementAreas)
+        ? window.settlementAreas
+        : []
+    ).find(area =>
+      String(area.id) === String(window.routeDestinationCityId)
+    ) || null;
+  } else if (window.routeMode && lastCursorPosition) {
+    settlementAreaToErase = findSettlementAt(lastCursorPosition);
+  }
+
+  if (settlementAreaToErase) {
+    hideRouteDashesInsideSettlement(settlementAreaToErase);
+  }
+
   console.log("Длина маршрута:", Math.round(totalLength));
 }
 
