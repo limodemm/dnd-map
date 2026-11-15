@@ -907,41 +907,36 @@ function createRoutePanel() {
     }
 
     #party-route-panel .route-speeds {
-      display: flex;
-      gap: 6px;
-      margin-bottom: 12px;
-    }
-
-    #party-route-panel button {
-      cursor: pointer;
-      font-family: inherit;
-    }
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
 
 #party-route-panel .route-speed {
-  flex: 1;
-  padding: 7px 3px;
+  flex: 0 0 70px;
+  width: 70px;
+  height: 70px;
+  box-sizing: border-box;
+  padding: 4px;
+
   color: #eee2c8;
   background: #393027;
   border: 1px solid #756044;
   border-radius: 6px;
-  font-size: 12px;
+
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 3px;
+  justify-content: center;
 }
 
 #party-route-panel .route-speed-image {
   display: block;
-  width: 100%;
-  max-width: 88px;
-  height: 88px;
+  width: 60px;
+  height: 60px;
+  max-width: none;
   object-fit: contain;
   margin: 0 auto;
-}
-
-#party-route-panel .route-speed-label {
-  font-size: 12px;
 }
 
 /* Переключатель сниженной скорости */
@@ -1217,16 +1212,17 @@ function createRoutePanel() {
       }
 
       #party-route-panel .route-speed {
-        padding: 5px 2px;
-      }
-
-      #party-route-panel .route-speed-image {
-  max-width: 74px;
-  height: 74px;
+  flex: 0 0 70px;
+  width: 70px;
+  height: 70px;
+  padding: 4px;
 }
-      #party-route-panel .route-speed-label {
-        font-size: 11px;
-      }
+
+#party-route-panel .route-speed-image {
+  width: 60px;
+  height: 60px;
+  max-width: none;
+}
 
       #party-route-panel .route-info {
         font-size: 11px;
@@ -1252,17 +1248,14 @@ function createRoutePanel() {
 <div class="route-speeds">
   <button class="route-speed" data-pace="slow">
     <img src="pace-slow.png" class="route-speed-image" alt="Медленный">
-    <span class="route-speed-label">Медленный</span>
   </button>
 
   <button class="route-speed active" data-pace="normal">
     <img src="pace-normal.png" class="route-speed-image" alt="Обычный">
-    <span class="route-speed-label">Обычный</span>
   </button>
 
   <button class="route-speed" data-pace="fast">
     <img src="pace-fast.png" class="route-speed-image" alt="Быстрый">
-    <span class="route-speed-label">Быстрый</span>
   </button>
 </div>
 
