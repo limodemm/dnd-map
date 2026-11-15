@@ -942,6 +942,7 @@ function createRoutePanel() {
   height: 88px;
   object-fit: contain;
   margin: 0;
+  transform: translateY(2px);
   pointer-events: none;
 }
 
@@ -2586,10 +2587,10 @@ function updateRouteLine(cursorPosition = null) {
       flagAnimation &&
       flagAnimationDelay > -flagAnimationDuration
     );
-    // Флаг немного крупнее на максимальном приближении и почти
-    // сохраняет размер при отдалении карты (от 86% до 100%).
+    // При отдалении карты флаг сохраняет почти максимальный размер
+    // (от 95% до 100%), чтобы не теряться среди остальных элементов.
     const flagZoom = map.getZoom();
-    const flagScale = Math.max(0.86, Math.min(1, 0.86 + ((flagZoom + 2) / 2) * 0.14));
+    const flagScale = Math.max(0.95, Math.min(1, 0.95 + ((flagZoom + 2) / 2) * 0.05));
     const flagWidth = 60 * flagScale;
     const flagHeight = 55 * flagScale;
     // В PNG древко заканчивается примерно на x=41.9%, y=89.5%.
