@@ -1481,6 +1481,8 @@ window.routePendingConfirmation = false;
       forcedMarchStartDistance: routeForcedMarchStartDistance,
       forcedMarchStartUnits: routeForcedMarchStartUnits,
       forcedSegments: routeForcedSegments.map(segment => ({ ...segment })),
+      intermediateSettlementIds: Array.isArray(window.routeIntermediateCityIds)
+        ? window.routeIntermediateCityIds.slice() : [],
       startedAt: Date.now() + 500,
       confirmedBy: window.dndFirebase && window.dndFirebase.uid
         ? window.dndFirebase.uid : null
@@ -2236,7 +2238,7 @@ function getExhaustionClusterDisplaySize() {
   const zoom = map && typeof map.getZoom === "function" ? map.getZoom() : -1;
   // При максимальном масштабе сохраняем прежний размер;
   // на среднем уменьшаем немного, на минимальном — заметнее.
-  if (zoom <= -1.5) return 36;
+  if (zoom <= -1.5) return 39;
   if (zoom <= -0.5) return 46;
   return 56;
 }
@@ -2260,6 +2262,11 @@ function updateRouteLine(cursorPosition = null) {
   }
 
   clearRouteDrawing();
+  // Все скрытые слои предыдущей отрисовки уже удалены clearRouteDrawing;
+  // сбрасываем только их служебные ссылки без лишнего восстановления геометрии.
+  if (window.discardRouteLayersForSettlement) {
+    window.discardRouteLayersForSettlement();
+  }
 
   const totalLength = getRouteTravelLength(pointsToDraw);
   const dailyLimit =
@@ -2303,10 +2310,10 @@ function updateRouteLine(cursorPosition = null) {
     )) settlementMaskAreas.push(hoveredArea);
   }
 
-  const isMarkerInsideSettlementMask = position =>
+  const isMarkerInsideSettlementMask = (position, extraPixels = 9) =>
     !!(window.isRouteMarkerMaskedBySettlement &&
       settlementMaskAreas.some(area =>
-        window.isRouteMarkerMaskedBySettlement(position, area)
+        window.isRouteMarkerMaskedBySettlement(position, area, extraPixels)
       ));
 
   const restDistancesToDraw = getNormalRestDistances(
@@ -2675,7 +2682,7 @@ function updateRouteLine(cursorPosition = null) {
     drawRoutePiece(
       interval.start,
       interval.end,
-      "#b85b55",
+      "#b4514b",
       1.0,
       0.22
     );
@@ -2701,7 +2708,7 @@ function updateRouteLine(cursorPosition = null) {
 
     // Саму отметку границы не создаём, если она попала в маску города.
     // Чёрная линия марша при этом сохраняется и отдельно обрезается визуально.
-    if (isMarkerInsideSettlementMask(boundaryPosition)) return;
+    if (isMarkerInsideSettlementMask(boundaryPosition, 16)) return;
 
     // Направление черты всегда перпендикулярно касательной маршрута.
     const angle = getPerpendicularRouteAngle(pointsToDraw, boundaryDistance);
@@ -2735,7 +2742,7 @@ function updateRouteLine(cursorPosition = null) {
          distance <= segment.end + 0.01;
          distance += interval) {
       const position = getRoutePointAtDistance(pointsToDraw, distance);
-      if (position && !isMarkerInsideSettlementMask(position)) {
+      if (position && !isMarkerInsideSettlementMask(position, 28)) {
         exhaustionPositions.push({ distance, position });
       }
     }
@@ -2802,12 +2809,14 @@ function updateRouteLine(cursorPosition = null) {
     const restAnimationDelay = getRouteMarkerAnimationDelay(distance);
     const restShouldAnimate = restAnimationDelay !== null;
 
+    const restZoom = map && typeof map.getZoom === "function" ? map.getZoom() : -1;
+    const restMarkerRadius = restZoom <= -1.5 ? 6.5 : 7;
     const marker = L.circleMarker(position, {
       pane: "route-rest-pane",
-      radius: 7,
+      radius: restMarkerRadius,
       color: "#211b16",
       weight: 2,
-      fillColor: isPointInsideTerrain(position) ? "#b85b55" : "#e6c77d",
+      fillColor: isPointInsideTerrain(position) ? "#b4514b" : "#e6c77d",
       fillOpacity: restIsPreview ? 0.72 : 1,
       opacity: restIsPreview ? 0.78 : 1,
       interactive: false,
@@ -2892,9 +2901,7 @@ function updateRouteLine(cursorPosition = null) {
     document.getElementById("route-undo").disabled = routePoints.length <= 1;
   }
 
-  // Для выбранных промежуточных городов линия уже построена в обход
-  // визуальной кисти, а маркеры отфильтрованы выше. Для конечного города
-  // сохраняем прежнюю обрезку линии по визуальной границе.
+  // Сначала применяем маску наведённого/конечного поселения.
   if (window.routeDestinationCityId) {
     const destinationArea = allSettlementAreas.find(
       area => String(area.id) === String(window.routeDestinationCityId)
@@ -2904,6 +2911,19 @@ function updateRouteLine(cursorPosition = null) {
     }
   } else if (window.routeMode && cursorPosition && window.previewSettlementAt) {
     window.previewSettlementAt(cursorPosition);
+  }
+
+  // Затем накладываем маски всех выбранных промежуточных поселений.
+  // Линия физически проходит через их визуальную кисть, но внутри неё
+  // не отображается; жетоны уже отфильтрованы по тем же областям выше.
+  if (window.hideRouteDashesInsideSettlement) {
+    const intermediateAreas = (Array.isArray(window.routeIntermediateCityIds)
+      ? window.routeIntermediateCityIds : [])
+      .map(id => allSettlementAreas.find(area => String(area.id) === String(id)))
+      .filter(Boolean);
+    intermediateAreas.forEach(area => {
+      window.hideRouteDashesInsideSettlement(area, true);
+    });
   }
 
   console.log("Длина маршрута:", Math.round(totalLength));
@@ -2933,8 +2953,10 @@ window.applySynchronizedPartyRoute = function(data) {
     ? L.latLng(data.destinationBoundaryPoint.lat, data.destinationBoundaryPoint.lng) : null;
   window.routeDestinationApproachPoint = data.destinationApproachPoint
     ? L.latLng(data.destinationApproachPoint.lat, data.destinationApproachPoint.lng) : null;
-  window.routeIntermediateCityIds = [];
+  window.routeIntermediateCityIds = Array.isArray(data.intermediateSettlementIds)
+    ? data.intermediateSettlementIds.map(id => String(id)) : [];
   clearRouteIntermediateCityOutlines();
+  refreshRouteIntermediateCityOutlines();
   lastCursorPosition = null;
 
   if (routePanel) routePanel.style.display = "none";
@@ -3128,15 +3150,9 @@ map.on("mousemove", function(e) {
   if (!window.routeMode || !hasMouse) return;
 
   lastCursorPosition = e.latlng;
-  // Сначала обновляем маршрутные слои, затем скрываем их части внутри города.
-  // Иначе updateRouteLine тут же пересоздаёт только что скрытую линию.
+  // updateRouteLine обновляет маршрут и в конце применяет маску
+  // наведённого поселения вместе со всеми выбранными промежуточными.
   updateRouteLine(e.latlng);
-
-  try {
-    if (window.previewSettlementAt) window.previewSettlementAt(e.latlng);
-  } catch (previewError) {
-    console.error("Ошибка предварительной обводки поселения:", previewError);
-  }
 });
 
 // При изменении масштаба пересобираем группы крестиков,
@@ -3661,6 +3677,10 @@ map.on("zoomend", function() {
     });
     hiddenRouteLayers = [];
   }
+  window.restoreRouteLayersForSettlement = restoreRouteLayersForSettlement;
+  window.discardRouteLayersForSettlement = function() {
+    hiddenRouteLayers = [];
+  };
 
   // Для стирания маршрута используем не невидимую область поселения,
   // а фактическую внешнюю геометрию кисти. Так маршрут исчезает и в
@@ -3863,6 +3883,33 @@ map.on("zoomend", function() {
         const polygon = getSettlementBrushErasePolygon(area, 4);
         if (polygon.length < 3) continue;
 
+        // Если участок начинается на границе выбранного города или внутри
+        // его визуальной кисти, это именно выход из города, а не попытка
+        // пересечь его как препятствие. Разрешаем построение через кисть:
+        // ниже маршрутная линия и жетоны будут скрыты внутри её контура.
+        const startPx = map.latLngToLayerPoint(start);
+        let distanceToStartBoundary = Infinity;
+        for (let edge = 0; edge < polygon.length; edge++) {
+          const a = map.latLngToLayerPoint(polygon[edge]);
+          const b = map.latLngToLayerPoint(polygon[(edge + 1) % polygon.length]);
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const lengthSquared = dx * dx + dy * dy;
+          const t = lengthSquared > 0
+            ? Math.max(0, Math.min(1,
+                ((startPx.x - a.x) * dx + (startPx.y - a.y) * dy) / lengthSquared
+              ))
+            : 0;
+          const projected = L.point(a.x + dx * t, a.y + dy * t);
+          distanceToStartBoundary = Math.min(
+            distanceToStartBoundary,
+            startPx.distanceTo(projected)
+          );
+        }
+        if (pointInSettlement(start, polygon) || distanceToStartBoundary <= 12) {
+          continue;
+        }
+
         const nextPath = [path[0]];
         for (let i = 1; i < path.length; i++) {
           const a = path[i - 1];
@@ -3930,8 +3977,9 @@ map.on("zoomend", function() {
   function findNearestRoutePointOnSettlementBrush(origin, area) {
     if (!origin || !area) return null;
 
-    // Используем тот же контур, который считается препятствием для маршрута.
-    const polygon = getSettlementBrushErasePolygon(area, 4);
+    // Точка подхода ставится на фактическую внешнюю границу кисти.
+    // Сам маршрут затем может пройти под кистью: этот участок будет скрыт маской.
+    const polygon = getSettlementBrushErasePolygon(area, 0);
     if (!Array.isArray(polygon) || polygon.length < 3) return null;
 
     const originPx = map.latLngToLayerPoint(origin);
@@ -4034,9 +4082,9 @@ map.on("zoomend", function() {
 
   // Используется updateRouteLine для проверки самих игровых жетонов.
   // Проверка доступна только при активной маске выбранного/наведённого города.
-  window.isRouteMarkerMaskedBySettlement = function(position, area) {
+  window.isRouteMarkerMaskedBySettlement = function(position, area, extraPixels = 9) {
     if (!position || !area) return false;
-    const polygon = getSettlementBrushErasePolygon(area, 9);
+    const polygon = getSettlementBrushErasePolygon(area, extraPixels);
     return polygon.length >= 3 && pointInSettlement(position, polygon);
   };
 
@@ -4077,8 +4125,8 @@ map.on("zoomend", function() {
     return { paths: result, changed: hadInsidePoint };
   }
 
-  function hideRouteDashesInsideSettlement(area) {
-    restoreRouteLayersForSettlement();
+  function hideRouteDashesInsideSettlement(area, preserveExisting = false) {
+    if (!preserveExisting) restoreRouteLayersForSettlement();
     if (!area || !Array.isArray(area.points)) return;
 
     // Линия обрезается по внешнему краю кисти. Для круглых жетонов
@@ -4096,15 +4144,19 @@ map.on("zoomend", function() {
         const position = layer.getLatLng();
         if (!position || !pointInSettlement(position, markerErasePolygon)) return;
         if (typeof layer.setOpacity === "function") {
-          const markerOpacity = typeof layer.options.opacity === "number" ? layer.options.opacity : 1;
-          hiddenRouteLayers.push({ layer, markerOpacity });
+          if (!hiddenRouteLayers.some(item => item.layer === layer)) {
+            const markerOpacity = typeof layer.options.opacity === "number" ? layer.options.opacity : 1;
+            hiddenRouteLayers.push({ layer, markerOpacity });
+          }
           layer.setOpacity(0);
         } else if (typeof layer.setStyle === "function") {
-          const style = {
-            opacity: typeof layer.options.opacity === "number" ? layer.options.opacity : 1,
-            fillOpacity: typeof layer.options.fillOpacity === "number" ? layer.options.fillOpacity : 1
-          };
-          hiddenRouteLayers.push({ layer, style });
+          if (!hiddenRouteLayers.some(item => item.layer === layer)) {
+            const style = {
+              opacity: typeof layer.options.opacity === "number" ? layer.options.opacity : 1,
+              fillOpacity: typeof layer.options.fillOpacity === "number" ? layer.options.fillOpacity : 1
+            };
+            hiddenRouteLayers.push({ layer, style });
+          }
           layer.setStyle({ opacity: 0, fillOpacity: 0 });
         }
         return;
@@ -4133,7 +4185,9 @@ map.on("zoomend", function() {
       });
       if (!changed) return;
 
-      hiddenRouteLayers.push({ layer, latlngs: original });
+      if (!hiddenRouteLayers.some(item => item.layer === layer)) {
+        hiddenRouteLayers.push({ layer, latlngs: original });
+      }
       layer.setLatLngs(visiblePaths);
     });
   }
@@ -5277,6 +5331,12 @@ map.on("zoomend", function() {
       })).filter(area => Array.isArray(area.points) && area.points.length >= 3);
       console.log("Области поселений загружены:", window.settlementAreas.length);
       refreshSettlementContourEditorOptions();
+      if (Array.isArray(window.routeIntermediateCityIds) && window.routeIntermediateCityIds.length) {
+        refreshRouteIntermediateCityOutlines();
+      }
+      if (window.updateRouteLine && Array.isArray(window.routePoints) && window.routePoints.length > 1) {
+        window.updateRouteLine(null);
+      }
       if (window.settlementContourEditorActive) {
         const updatedArea = getSelectedSettlementContourEditorArea();
         if (updatedArea && !settlementContourEditorPoints.length) {
