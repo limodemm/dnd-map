@@ -508,6 +508,7 @@ document.addEventListener("keydown", function(e) {
   window.routeDestinationBoundaryPoint = null;
   window.routeDestinationApproachPoint = null;
   window.routeIntermediateCityIds = [];
+  window.routeIntermediateCityEntries = [];
 
 // UID ведущего. Используется только для разграничения прав.
   const GAME_MASTER_UID = "qxdgnWhXmQeqHTLPMI3q8EK60Fi2";
@@ -611,6 +612,7 @@ window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
 window.routeDestinationApproachPoint = null;
 window.routeIntermediateCityIds = [];
+window.routeIntermediateCityEntries = [];
 clearRouteIntermediateCityOutlines();
 // Сбрасываем состояние форсированного марша
 routeForcedMarch = false;
@@ -1401,8 +1403,9 @@ forcedMarchButton.addEventListener("click", function() {
       ? previousRests[previousRests.length - 1]
       : 0;
 
-    // Здесь маршрут действительно откатывается к последнему привалу.
-    routePoints = getRoutePointsUpToDistance(routePoints, lastRestDistance);
+    // Форсированный марш начинается от последнего обычного привала,
+    // но уже проложенная геометрия не обрезается: если последней точкой
+    // было промежуточное поселение, маршрут остаётся на его границе.
     routeForcedSegments = routeForcedSegments.filter(segment => {
       const recalculated = getForcedSegmentDistances(segment, dailyLimit);
       return recalculated.end <= lastRestDistance + 0.001;
@@ -1441,6 +1444,9 @@ forcedMarchButton.addEventListener("click", function() {
         routePoints,
         routeForcedMarchStartDistance
       );
+      if (window.trimRouteIntermediateSettlementsToDistance) {
+        window.trimRouteIntermediateSettlementsToDistance(routeForcedMarchStartDistance);
+      }
       routeForcedSegments = routeForcedSegments.filter(segment => {
         const recalculated = getForcedSegmentDistances(segment, dailyLimit);
         return recalculated.end <= routeForcedMarchStartDistance + 0.001;
@@ -1483,6 +1489,8 @@ window.routePendingConfirmation = false;
       forcedSegments: routeForcedSegments.map(segment => ({ ...segment })),
       intermediateSettlementIds: Array.isArray(window.routeIntermediateCityIds)
         ? window.routeIntermediateCityIds.slice() : [],
+      intermediateSettlementEntries: Array.isArray(window.routeIntermediateCityEntries)
+        ? window.routeIntermediateCityEntries.map(entry => ({ ...entry })) : [],
       startedAt: Date.now() + 500,
       confirmedBy: window.dndFirebase && window.dndFirebase.uid
         ? window.dndFirebase.uid : null
@@ -1560,6 +1568,9 @@ window.routePendingConfirmation = false;
     }
 
     routePoints = getRoutePointsUpToDistance(routePoints, targetDistance);
+    if (window.trimRouteIntermediateSettlementsToDistance) {
+      window.trimRouteIntermediateSettlementsToDistance(targetDistance);
+    }
 
 // Синхронизируем историю форсированных маршей
 // с фактической длиной обрезанного маршрута.
@@ -2129,6 +2140,7 @@ function cancelPartyRoute() {
   window.routeDestinationBoundaryPoint = null;
   window.routeDestinationApproachPoint = null;
   window.routeIntermediateCityIds = [];
+  window.routeIntermediateCityEntries = [];
   clearRouteIntermediateCityOutlines();
 
   stopRouteMarkerAnimation();
@@ -2251,7 +2263,13 @@ function updateRouteLine(cursorPosition = null) {
   // Для preview используем те же расчёты, что и для зафиксированного маршрута,
   // но ничего не записываем в состояние до клика.
   const pointsToDraw = [...routePoints];
-  if (cursorPosition && hasMouse && window.routeMode && routePoints.length > 0) {
+  const cursorInsideIntermediateSettlement = !!(cursorPosition &&
+    (Array.isArray(window.routeIntermediateCityIds) ? window.routeIntermediateCityIds : []).some(id => {
+      const area = (Array.isArray(window.settlementAreas) ? window.settlementAreas : [])
+        .find(item => String(item.id) === String(id));
+      return !!(area && Array.isArray(area.points) && pointInSettlement(cursorPosition, area.points));
+    }));
+  if (cursorPosition && !cursorInsideIntermediateSettlement && hasMouse && window.routeMode && routePoints.length > 0) {
     const previewPath = getRouteSegmentAroundIntermediateCities(
       routePoints[routePoints.length - 1],
       cursorPosition
@@ -2955,6 +2973,11 @@ window.applySynchronizedPartyRoute = function(data) {
     ? L.latLng(data.destinationApproachPoint.lat, data.destinationApproachPoint.lng) : null;
   window.routeIntermediateCityIds = Array.isArray(data.intermediateSettlementIds)
     ? data.intermediateSettlementIds.map(id => String(id)) : [];
+  window.routeIntermediateCityEntries = Array.isArray(data.intermediateSettlementEntries)
+    ? data.intermediateSettlementEntries
+        .filter(entry => entry && entry.id !== undefined && Number.isFinite(Number(entry.distance)))
+        .map(entry => ({ id: String(entry.id), distance: Number(entry.distance) }))
+    : [];
   clearRouteIntermediateCityOutlines();
   refreshRouteIntermediateCityOutlines();
   lastCursorPosition = null;
@@ -3086,6 +3109,10 @@ window.handlePartyRouteClick = function(latlng) {
             Array.isArray(window.routeIntermediateCityIds)
               ? window.routeIntermediateCityIds : []
           ).filter(id => String(id) !== String(clickedArea.id));
+          window.routeIntermediateCityEntries = (
+            Array.isArray(window.routeIntermediateCityEntries)
+              ? window.routeIntermediateCityEntries : []
+          ).filter(entry => String(entry.id) !== String(clickedArea.id));
           refreshRouteIntermediateCityOutlines();
 
           window.routeDestinationCityId = clickedArea.id;
@@ -3906,7 +3933,20 @@ map.on("zoomend", function() {
             startPx.distanceTo(projected)
           );
         }
-        if (pointInSettlement(start, polygon) || distanceToStartBoundary <= 12) {
+        const factualBoundary = Array.isArray(area.points) && area.points.length >= 3
+          ? findNearestSettlementBoundaryPoint(start, area.points)
+          : null;
+        const distanceToFactualBoundary = factualBoundary && factualBoundary.point
+          ? map.latLngToLayerPoint(start).distanceTo(
+              map.latLngToLayerPoint(factualBoundary.point)
+            )
+          : Infinity;
+        if (
+          (Array.isArray(area.points) && pointInSettlement(start, area.points)) ||
+          distanceToFactualBoundary <= 3 ||
+          pointInSettlement(start, polygon) ||
+          distanceToStartBoundary <= 12
+        ) {
           continue;
         }
 
@@ -3973,6 +4013,24 @@ map.on("zoomend", function() {
       );
     });
   }
+
+  // Удаляет промежуточные поселения, до которых маршрут уже не доходит
+  // после возврата/отката. Это снимает подсветку и снова разрешает вход.
+  window.trimRouteIntermediateSettlementsToDistance = function(targetDistance) {
+    const entries = Array.isArray(window.routeIntermediateCityEntries)
+      ? window.routeIntermediateCityEntries : [];
+    if (!entries.length) return;
+    const keepEntries = entries.filter(entry =>
+      Number(entry.distance) <= Number(targetDistance) + 0.05
+    );
+    const keepIds = new Set(keepEntries.map(entry => String(entry.id)));
+    const knownIds = new Set(entries.map(entry => String(entry.id)));
+    window.routeIntermediateCityIds = (
+      Array.isArray(window.routeIntermediateCityIds) ? window.routeIntermediateCityIds : []
+    ).filter(id => !knownIds.has(String(id)) || keepIds.has(String(id)));
+    window.routeIntermediateCityEntries = keepEntries;
+    refreshRouteIntermediateCityOutlines();
+  };
 
   function findNearestRoutePointOnSettlementBrush(origin, area) {
     if (!origin || !area) return null;
@@ -4048,11 +4106,13 @@ map.on("zoomend", function() {
     const previousPoint = currentRoutePoints[currentRoutePoints.length - 1];
     if (!previousPoint) return;
 
-    // Одиночный клик подтверждает путь ДО ближайшей точки внешней
-    // границы кисти. Эта точка становится новым началом следующего участка.
-    const approachPoint = findNearestRoutePointOnSettlementBrush(previousPoint, area);
+    // Одиночный клик фиксирует маршрут до фактической границы поселения
+    // (area.points), а не до расширенной визуальной кисти. Поэтому участок
+    // внутри фактического контура не попадает в длину маршрута.
+    const factualBoundary = findNearestSettlementBoundaryPoint(previousPoint, area.points);
+    const approachPoint = factualBoundary && factualBoundary.point;
     if (!approachPoint) {
-      console.warn("Не удалось определить точку подхода к промежуточному городу.");
+      console.warn("Не удалось определить фактическую границу промежуточного города.");
       return;
     }
 
@@ -4068,7 +4128,14 @@ map.on("zoomend", function() {
     }
     currentRoutePoints.push(...approachSegment.slice(1));
 
-    window.routeIntermediateCityIds.push(area.id);
+    window.routeIntermediateCityIds.push(String(area.id));
+    if (!Array.isArray(window.routeIntermediateCityEntries)) {
+      window.routeIntermediateCityEntries = [];
+    }
+    window.routeIntermediateCityEntries.push({
+      id: String(area.id),
+      distance: getRouteTravelLength(currentRoutePoints)
+    });
     window.lastCursorPosition = null;
     refreshRouteIntermediateCityOutlines();
 
