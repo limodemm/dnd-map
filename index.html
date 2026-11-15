@@ -481,8 +481,8 @@ document.addEventListener("keydown", function(e) {
   // включая ожидание прибытия, вне зависимости от локальной области видимости.
   window.routeLineDashStep = 18;
   window.routeLineRevealFadeDuration = 220;
-  window.routeLineFirstDashDelay = 220;
-  window.routeLineDashAcceleration = 3;
+  window.routeLineFirstDashDelay = 240;
+  window.routeLineDashAcceleration = 2;
   window.routeLineMinimumDashDelay = 95;
   window.settlementTraceDashInterval = 95;
 
@@ -688,8 +688,8 @@ const routeLineRevealFadeDuration = 220; // плавное появление о
 const routeLineDashLength = 8;
 const routeLineDashGap = 10;
 const routeLineDashStep = routeLineDashLength + routeLineDashGap;
-const routeLineFirstDashDelay = 220; // пауза между первыми штрихами
-const routeLineDashAcceleration = 3; // каждый следующий интервал короче на 3 мс
+const routeLineFirstDashDelay = 240; // пауза между первыми штрихами
+const routeLineDashAcceleration = 2; // каждый следующий интервал короче на 2 мс
 const routeLineMinimumDashDelay = 95; // предел ускорения, чтобы штрихи не сливались
 let settlementTraceDashInterval = routeLineMinimumDashDelay;
 
@@ -3753,12 +3753,12 @@ map.on("zoomend", function() {
       minimumDashDelay,
       Number(window.settlementTraceDashInterval) || minimumDashDelay
     );
-    // Обводка примерно на 14% быстрее последнего интервала маршрута.
+    // Обводка примерно на 22% быстрее последнего интервала маршрута.
     // Скорость нормализуется по той же средней точке зума, что и маршрут.
     const zoomSpeedMultiplier = typeof window.getRouteZoomSpeedMultiplier === "function"
       ? window.getRouteZoomSpeedMultiplier()
       : 1;
-    const dashInterval = routeDashInterval * 0.88 * zoomSpeedMultiplier;
+    const dashInterval = routeDashInterval * 0.82 * zoomSpeedMultiplier;
     const duration = Math.max(
       revealFadeDuration,
       (halfContourLength / dashStep) * dashInterval + revealFadeDuration
@@ -4011,8 +4011,8 @@ map.on("zoomend", function() {
     }
     const dashStep = Number(window.routeLineDashStep) || 18;
     const minimumDashDelay = Number(window.routeLineMinimumDashDelay) || 95;
-    const firstDashDelay = Number(window.routeLineFirstDashDelay) || 220;
-    const dashAcceleration = Number(window.routeLineDashAcceleration) || 3;
+    const firstDashDelay = Number(window.routeLineFirstDashDelay) || 240;
+    const dashAcceleration = Number(window.routeLineDashAcceleration) || 2;
     const zoomSpeedMultiplier = typeof window.getRouteZoomSpeedMultiplier === "function"
       ? window.getRouteZoomSpeedMultiplier()
       : 1;
