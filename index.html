@@ -702,15 +702,30 @@ window.routeLineDashAcceleration = routeLineDashAcceleration;
 window.routeLineMinimumDashDelay = routeLineMinimumDashDelay;
 window.settlementTraceDashInterval = settlementTraceDashInterval;
 
+// Средний масштаб карты — опорный для скорости анимации.
+// При текущих minZoom=-2 и maxZoom=0 это zoom=-1.
+// Штрих имеет постоянный экранный размер, поэтому для одинаковой
+// скорости движения по самой карте временной интервал корректируется
+// обратно пропорционально масштабу относительно средней точки.
+function getRouteZoomSpeedMultiplier() {
+  if (!map || typeof map.getZoomScale !== "function") return 1;
+  const referenceZoom = (map.getMinZoom() + map.getMaxZoom()) / 2;
+  const zoomScale = map.getZoomScale(map.getZoom(), referenceZoom);
+  return Number.isFinite(zoomScale) && zoomScale > 0 ? 1 / zoomScale : 1;
+}
+window.getRouteZoomSpeedMultiplier = getRouteZoomSpeedMultiplier;
+
 // Задержка каждого штриха считается от начала линии. С каждым штрихом
 // интервал немного сокращается, пока не достигнет безопасного минимума.
+// Затем весь интервал нормализуется относительно среднего масштаба.
 function getRouteLineRevealDelay(dashIndex) {
   let delay = 0;
+  const zoomSpeedMultiplier = getRouteZoomSpeedMultiplier();
   for (let i = 0; i < dashIndex; i++) {
     delay += Math.max(
       routeLineMinimumDashDelay,
       routeLineFirstDashDelay - i * routeLineDashAcceleration
-    );
+    ) * zoomSpeedMultiplier;
   }
   return delay;
 }
@@ -3739,7 +3754,11 @@ map.on("zoomend", function() {
       Number(window.settlementTraceDashInterval) || minimumDashDelay
     );
     // Обводка примерно на 14% быстрее последнего интервала маршрута.
-    const dashInterval = routeDashInterval * 0.88;
+    // Скорость нормализуется по той же средней точке зума, что и маршрут.
+    const zoomSpeedMultiplier = typeof window.getRouteZoomSpeedMultiplier === "function"
+      ? window.getRouteZoomSpeedMultiplier()
+      : 1;
+    const dashInterval = routeDashInterval * 0.88 * zoomSpeedMultiplier;
     const duration = Math.max(
       revealFadeDuration,
       (halfContourLength / dashStep) * dashInterval + revealFadeDuration
@@ -3994,7 +4013,13 @@ map.on("zoomend", function() {
     const minimumDashDelay = Number(window.routeLineMinimumDashDelay) || 95;
     const firstDashDelay = Number(window.routeLineFirstDashDelay) || 220;
     const dashAcceleration = Number(window.routeLineDashAcceleration) || 3;
-    const finalRouteDashIndex = Math.max(0, Math.floor((routeScreenLength - 2) / dashStep));
+    const zoomSpeedMultiplier = typeof window.getRouteZoomSpeedMultiplier === "function"
+      ? window.getRouteZoomSpeedMultiplier()
+      : 1;
+    // Индекс последнего штриха считаем в длине, приведённой к среднему зуму,
+    // иначе короткий маршрут мог бы получать разную финальную скорость.
+    const referenceRouteScreenLength = routeScreenLength * zoomSpeedMultiplier;
+    const finalRouteDashIndex = Math.max(0, Math.floor((referenceRouteScreenLength - 2) / dashStep));
     window.settlementTraceDashInterval = Math.max(
       minimumDashDelay,
       firstDashDelay - finalRouteDashIndex * dashAcceleration
