@@ -2724,6 +2724,14 @@ function finishPartyRoute(latlng) {
 
   updateRouteLine(null, true);
 
+  // Завершение у города ещё раз применяет обрезку уже к финальным слоям
+  // маршрута, созданным выше; так линия и жетоны не проступают под обводкой.
+  if (window.routeDestinationCityId) {
+    const destinationArea = (Array.isArray(window.settlementAreas) ? window.settlementAreas : [])
+      .find(area => String(area.id) === String(window.routeDestinationCityId));
+    if (destinationArea) hideRouteDashesInsideSettlement(destinationArea);
+  }
+
   console.log("Маршрут завершён:", routePoints);
 }
 
@@ -2811,14 +2819,15 @@ map.on("mousemove", function(e) {
   if (!window.routeMode || !hasMouse) return;
 
   lastCursorPosition = e.latlng;
-  // Ошибка предварительной обводки не должна прерывать построение маршрута.
+  // Сначала обновляем маршрутные слои, затем скрываем их части внутри города.
+  // Иначе updateRouteLine тут же пересоздаёт только что скрытую линию.
+  updateRouteLine(e.latlng);
+
   try {
     if (window.previewSettlementAt) window.previewSettlementAt(e.latlng);
   } catch (previewError) {
     console.error("Ошибка предварительной обводки поселения:", previewError);
   }
-
-  updateRouteLine(e.latlng);
 });
 
 // При изменении масштаба пересобираем группы крестиков,
@@ -3111,7 +3120,7 @@ map.on("zoomend", function() {
     const outwardSign = signedArea >= 0 ? 1 : -1;
     // Наружное смещение постепенно уменьшается при отдалении карты.
     const zoomScale = map.getZoomScale(map.getZoom(), 0);
-    const offset = 4.5 * Math.pow(zoomScale, 0.65);
+    const offset = 4.5 * Math.pow(zoomScale, 0.55);
     const result = points.map((point, i) => {
       const previous = points[(i - 1 + points.length) % points.length];
       const next = points[(i + 1) % points.length];
@@ -3159,7 +3168,7 @@ map.on("zoomend", function() {
     const outwardSign = contourArea >= 0 ? 1 : -1;
     // Толщина, длина мазков и промежутки плавно уменьшаются при отдалении.
     const zoomScale = map.getZoomScale(map.getZoom(), 0);
-    const brushScale = Math.pow(zoomScale, 0.53);
+    const brushScale = Math.pow(zoomScale, 0.43);
     const sampledData = sampleSettlementBrushPath(path, 3.2 * brushScale);
     const samples = sampledData.samples;
     const total = sampledData.total;
@@ -3528,9 +3537,12 @@ map.on("zoomend", function() {
         settlementHoverPath = null;
         settlementHoverAreaId = null;
         settlementHoverArea = null;
+        // updateRouteLine пересоздаёт маршрутные слои при каждом движении мыши.
+        // Поэтому обрезку нужно применять повторно к свежим слоям даже тогда,
+        // когда курсор остаётся над тем же самым городом.
+        hideRouteDashesInsideSettlement(area);
         if (!settlementBrushPreviewArea ||
             String(settlementBrushPreviewArea.id) !== String(area.id)) {
-          hideRouteDashesInsideSettlement(area);
           drawSettlementBrushPreview(area);
         }
         return;
