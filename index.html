@@ -645,6 +645,19 @@ routePoints = [partyMarker.getLatLng()];
 // =====================================
 
 let routePoints = [];
+
+// Делаем текущие точки маршрута доступными другим функциям,
+// находящимся за пределами этой области видимости.
+Object.defineProperty(window, "routePoints", {
+  configurable: true,
+  get: function() {
+    return routePoints;
+  },
+  set: function(value) {
+    routePoints = Array.isArray(value) ? value : [];
+  }
+});
+
 let routeLine = null;
 window.routeRestMarkers = [];
 let routeEndMarker = null;
@@ -3823,7 +3836,8 @@ map.on("zoomend", function() {
       id => String(id) === String(area.id)
     )) return;
 
-    const previousPoint = routePoints[routePoints.length - 1];
+    const currentRoutePoints = window.routePoints;
+    const previousPoint = currentRoutePoints[currentRoutePoints.length - 1];
     if (!previousPoint) return;
 
     // Одиночный клик подтверждает путь ДО ближайшей точки внешней
@@ -3844,7 +3858,7 @@ map.on("zoomend", function() {
       console.warn("Не удалось зафиксировать путь до промежуточного города.");
       return;
     }
-    routePoints.push(...approachSegment.slice(1));
+    currentRoutePoints.push(...approachSegment.slice(1));
 
     window.routeIntermediateCityIds.push(area.id);
     lastCursorPosition = null;
