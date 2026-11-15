@@ -3112,6 +3112,11 @@ map.on("zoomend", function() {
   const settlementTracePaths = new Map();
   let activeSettlementTrace = null;
 
+  // Отдельное хранилище для завершённых и анимируемых контуров сухой кисти.
+  // Оно нужно, чтобы сохранять обводку при смене масштаба.
+  const settlementBrushTraceLayers = new Map();
+  let activeSettlementBrushTrace = null;
+
   // Изолированный тестовый рендерер сухой кисти А.
   // Он использует уже сохранённую геометрию area.points и не меняет
   // маршруты, Firebase, выбор поселения или существующую анимацию.
@@ -3192,7 +3197,7 @@ map.on("zoomend", function() {
     return { samples: sampled, total: travelled };
   }
 
-  function createSettlementDryBrushLayers(area, opacity) {
+  function createSettlementDryBrushLayers(area, opacity, revealStartPoint = null) {
     const path = getSettlementDryBrushPath(area);
     if (path.length < 4) return [];
     const pane = ensureSettlementDryBrushPane();
@@ -3210,6 +3215,22 @@ map.on("zoomend", function() {
     const samples = sampledData.samples;
     const total = sampledData.total;
     if (total < 12) return [];
+
+    // Если обводка запускается после прибытия в город, первым проявляется
+    // участок кисти рядом с точкой касания маршрута.
+    let revealStartDistance = 0;
+    if (revealStartPoint) {
+      const target = map.latLngToLayerPoint(revealStartPoint);
+      let nearestDistance = Infinity;
+      samples.forEach(sample => {
+        const distance = sample.point.distanceTo(target);
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          revealStartDistance = sample.distance;
+        }
+      });
+    }
+
     const alpha = Number.isFinite(opacity) ? opacity : 1;
     const layers = [];
     const toLatLngs = pts => pts.map(pt => map.layerPointToLatLng(pt));
@@ -3246,6 +3267,12 @@ map.on("zoomend", function() {
           fillColor: "#17130f", fillOpacity: alpha * (0.72 + (Math.sin(seed * 5.41) * 0.5 + 0.5) * 0.22),
           interactive: false, bubblingMouseEvents: false, smoothFactor: 0
         });
+        const strokeCenter = (cursor + end) / 2;
+        const containsRevealStart = revealStartDistance >= cursor && revealStartDistance <= end;
+        const relativeDistance = (strokeCenter - revealStartDistance + total) % total;
+        stroke._settlementBrushRevealAt = containsRevealStart
+          ? 0
+          : Math.max(0, Math.min(1, relativeDistance / total));
         layers.push(stroke);
       }
       cursor = end + gap;
@@ -3271,11 +3298,13 @@ map.on("zoomend", function() {
       bristles.push([map.layerPointToLatLng(start), map.layerPointToLatLng(finish)]);
     }
     if (bristles.length) {
-      layers.push(L.polyline(bristles, {
+      const bristleLayer = L.polyline(bristles, {
         pane: "settlement-dry-brush-pane", color: "#17130f", weight: 0.85 * brushScale,
         opacity: alpha * 0.58, lineCap: "butt", lineJoin: "round",
         interactive: false, bubblingMouseEvents: false, smoothFactor: 0
-      }));
+      });
+      bristleLayer._settlementBrushRevealAt = 0.72;
+      layers.push(bristleLayer);
     }
 
     // Редкие тонкие внутренние просветы разбивают мазок и добавляют сухую фактуру.
@@ -3295,11 +3324,13 @@ map.on("zoomend", function() {
       dryMarks.push([map.layerPointToLatLng(a), map.layerPointToLatLng(b)]);
     }
     if (dryMarks.length) {
-      layers.push(L.polyline(dryMarks, {
+      const dryMarkLayer = L.polyline(dryMarks, {
         pane: "settlement-dry-brush-pane", color: "#eee2c8", weight: 0.65 * brushScale,
         opacity: alpha * 0.26, lineCap: "butt", interactive: false,
         bubblingMouseEvents: false, smoothFactor: 0
-      }));
+      });
+      dryMarkLayer._settlementBrushRevealAt = 0.88;
+      layers.push(dryMarkLayer);
     }
 
     layers.forEach(layer => layer.addTo(map));
@@ -3619,8 +3650,113 @@ map.on("zoomend", function() {
     }
   };
 
+  function applySettlementBrushTraceProgress(state, progress) {
+    if (!state || !Array.isArray(state.layers)) return;
+    state.progress = Math.max(0, Math.min(1, progress));
+
+    state.layers.forEach(layer => {
+      if (!layer || !map.hasLayer(layer)) return;
+      const revealAt = Number.isFinite(layer._settlementBrushRevealAt)
+        ? layer._settlementBrushRevealAt
+        : 0;
+      const local = Math.max(0, Math.min(1, (state.progress - revealAt) / 0.055));
+      const eased = local * local * (3 - 2 * local);
+      const baseOpacity = Number.isFinite(layer._settlementBrushBaseOpacity)
+        ? layer._settlementBrushBaseOpacity
+        : (Number.isFinite(layer.options.opacity) ? layer.options.opacity : 1);
+      const baseFillOpacity = Number.isFinite(layer._settlementBrushBaseFillOpacity)
+        ? layer._settlementBrushBaseFillOpacity
+        : (Number.isFinite(layer.options.fillOpacity) ? layer.options.fillOpacity : 1);
+
+      layer._settlementBrushBaseOpacity = baseOpacity;
+      layer._settlementBrushBaseFillOpacity = baseFillOpacity;
+      layer.setStyle({
+        opacity: baseOpacity * eased,
+        fillOpacity: baseFillOpacity * eased
+      });
+    });
+  }
+
+  function animateSettlementDryBrushTrace(area) {
+    // Останавливаем только предыдущую анимацию кистевой обводки.
+    // Анимация маршрута и старого контура здесь не затрагивается.
+    activeSettlementBrushTrace = null;
+
+    const previousLayers = settlementBrushTraceLayers.get(String(area.id));
+    if (previousLayers) removeSettlementBrushLayers(previousLayers);
+
+    if (settlementBrushSelectedAreaId && String(settlementBrushSelectedAreaId) === String(area.id)) {
+      settlementBrushSelectedLayers = removeSettlementBrushLayers(settlementBrushSelectedLayers);
+      settlementBrushSelectedArea = null;
+      settlementBrushSelectedAreaId = null;
+    }
+
+    const revealStartPoint = window.routeDestinationBoundaryPoint || null;
+    const layers = createSettlementDryBrushLayers(area, 0.96, revealStartPoint);
+    if (!layers.length) return;
+    layers._settlementBrushRevealStartPoint = revealStartPoint;
+
+    const path = getSettlementDryBrushPath(area);
+    const screenLength = path.reduce((sum, point, index) => {
+      return index ? sum + point.distanceTo(path[index - 1]) : sum;
+    }, 0);
+    const duration = Math.max(2200, Math.min(6500, screenLength * 2.1));
+    const state = {
+      area,
+      layers,
+      startedAt: performance.now(),
+      duration,
+      progress: 0
+    };
+
+    layers.forEach(layer => {
+      layer._settlementBrushBaseOpacity =
+        Number.isFinite(layer.options.opacity) ? layer.options.opacity : 1;
+      layer._settlementBrushBaseFillOpacity =
+        Number.isFinite(layer.options.fillOpacity) ? layer.options.fillOpacity : 1;
+    });
+
+    settlementBrushTraceLayers.set(String(area.id), layers);
+    activeSettlementBrushTrace = state;
+    applySettlementBrushTraceProgress(state, 0);
+
+    function getTraceDistanceProgress(timeProgress) {
+      const t1 = 0.35, t2 = 0.57, t3 = 0.68;
+      const d1 = 0.33, d2 = 0.39, d3 = 0.54;
+      if (timeProgress <= t1) return (timeProgress / t1) * d1;
+      if (timeProgress <= t2) return d1 + ((timeProgress - t1) / (t2 - t1)) * (d2 - d1);
+      if (timeProgress <= t3) return d2 + ((timeProgress - t2) / (t3 - t2)) * (d3 - d2);
+      const fast = (timeProgress - t3) / (1 - t3);
+      return d3 + (1 - d3) * (1 - Math.pow(1 - fast, 3));
+    }
+
+    function frame(now) {
+      if (activeSettlementBrushTrace !== state) return;
+      const timeProgress = Math.max(0, Math.min(1, (now - state.startedAt) / state.duration));
+      const progress = getTraceDistanceProgress(timeProgress);
+      applySettlementBrushTraceProgress(state, progress);
+
+      if (timeProgress < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        applySettlementBrushTraceProgress(state, 1);
+        activeSettlementBrushTrace = null;
+        console.log("Обводка поселения: анимация сухой кисти завершена", area.id);
+      }
+    }
+
+    requestAnimationFrame(frame);
+    console.log("Обводка поселения: анимация сухой кисти началась", area.id);
+  }
+
   function animateSettlementTrace(area) {
     try {
+      // Поселения с новой геометрией получают анимацию той же сухой кистью,
+      // которой они отображаются при наведении и выборе.
+      if (shouldUseSettlementDryBrush(area)) {
+        animateSettlementDryBrushTrace(area);
+        return;
+      }
       // Статичная выбранная кисть нужна для этапа наведения/клика.
       // При старте пока ещё старой анимации убираем её, чтобы не перекрывать росчерк.
       if (settlementBrushSelectedAreaId && String(settlementBrushSelectedAreaId) === String(area.id)) {
@@ -3749,6 +3885,29 @@ map.on("zoomend", function() {
       settlementSelectedOutline = makeTaperedSettlementPolygon(settlementSelectedPath, SETTLEMENT_TRACE_BASE_WIDTH, 0.95);
       if (settlementSelectedOutline) settlementSelectedOutline.addTo(map);
     }
+    // Пересобираем кистевые обводки в новом масштабе, сохраняя текущий
+    // прогресс анимации. Завершённые обводки остаются полностью видимыми.
+    settlementBrushTraceLayers.forEach(function(oldLayers, id) {
+      const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
+      if (!area) return;
+      const revealStartPoint = oldLayers._settlementBrushRevealStartPoint || null;
+      removeSettlementBrushLayers(oldLayers);
+      const newLayers = createSettlementDryBrushLayers(area, 0.96, revealStartPoint);
+      newLayers._settlementBrushRevealStartPoint = revealStartPoint;
+      settlementBrushTraceLayers.set(String(id), newLayers);
+
+      if (activeSettlementBrushTrace && String(activeSettlementBrushTrace.area.id) === String(id)) {
+        activeSettlementBrushTrace.layers = newLayers;
+        applySettlementBrushTraceProgress(activeSettlementBrushTrace, activeSettlementBrushTrace.progress);
+      } else {
+        newLayers.forEach(layer => {
+          const opacity = Number.isFinite(layer.options.opacity) ? layer.options.opacity : 1;
+          const fillOpacity = Number.isFinite(layer.options.fillOpacity) ? layer.options.fillOpacity : 1;
+          layer.setStyle({ opacity, fillOpacity });
+        });
+      }
+    });
+
     settlementTracePaths.forEach(function(path, id) {
       const oldLayer = settlementTraceLayers.get(id);
       removeSettlementLayer(oldLayer);
