@@ -477,6 +477,15 @@ document.addEventListener("keydown", function(e) {
     appId: "1:1012046242037:web:7cb1db3ab10beaf66aa5bc"
   };
 
+  // Параметры синхронизации маршрута и обводки доступны всем обработчикам,
+  // включая ожидание прибытия, вне зависимости от локальной области видимости.
+  window.routeLineDashStep = 18;
+  window.routeLineRevealFadeDuration = 220;
+  window.routeLineFirstDashDelay = 220;
+  window.routeLineDashAcceleration = 3;
+  window.routeLineMinimumDashDelay = 95;
+  window.settlementTraceDashInterval = 95;
+
   // Подключение Firebase
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
@@ -683,6 +692,15 @@ const routeLineFirstDashDelay = 220; // пауза между первыми ш�
 const routeLineDashAcceleration = 3; // каждый следующий интервал короче на 3 мс
 const routeLineMinimumDashDelay = 95; // предел ускорения, чтобы штрихи не сливались
 let settlementTraceDashInterval = routeLineMinimumDashDelay;
+
+// Эти параметры также нужны обработчикам обводки поселений,
+// которые находятся вне блока создания маркера отряда.
+window.routeLineDashStep = routeLineDashStep;
+window.routeLineRevealFadeDuration = routeLineRevealFadeDuration;
+window.routeLineFirstDashDelay = routeLineFirstDashDelay;
+window.routeLineDashAcceleration = routeLineDashAcceleration;
+window.routeLineMinimumDashDelay = routeLineMinimumDashDelay;
+window.settlementTraceDashInterval = settlementTraceDashInterval;
 
 // Задержка каждого штриха считается от начала линии. С каждым штрихом
 // интервал немного сокращается, пока не достигнет безопасного минимума.
@@ -3713,10 +3731,16 @@ map.on("zoomend", function() {
     // один шаг пунктира (штрих + промежуток = 18 px) за текущий интервал.
     // Обводка проходит половину периметра одновременно в двух направлениях.
     const halfContourLength = screenLength / 2;
-    const dashInterval = Math.max(routeLineMinimumDashDelay, settlementTraceDashInterval);
+    const dashStep = Number(window.routeLineDashStep) || 18;
+    const revealFadeDuration = Number(window.routeLineRevealFadeDuration) || 220;
+    const minimumDashDelay = Number(window.routeLineMinimumDashDelay) || 95;
+    const dashInterval = Math.max(
+      minimumDashDelay,
+      Number(window.settlementTraceDashInterval) || minimumDashDelay
+    );
     const duration = Math.max(
-      routeLineRevealFadeDuration,
-      (halfContourLength / routeLineDashStep) * dashInterval + routeLineRevealFadeDuration
+      revealFadeDuration,
+      (halfContourLength / dashStep) * dashInterval + revealFadeDuration
     );
     const state = {
       area,
@@ -3724,7 +3748,7 @@ map.on("zoomend", function() {
       startedAt: performance.now(),
       duration,
       progress: 0,
-      revealWindow: Math.min(1, routeLineDashStep / Math.max(1, halfContourLength))
+      revealWindow: Math.min(1, dashStep / Math.max(1, halfContourLength))
     };
 
     layers.forEach(layer => {
@@ -3964,10 +3988,14 @@ map.on("zoomend", function() {
       const b = map.latLngToLayerPoint(L.latLng(Number(current.lat), Number(current.lng)));
       routeScreenLength += a.distanceTo(b);
     }
-    const finalRouteDashIndex = Math.max(0, Math.floor((routeScreenLength - 2) / routeLineDashStep));
-    settlementTraceDashInterval = Math.max(
-      routeLineMinimumDashDelay,
-      routeLineFirstDashDelay - finalRouteDashIndex * routeLineDashAcceleration
+    const dashStep = Number(window.routeLineDashStep) || 18;
+    const minimumDashDelay = Number(window.routeLineMinimumDashDelay) || 95;
+    const firstDashDelay = Number(window.routeLineFirstDashDelay) || 220;
+    const dashAcceleration = Number(window.routeLineDashAcceleration) || 3;
+    const finalRouteDashIndex = Math.max(0, Math.floor((routeScreenLength - 2) / dashStep));
+    window.settlementTraceDashInterval = Math.max(
+      minimumDashDelay,
+      firstDashDelay - finalRouteDashIndex * dashAcceleration
     );
     let routeEndDistance = 0;
     for (let i = 1; i < routePointsForTrace.length; i++) {
