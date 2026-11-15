@@ -607,16 +607,6 @@ routeFinished = false;
 window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
 window.routeDestinationApproachPoint = null;
-// Очищаем промежуточные города при начале нового маршрута.
-window.routeIntermediateCityIds = [];
-
-if (pendingRouteClickTimer) {
-  clearTimeout(pendingRouteClickTimer);
-}
-
-pendingRouteClickTimer = null;
-pendingRouteClickPosition = null;
-pendingRouteClickArea = null;
 // Сбрасываем состояние форсированного марша
 routeForcedMarch = false;
 routeForcedMarchStartDistance = 0;
@@ -664,10 +654,6 @@ let routeFinished = false;
 // Обработка одиночного и двойного клика
 let pendingRouteClickTimer = null;
 let pendingRouteClickPosition = null;
-let pendingRouteClickArea = null;
-
-// Города, которые маршрут должен обходить.
-window.routeIntermediateCityIds = [];
 
 let routePace = "normal";
 let routeSpeedReduced = false;
@@ -1527,8 +1513,6 @@ window.routePendingConfirmation = false;
       pendingRouteClickPosition = null;
     }
 
-    pendingRouteClickArea = null;
-
     const totalLength = getRouteLength(routePoints);
     const dailyLimit =
       routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
@@ -2034,8 +2018,6 @@ function cancelPartyRoute() {
   }
   pendingRouteClickTimer = null;
   pendingRouteClickPosition = null;
-  pendingRouteClickArea = null;
-  window.routeIntermediateCityIds = [];
 
   routeFinished = false;
   window.routePendingConfirmation = false;
@@ -2162,27 +2144,9 @@ function updateRouteLine(cursorPosition = null) {
 
   // Для preview используем те же расчёты, что и для зафиксированного маршрута,
   // но ничего не записываем в состояние до клика.
-  // Берём уже зафиксированную геометрию маршрута.
   const pointsToDraw = [...routePoints];
-
-  // Последний участок маршрута прокладываем с учётом
-  // всех выбранных промежуточных городов.
-  if (
-    cursorPosition &&
-    hasMouse &&
-    window.routeMode &&
-    routePoints.length > 0
-  ) {
-    const previousPoint = routePoints[routePoints.length - 1];
-
-    const previewPath = getRouteSegmentAroundIntermediateCities(
-      previousPoint,
-      cursorPosition
-    );
-
-    if (previewPath.length > 1) {
-      pointsToDraw.push(...previewPath.slice(1));
-    }
+  if (cursorPosition && hasMouse && window.routeMode) {
+    pointsToDraw.push(cursorPosition);
   }
 
   clearRouteDrawing();
@@ -2201,54 +2165,21 @@ function updateRouteLine(cursorPosition = null) {
   const restCalculationLength = routeForcedMarch
     ? routeForcedMarchStartDistance
     : totalLength;
-  const settlementMaskAreas = [];
+  let settlementMaskArea = null;
 
-  // Добавляем все выбранные промежуточные города.
-  const intermediateIds = Array.isArray(window.routeIntermediateCityIds)
-    ? window.routeIntermediateCityIds
-    : [];
-
-  intermediateIds.forEach(id => {
-    const area = (Array.isArray(window.settlementAreas)
-      ? window.settlementAreas
-      : []
-    ).find(item => String(item.id) === String(id));
-
-    if (area) settlementMaskAreas.push(area);
-  });
-
-  // Сохраняем прежнее поведение конечного города.
+  // Маска включается только тогда, когда маршрут действительно направлен
+  // в поселение: курсор находится над его настоящей областью либо город уже
+  // выбран конечной точкой подтверждённого маршрута.
   if (window.routeDestinationCityId) {
-    const destinationArea = (Array.isArray(window.settlementAreas)
-      ? window.settlementAreas
-      : []
-    ).find(area =>
-      String(area.id) === String(window.routeDestinationCityId)
-    );
-
-    if (destinationArea) settlementMaskAreas.push(destinationArea);
+    settlementMaskArea = (Array.isArray(window.settlementAreas) ? window.settlementAreas : [])
+      .find(area => String(area.id) === String(window.routeDestinationCityId)) || null;
+  } else if (window.routeMode && cursorPosition) {
+    settlementMaskArea = findSettlementAt(cursorPosition);
   }
 
-  // Сохраняем прежнее поведение наведения на город.
-  else if (window.routeMode && cursorPosition) {
-    const hoveredArea = findSettlementAt(cursorPosition);
-
-    if (
-      hoveredArea &&
-      !settlementMaskAreas.some(area =>
-        String(area.id) === String(hoveredArea.id)
-      )
-    ) {
-      settlementMaskAreas.push(hoveredArea);
-    }
-  }
-
-  // Проверяем жетоны сразу по всем активным маскам.
   const isMarkerInsideSettlementMask = position =>
-    settlementMaskAreas.some(area =>
-      window.isRouteMarkerMaskedBySettlement &&
-      window.isRouteMarkerMaskedBySettlement(position, area)
-    );
+    !!(settlementMaskArea && window.isRouteMarkerMaskedBySettlement &&
+      window.isRouteMarkerMaskedBySettlement(position, settlementMaskArea));
 
   const restDistancesToDraw = getNormalRestDistances(
     restCalculationLength,
@@ -2784,8 +2715,6 @@ window.applySynchronizedPartyRoute = function(data) {
 
   stopRouteMarkerAnimation();
   routePoints = data.points.map(point => L.latLng(Number(point.lat), Number(point.lng)));
-  // Промежуточные города уже учтены в сохранённой геометрии маршрута.
-  window.routeIntermediateCityIds = [];
   routePace = data.pace || "normal";
   routeSpeedReduced = Boolean(data.speedReduced);
   routeForcedMarch = Boolean(data.forcedMarch);
@@ -2819,25 +2748,10 @@ window.applySynchronizedPartyRoute = function(data) {
 // =====================================
 
 window.addPartyRoutePoint = function(latlng) {
-  if (!latlng) return;
+  const previousLength = getRouteLength(routePoints);
+  routePoints.push(latlng);
 
-  const previousPoint = routePoints[routePoints.length - 1];
-
-  if (!previousPoint) {
-    routePoints.push(latlng);
-  } else {
-    // Сохраняем весь путь обхода, а не только конечную точку.
-    const segment = getRouteSegmentAroundIntermediateCities(
-      previousPoint,
-      latlng
-    );
-
-    if (segment.length > 1) {
-      routePoints.push(...segment.slice(1));
-    }
-  }
-
-  // Во время прокладки маршрут и жетоны отображаются сразу.
+  // Во время прокладки маршрут и жетоны отображаются сразу, без анимации.
   lastCursorPosition = null;
   updateRouteLine(null, true);
 
@@ -2852,27 +2766,15 @@ window.addPartyRoutePoint = function(latlng) {
 function finishPartyRoute(latlng) {
   const previousLength = getRouteLength(routePoints);
 
-  // Добавляем конечную точку с учётом обхода промежуточных городов.
+  // Добавляем последнюю точку, если она отличается от предыдущей
   const lastPoint = routePoints[routePoints.length - 1];
 
   if (
     !lastPoint ||
     map.latLngToContainerPoint(lastPoint)
-      .distanceTo(map.latLngToContainerPoint(latlng)) >
-      (window.routeDestinationCityId ? 0.05 : 3)
+      .distanceTo(map.latLngToContainerPoint(latlng)) > (window.routeDestinationCityId ? 0.05 : 3)
   ) {
-    if (lastPoint) {
-      const finalSegment = getRouteSegmentAroundIntermediateCities(
-        lastPoint,
-        latlng
-      );
-
-      if (finalSegment.length > 1) {
-        routePoints.push(...finalSegment.slice(1));
-      }
-    } else {
-      routePoints.push(latlng);
-    }
+    routePoints.push(latlng);
   }
 
   // Маршрут должен содержать хотя бы одну линию
@@ -2904,16 +2806,43 @@ function finishPartyRoute(latlng) {
   console.log("Маршрут завершён:", routePoints);
 }
 
-// =====================================
-// ОБРАБОТКА ОДИНОЧНЫХ И ДВОЙНЫХ КЛИКОВ
-// =====================================
-
+// Обработка одиночного и двойного клика
 window.handlePartyRouteClick = function(latlng) {
   if (!window.routeMode || routeFinished) return;
 
-  const clickedArea = findSettlementAt(latlng);
+  // Клик внутри невидимой области поселения автоматически завершает маршрут.
+  // Конечная точка линии — ближайшая точка границы от последней точки пути.
+  const destinationArea = findSettlementAt(latlng);
+  if (destinationArea && routePoints.length > 0) {
+    if (pendingRouteClickTimer) clearTimeout(pendingRouteClickTimer);
+    pendingRouteClickTimer = null;
+    pendingRouteClickPosition = null;
 
-  // Проверяем, не является ли новый клик вторым кликом.
+    const approachPoint = routePoints[routePoints.length - 1];
+    const boundary = findNearestSettlementBoundaryPoint(
+      approachPoint,
+      destinationArea.points
+    );
+
+    if (boundary) {
+      window.routeDestinationCityId = destinationArea.id;
+      window.routeDestinationBoundaryPoint = boundary.point;
+      window.routeDestinationApproachPoint = approachPoint;
+      // Сначала показываем обводку тем же способом, что и в рабочей версии,
+      // затем завершаем маршрут.
+      try {
+        if (window.showSettlementOutline) window.showSettlementOutline(destinationArea, 1);
+      } catch (outlineError) {
+        console.error("Ошибка отображения обводки поселения:", outlineError);
+      }
+      finishPartyRoute(boundary.point);
+      console.log("Маршрут завершён у поселения:", destinationArea.type, destinationArea.id);
+      return;
+    }
+  }
+
+  // Если уже ожидается одиночный клик,
+  // проверяем, является ли новый клик вторым
   if (pendingRouteClickTimer) {
     const firstPoint = map.latLngToContainerPoint(
       pendingRouteClickPosition
@@ -2923,138 +2852,38 @@ window.handlePartyRouteClick = function(latlng) {
 
     const distance = firstPoint.distanceTo(secondPoint);
 
+    // Два клика рядом друг с другом — завершаем маршрут
     if (distance <= 30) {
       clearTimeout(pendingRouteClickTimer);
 
       pendingRouteClickTimer = null;
       pendingRouteClickPosition = null;
-      pendingRouteClickArea = null;
 
-      // Двойной клик по городу завершает маршрут в городе.
-      if (clickedArea && routePoints.length > 0) {
-        // Если город ранее был выбран промежуточным,
-        // теперь он становится конечным.
-        window.routeIntermediateCityIds =
-          (window.routeIntermediateCityIds || []).filter(id =>
-            String(id) !== String(clickedArea.id)
-          );
-
-        const approachPoint = routePoints[routePoints.length - 1];
-
-        const boundary = findNearestSettlementBoundaryPoint(
-          approachPoint,
-          clickedArea.points
-        );
-
-        if (boundary) {
-          window.routeDestinationCityId = clickedArea.id;
-          window.routeDestinationBoundaryPoint = boundary.point;
-          window.routeDestinationApproachPoint = approachPoint;
-
-          try {
-            if (window.showSettlementOutline) {
-              window.showSettlementOutline(clickedArea, 1);
-            }
-          } catch (outlineError) {
-            console.error(
-              "Ошибка отображения обводки поселения:",
-              outlineError
-            );
-          }
-
-          finishPartyRoute(boundary.point);
-
-          console.log(
-            "Маршрут завершён у поселения:",
-            clickedArea.type,
-            clickedArea.id
-          );
-
-          return;
-        }
-      }
-
-      // Двойной клик вне города — обычное завершение маршрута.
       finishPartyRoute(latlng);
       return;
     }
 
-    // Если второй клик далеко от первого,
-    // сначала обрабатываем предыдущий одиночный клик.
+    // Если второй клик далеко — фиксируем предыдущий
     clearTimeout(pendingRouteClickTimer);
 
-    const previousPosition = pendingRouteClickPosition;
-    const previousArea = pendingRouteClickArea;
+    window.addPartyRoutePoint(pendingRouteClickPosition);
 
     pendingRouteClickTimer = null;
     pendingRouteClickPosition = null;
-    pendingRouteClickArea = null;
-
-    commitPendingRouteClick(previousPosition, previousArea);
   }
 
-  // Запоминаем новый клик.
+  // Запоминаем новый клик
   pendingRouteClickPosition = latlng;
-  pendingRouteClickArea = clickedArea;
 
-  // ВАЖНО: сохраняем исходную задержку 180 мс.
+  // Ждём 300 мс: если второго клика не будет,
+  // добавляем обычную точку маршрута
   pendingRouteClickTimer = setTimeout(function() {
-    const position = pendingRouteClickPosition;
-    const area = pendingRouteClickArea;
+    window.addPartyRoutePoint(pendingRouteClickPosition);
 
     pendingRouteClickTimer = null;
     pendingRouteClickPosition = null;
-    pendingRouteClickArea = null;
-
-    commitPendingRouteClick(position, area);
   }, 180);
 };
-
-// Обработка одиночного клика после ожидания двойного.
-function commitPendingRouteClick(position, area) {
-  if (!position || !window.routeMode || routeFinished) return;
-
-  // Одиночный клик по настоящей территории города
-  // добавляет город в список промежуточных.
-  if (area) {
-    window.routeIntermediateCityIds =
-      window.routeIntermediateCityIds || [];
-
-    const cityId = String(area.id);
-
-    if (!window.routeIntermediateCityIds.includes(cityId)) {
-      window.routeIntermediateCityIds.push(cityId);
-    }
-
-    try {
-      if (window.showSettlementOutline) {
-        window.showSettlementOutline(area, 0.96);
-      }
-
-      if (window.hideRouteDashesInsideSettlement) {
-        window.hideRouteDashesInsideSettlement(area);
-      }
-    } catch (outlineError) {
-      console.error(
-        "Ошибка выбора промежуточного поселения:",
-        outlineError
-      );
-    }
-
-    // Город выбран, но маршрут продолжается.
-    // Точку внутри города не добавляем.
-    console.log(
-      "Выбрано промежуточное поселение:",
-      area.id
-    );
-
-    updateRouteLine(lastCursorPosition);
-    return;
-  }
-
-  // Обычный одиночный клик фиксирует точку маршрута.
-  window.addPartyRoutePoint(position);
-}
 
 // Движение курсора на ПК
 map.on("mousemove", function(e) {
@@ -3617,218 +3446,6 @@ map.on("zoomend", function() {
     });
   }
 
-// =====================================
-// КРАТЧАЙШИЙ ОБХОД ВИЗУАЛЬНОЙ ГРАНИЦЫ ГОРОДА
-// =====================================
-
-// Расстояние от экранной точки до отрезка.
-function routePointToSegmentDistance(point, a, b) {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-
-  const lengthSquared = dx * dx + dy * dy;
-
-  const t = lengthSquared > 0
-    ? Math.max(0, Math.min(1,
-        ((point.x - a.x) * dx + (point.y - a.y) * dy) /
-        lengthSquared
-      ))
-    : 0;
-
-  const projected = L.point(
-    a.x + dx * t,
-    a.y + dy * t
-  );
-
-  return point.distanceTo(projected);
-}
-
-// Проверяем, проходит ли отрезок снаружи визуальной кисти.
-// Точки непосредственно на границе разрешены.
-function isRouteSegmentOutsideBrush(a, b, polygon) {
-  if (!polygon || polygon.length < 3) return true;
-
-  const distance = a.distanceTo(b);
-  const steps = Math.max(1, Math.ceil(distance / 3));
-
-  for (let i = 1; i < steps; i++) {
-    const t = i / steps;
-
-    const sample = L.point(
-      a.x + (b.x - a.x) * t,
-      a.y + (b.y - a.y) * t
-    );
-
-    const latlng = map.layerPointToLatLng(sample);
-
-    if (!pointInSettlement(latlng, polygon)) continue;
-
-    // Не считаем внутренней областью точки непосредственно
-    // на границе полигона.
-    let boundaryDistance = Infinity;
-
-    for (let j = 0; j < polygon.length; j++) {
-      const p1 = map.latLngToLayerPoint(polygon[j]);
-      const p2 = map.latLngToLayerPoint(
-        polygon[(j + 1) % polygon.length]
-      );
-
-      boundaryDistance = Math.min(
-        boundaryDistance,
-        routePointToSegmentDistance(sample, p1, p2)
-      );
-    }
-
-    if (boundaryDistance > 1) return false;
-  }
-
-  return true;
-}
-
-// Строим кратчайший путь между двумя точками,
-// не проходящий через внутреннюю часть визуальной кисти.
-function getShortestPathAroundSettlementBrush(start, end, area) {
-  if (!start || !end || !area) return [start, end];
-
-  const polygon = getSettlementBrushErasePolygon(area, 1.5);
-
-  if (!polygon || polygon.length < 3) {
-    return [start, end];
-  }
-
-  const startPoint = map.latLngToLayerPoint(start);
-  const endPoint = map.latLngToLayerPoint(end);
-
-  // Если конечная точка ещё внутри города,
-  // пока не прокладываем линию внутрь него.
-  if (pointInSettlement(end, polygon)) {
-    return [start];
-  }
-
-  // Если прямой путь не пересекает город,
-  // никакого обхода не требуется.
-  if (isRouteSegmentOutsideBrush(startPoint, endPoint, polygon)) {
-    return [start, end];
-  }
-
-  // Узлы графа:
-  // 0 — начало маршрута;
-  // последние — вершины визуальной границы;
-  // последний — конец маршрута.
-  const polygonPoints = polygon.map(point =>
-    map.latLngToLayerPoint(point)
-  );
-
-  const nodes = [
-    startPoint,
-    ...polygonPoints,
-    endPoint
-  ];
-
-  const startIndex = 0;
-  const endIndex = nodes.length - 1;
-
-  const distances = new Array(nodes.length).fill(Infinity);
-  const previous = new Array(nodes.length).fill(-1);
-  const visited = new Array(nodes.length).fill(false);
-
-  distances[startIndex] = 0;
-
-  // Алгоритм Дейкстры по графу видимости.
-  for (let iteration = 0; iteration < nodes.length; iteration++) {
-    let current = -1;
-    let bestDistance = Infinity;
-
-    for (let i = 0; i < nodes.length; i++) {
-      if (!visited[i] && distances[i] < bestDistance) {
-        current = i;
-        bestDistance = distances[i];
-      }
-    }
-
-    if (current === -1) break;
-    if (current === endIndex) break;
-
-    visited[current] = true;
-
-    for (let next = 0; next < nodes.length; next++) {
-      if (visited[next] || next === current) continue;
-
-      const a = nodes[current];
-      const b = nodes[next];
-
-      if (!isRouteSegmentOutsideBrush(a, b, polygon)) continue;
-
-      const edgeLength = a.distanceTo(b);
-      const newDistance = distances[current] + edgeLength;
-
-      if (newDistance < distances[next]) {
-        distances[next] = newDistance;
-        previous[next] = current;
-      }
-    }
-  }
-
-  // Если путь не найден, не проводим линию через город.
-  if (!Number.isFinite(distances[endIndex])) {
-    return [start];
-  }
-
-  const result = [];
-  let current = endIndex;
-
-  while (current !== -1) {
-    result.push(nodes[current]);
-    current = previous[current];
-  }
-
-  result.reverse();
-
-  return result.map(point =>
-    map.layerPointToLatLng(point)
-  );
-}
-
-// Последовательно обрабатываем все выбранные промежуточные города.
-function getRouteSegmentAroundIntermediateCities(start, end) {
-  if (!start || !end) return [];
-
-  const ids = Array.isArray(window.routeIntermediateCityIds)
-    ? window.routeIntermediateCityIds
-    : [];
-
-  const areas = (Array.isArray(window.settlementAreas)
-    ? window.settlementAreas
-    : []
-  ).filter(area =>
-    ids.includes(String(area.id))
-  );
-
-  let path = [start, end];
-
-  areas.forEach(area => {
-    const nextPath = [path[0]];
-
-    for (let i = 1; i < path.length; i++) {
-      const detour = getShortestPathAroundSettlementBrush(
-        path[i - 1],
-        path[i],
-        area
-      );
-
-      if (!detour || detour.length < 2) {
-        continue;
-      }
-
-      nextPath.push(...detour.slice(1));
-    }
-
-    path = nextPath;
-  });
-
-  return path;
-}
-  
   // Используется updateRouteLine для проверки самих игровых жетонов.
   // Проверка доступна только при активной маске выбранного/наведённого города.
   window.isRouteMarkerMaskedBySettlement = function(position, area) {
