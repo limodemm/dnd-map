@@ -965,7 +965,7 @@ function shouldAnimateRouteMarker(distance) {
 // Единый расчёт штриха, который достигает заданной точки маршрута.
 // Его используют и жетоны, и паузы обводки поселений, чтобы обе анимации
 // никогда не расходились из-за разных округлений экранного расстояния.
-function getRouteDashIndexAtDistance(points, routeTotalLength, displayTotalLength, distance, lineStartScreen = 0, lineEndScreen = null) {
+window.getRouteDashIndexAtDistance = function(points, routeTotalLength, displayTotalLength, distance, lineStartScreen = 0, lineEndScreen = null) {
   const displayDistance = routeTotalLength > 0.001
     ? distance / routeTotalLength * displayTotalLength
     : 0;
@@ -988,7 +988,7 @@ function getRouteMarkerAnimationDelay(distance) {
   if (!animation) return null;
 
   // Если точка находится внутри штриха, ждём его; если в промежутке — следующий.
-  const dashIndex = getRouteDashIndexAtDistance(
+  const dashIndex = window.getRouteDashIndexAtDistance(
     animation.displayPoints,
     animation.routeTotalLength,
     animation.displayTotalLength,
@@ -5551,7 +5551,7 @@ map.on("zoomend", function() {
       if (!area || !shouldUseSettlementDryBrush(area)) return;
 
       const routeDistance = getRouteTravelLength(routePoints.slice(0, boundaryIndex + 1));
-      const dashIndex = getRouteDashIndexAtDistance(
+      const dashIndex = window.getRouteDashIndexAtDistance(
         displayPoints,
         totalRouteDistance,
         displayTotalLength,
