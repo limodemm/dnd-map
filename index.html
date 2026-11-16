@@ -714,6 +714,13 @@ Object.defineProperties(window, {
     configurable: true,
     get: function() { return routeForcedMarchStartUnits; },
     set: function(value) { routeForcedMarchStartUnits = Number(value) || 0; }
+  },
+  // Массив завершённых участков форсированного марша также читается
+  // обработчиком промежуточных поселений из внешней области видимости.
+  routeForcedSegments: {
+    configurable: true,
+    get: function() { return routeForcedSegments; },
+    set: function(value) { routeForcedSegments = Array.isArray(value) ? value : []; }
   }
 });
 
@@ -1530,7 +1537,7 @@ window.routePendingConfirmation = false;
       forcedMarchStartUnits: routeForcedMarchStartUnits,
       forcedMarchEpochStartDistance: routeForcedMarchEpochStartDistance,
       forcedMarchPendingExit: routeForcedMarchPendingExit,
-      forcedSegments: routeForcedSegments.map(segment => ({ ...segment })),
+      forcedSegments: window.routeForcedSegments.map(segment => ({ ...segment })),
       intermediateSettlementIds: Array.isArray(window.routeIntermediateCityIds)
         ? window.routeIntermediateCityIds.slice() : [],
       startedAt: Date.now() + 500,
