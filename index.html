@@ -1591,10 +1591,9 @@ window.routePendingConfirmation = false;
     });
   });
 
-  // Возврат к предыдущему привалу
+  // «Вернуть» работает только с двумя типами контрольных точек:
+  // обычный привал и центр уже пройденного промежуточного поселения.
   document.getElementById("route-undo").addEventListener("click", function() {
-    // Если маршрут был завершён кликом по поселению, возврат отменяет
-    // именно это назначение: снова разрешаем обычное завершение флажком.
     if (window.routeDestinationCityId) {
       window.routeDestinationCityId = null;
       window.routeDestinationBoundaryPoint = null;
@@ -1602,10 +1601,7 @@ window.routePendingConfirmation = false;
       if (window.clearSettlementOutline) window.clearSettlementOutline();
     }
 
-    // Возврат меняет геометрию маршрута: завершаем старые анимации,
-    // чтобы привал возврата не воспринимался как новый жетон.
     stopRouteMarkerAnimation();
-
     if (pendingRouteClickTimer) {
       clearTimeout(pendingRouteClickTimer);
       pendingRouteClickTimer = null;
@@ -1613,16 +1609,97 @@ window.routePendingConfirmation = false;
     }
 
     const totalLength = getRouteTravelLength(routePoints);
-    const dailyLimit =
-      routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
-
+    const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
     let targetDistance = 0;
-    let settlementCheckpointPoint = null;
-    let settlementCheckpointDistance = null;
+    let targetSettlementIndex = -1;
 
-    if (routeForcedMarch) {
-      // Во время форсированного марша возвращаемся к его началу.
-      targetDistance = routeForcedMarchStartDistance;
+    // Собираем все контрольные точки на текущем маршруте в одном списке.
+    // Их ровно два типа: обычный привал и центр пройденного поселения.
+    // Обычные клики/вершины маршрута и начало форсированного марша сюда
+    // не попадают.
+    const checkpoints = [];
+    const rests = getNormalRestDistances(totalLength, dailyLimit, routePoints);
+
+    function routeIndexAtDistance(distance) {
+      let passed = 0;
+      for (let i = 1; i < routePoints.length; i++) {
+        passed += getRouteTravelLength([routePoints[i - 1], routePoints[i]]);
+        if (passed >= distance - 0.001) return i;
+      }
+      return Math.max(0, routePoints.length - 1);
+    }
+
+    rests.forEach(distance => {
+      if (distance < totalLength - 0.01) {
+        checkpoints.push({
+          type: "rest",
+          distance,
+          index: routeIndexAtDistance(distance)
+        });
+      }
+    });
+
+    // Центр поселения — контрольная точка, если маршрут уже продолжился
+    // дальше него. Если центр является концом маршрута, возврат отменяет
+    // сам вход в этот город и выбирает предыдущий привал/город.
+    let passed = 0;
+    for (let i = 1; i < routePoints.length; i++) {
+      const point = routePoints[i];
+      if (getRouteSegmentMode(point) === "settlement-zero" && point._routeSettlementId) {
+        const area = (window.settlementAreas || []).find(item =>
+          String(item.id) === String(point._routeSettlementId)
+        );
+        if (area && window.isRouteAtSettlementCenter(point, area) && i < routePoints.length - 1) {
+          checkpoints.push({ type: "settlement", distance: passed, index: i });
+        }
+      }
+      passed += getRouteTravelLength([routePoints[i - 1], point]);
+    }
+
+    // Выбираем последнюю по порядку контрольную точку на маршруте.
+    checkpoints.sort((a, b) =>
+      Math.abs(a.distance - b.distance) > 0.001
+        ? a.distance - b.distance
+        : a.index - b.index
+    );
+    const lastCheckpoint = checkpoints.length ? checkpoints[checkpoints.length - 1] : null;
+    if (lastCheckpoint) {
+      targetDistance = lastCheckpoint.distance;
+      if (lastCheckpoint.type === "settlement") {
+        targetSettlementIndex = lastCheckpoint.index;
+      }
+    }
+
+    // Если контрольная точка — город, обрезаем маршрут по индексу,
+    // чтобы гарантированно сохранить нулевой переход до его центра.
+    // Для привала используем точную дистанцию по существующей геометрии.
+    if (targetSettlementIndex >= 0) {
+      routePoints = routePoints.slice(0, targetSettlementIndex + 1);
+    } else {
+      routePoints = getRoutePointsUpToDistance(routePoints, targetDistance);
+    }
+
+    // Оставляем выделенными только те города, чьи центры реально остались
+    // в маршруте. Более поздние поселения снимаются автоматически.
+    window.routeIntermediateCityIds = (Array.isArray(window.routeIntermediateCityIds)
+      ? window.routeIntermediateCityIds : []).filter(id => {
+        const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
+        return !!(area && routePoints.some(point =>
+          String(point._routeSettlementId || "") === String(id) &&
+          getRouteSegmentMode(point) === "settlement-zero" &&
+          window.isRouteAtSettlementCenter(point, area)
+        ));
+      });
+    window.routeIntermediateSettlementUndoSnapshots = [];
+    refreshRouteIntermediateCityOutlines();
+
+    if (!routeForcedMarch) {
+      routeForcedMarchPendingExit = false;
+      routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(routePoints);
+    }
+
+    const actualLength = getRouteTravelLength(routePoints);
+    if (routeForcedMarch && routeForcedMarchStartDistance >= actualLength - 0.001) {
       routeForcedMarch = false;
       routeForcedMarchStartDistance = 0;
       routeForcedMarchStartUnits = 0;
@@ -1633,158 +1710,12 @@ window.routePendingConfirmation = false;
         forcedButton.classList.remove("active");
         forcedButton.setAttribute("aria-pressed", "false");
       }
-    } else {
-      // Выбираем последний привал строго перед текущим концом маршрута.
-      const rests = getNormalRestDistances(totalLength, dailyLimit, routePoints);
-      for (let i = rests.length - 1; i >= 0; i--) {
-        if (rests[i] < totalLength - 0.01) {
-          targetDistance = rests[i];
-          break;
-        }
-      }
-
-      // Центр выбранного поселения — такая же контрольная точка, как привал.
-      // Первый возврат после продолжения маршрута из центра останавливается
-      // здесь, сохраняя подход к поселению и его выделение.
-      const settlementCheckpoint = getLastSettlementCenterCheckpointDistance(routePoints);
-      if (settlementCheckpoint !== null &&
-          settlementCheckpoint < totalLength - 0.01 &&
-          (settlementCheckpoint > targetDistance || routeContinuesAfterLatestSettlementCenter)) {
-        // Если после последнего центра есть конечный участок/флажок, центр
-        // последнего города важнее привалов на этом коротком участке и
-        // привалов, накопленных до него. Возврат должен попасть ровно в город.
-        targetDistance = settlementCheckpoint;
-        settlementCheckpointDistance = settlementCheckpoint;
-        settlementCheckpointPoint = [...routePoints].reverse().find(point => {
-          if (getRouteSegmentMode(point) !== "settlement-zero" || !point._routeSettlementId) return false;
-          const area = (window.settlementAreas || []).find(item =>
-            String(item.id) === String(point._routeSettlementId)
-          );
-          return !!(area && window.isRouteAtSettlementCenter(point, area));
-        }) || null;
-      }
     }
-
-    // Каждый промежуточный город запоминает маршрут непосредственно перед
-    // входом в него. Поэтому возврат от второго города останавливается у
-    // первого, а возврат от первого — на подходе до него.
-    const settlementUndoHistory = Array.isArray(window.routeIntermediateSettlementUndoSnapshots)
-      ? window.routeIntermediateSettlementUndoSnapshots : [];
-    const latestSettlementUndo = settlementUndoHistory.length
-      ? settlementUndoHistory[settlementUndoHistory.length - 1] : null;
-    let settlementUndoApplied = false;
-    let routeContinuesAfterLatestSettlementCenter = false;
-    if (latestSettlementUndo && Array.isArray(latestSettlementUndo.points)) {
-      const snapshotDistance = getRouteTravelLength(latestSettlementUndo.points);
-      // Если после последнего выбранного города уже есть отдельный участок
-      // маршрута (например, пользователь поставил конечный флажок), первое
-      // нажатие «Вернуть» должно остановиться в центре этого последнего города.
-      // Снимок, созданный ПЕРЕД входом в город, применяется только следующим
-      // нажатием — когда сам центр уже стал концом маршрута.
-      let latestSettlementCenterIndex = -1;
-      for (let i = routePoints.length - 1; i >= 0; i--) {
-        const point = routePoints[i];
-        if (getRouteSegmentMode(point) !== "settlement-zero" || !point._routeSettlementId) continue;
-        const area = (window.settlementAreas || []).find(item =>
-          String(item.id) === String(point._routeSettlementId)
-        );
-        if (area && window.isRouteAtSettlementCenter(point, area)) {
-          latestSettlementCenterIndex = i;
-          break;
-        }
-      }
-      routeContinuesAfterLatestSettlementCenter =
-        latestSettlementCenterIndex >= 0 && latestSettlementCenterIndex < routePoints.length - 1;
-      // Контрольная точка последнего промежуточного города имеет приоритет
-      // над любыми промежуточными точками/привалами, появившимися после него.
-      // Иначе первый возврат мог остановиться на последнем клике маршрута,
-      // а до предыдущего города приходилось нажимать «Вернуть» повторно.
-      // Отмена промежуточного поселения определяется историей контрольных
-      // точек, а не сравнением пройденного расстояния. Два поселения могут
-      // находиться очень близко друг к другу (или иметь одинаковую
-      // накопленную длину из-за нулевых переходов), поэтому сравнение
-      // расстояний способно пропустить последний снимок и удалить сразу
-      // несколько обводок обычным откатом по расстоянию.
-      const latestSettlementIsStillOnRoute =
-        Array.isArray(window.routeIntermediateCityIds) &&
-        window.routeIntermediateCityIds.some(id =>
-          String(id) === String(latestSettlementUndo.settlementId)
-        ) && routePoints.some(point =>
-          String(point._routeSettlementId || "") === String(latestSettlementUndo.settlementId) &&
-          getRouteSegmentMode(point) === "settlement-zero"
-        );
-      if (latestSettlementIsStillOnRoute && !routeContinuesAfterLatestSettlementCenter) {
-        targetDistance = snapshotDistance;
-        settlementUndoApplied = true;
-        routePoints = latestSettlementUndo.points.map(point =>
-          copyRoutePointMetadata(point, L.latLng(Number(point.lat), Number(point.lng)))
-        );
-        window.routeIntermediateCityIds = Array.isArray(latestSettlementUndo.intermediateIds)
-          ? latestSettlementUndo.intermediateIds.slice() : [];
-        routeForcedMarch = Boolean(latestSettlementUndo.forcedMarch);
-        routeForcedMarchPendingExit = Boolean(latestSettlementUndo.forcedMarchPendingExit);
-        routeForcedMarchStartDistance = Number(latestSettlementUndo.forcedMarchStartDistance) || 0;
-        routeForcedMarchStartUnits = Number(latestSettlementUndo.forcedMarchStartUnits) || 0;
-        routeForcedMarchEpochStartDistance = Number(latestSettlementUndo.forcedMarchEpochStartDistance) || 0;
-        routeForcedSegments = Array.isArray(latestSettlementUndo.forcedSegments)
-          ? latestSettlementUndo.forcedSegments.map(segment => ({ ...segment })) : [];
-        settlementUndoHistory.pop();
-        const forcedButton = document.getElementById("route-forced-march");
-        if (forcedButton) {
-          forcedButton.classList.toggle("active", routeForcedMarch);
-          forcedButton.setAttribute("aria-pressed", routeForcedMarch ? "true" : "false");
-        }
-      }
-    }
-
-    if (!settlementUndoApplied) {
-      routePoints = getRoutePointsUpToDistance(routePoints, targetDistance);
-      // Расчёт длины не включает нулевое соединение фактической границы с
-      // центром. Поэтому общий обрезатель может остановиться на предыдущей
-      // точке границы; явно возвращаем центральную точку в конец маршрута.
-      if (settlementCheckpointPoint && settlementCheckpointDistance !== null &&
-          Math.abs(targetDistance - settlementCheckpointDistance) < 0.05) {
-        const last = routePoints[routePoints.length - 1];
-        if (!last || Math.hypot(
-          Number(last.lat) - Number(settlementCheckpointPoint.lat),
-          Number(last.lng) - Number(settlementCheckpointPoint.lng)
-        ) > 0.000001) {
-          routePoints.push(settlementCheckpointPoint);
-        }
-      }
-      // Если возврат ушёл раньше точки входа, история более поздних
-      // поселений больше не применима.
-      window.routeIntermediateSettlementUndoSnapshots = settlementUndoHistory.filter(snapshot =>
-        Array.isArray(snapshot.points) && getRouteTravelLength(snapshot.points) <= targetDistance + 0.01
-      );
-    }
-
-    // Промежуточный город остаётся выбранным только если маршрут всё ещё
-    // содержит его центральную точку. Иначе снимаем обводку и разрешаем вход заново.
-    window.routeIntermediateCityIds = (Array.isArray(window.routeIntermediateCityIds)
-      ? window.routeIntermediateCityIds : []).filter(id => {
-        const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
-        return !!(area && routePoints.some(point =>
-          String(point._routeSettlementId || "") === String(id) &&
-          getRouteSegmentMode(point) === "settlement-zero" &&
-          window.isRouteAtSettlementCenter(point, area)
-        ));
-      });
-    refreshRouteIntermediateCityOutlines();
-    if (!settlementUndoApplied) {
-      routeForcedMarchPendingExit = false;
-      routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(routePoints);
-    }
-
-// Синхронизируем историю форсированных маршей
-// с фактической длиной обрезанного маршрута.
-const actualLength = getRouteTravelLength(routePoints);
-
-routeForcedSegments = routeForcedSegments.filter(segment => {
-  const recalculated = getForcedSegmentDistances(segment, dailyLimit);
-  return recalculated.end <= targetDistance + 0.05 &&
-    recalculated.end <= actualLength + 0.05;
-});
+    routeForcedSegments = routeForcedSegments.filter(segment => {
+      const recalculated = getForcedSegmentDistances(segment, dailyLimit);
+      return recalculated.end <= targetDistance + 0.05 &&
+        recalculated.end <= actualLength + 0.05;
+    });
 
     if (routeFinished) {
       routeFinished = false;
@@ -1795,7 +1726,7 @@ routeForcedSegments = routeForcedSegments.filter(segment => {
 
     lastCursorPosition = null;
     updateRouteLine();
-    console.log("Маршрут возвращён к предыдущему привалу");
+    console.log("Маршрут возвращён к последней контрольной точке");
   });
 
   // Кнопка и клавиша Escape используют одну и ту же отмену.
@@ -4676,124 +4607,6 @@ map.on("zoomend", function() {
     const originalLastPoint = currentRoutePoints[currentRoutePoints.length - 1];
     if (!originalLastPoint) return;
 
-    // Снимок для отмены поселения должен содержать только последнюю
-    // настоящую контрольную точку маршрута (привал/центр поселения/начало
-    // активного форсированного марша), а не последнюю вершину геометрии,
-    // добавленную обычным кликом игрока.
-    const currentLength = window.getRouteTravelLength(currentRoutePoints);
-    const currentDailyLimit =
-      window.routePaceLimits[window.routePace] * (window.routeSpeedReduced ? 0.5 : 1);
-    let checkpointDistance = 0;
-
-    if (window.routeForcedMarch) {
-      checkpointDistance = Math.max(0, Number(window.routeForcedMarchStartDistance) || 0);
-    } else {
-      const previousRests = window.getNormalRestDistances(
-        currentLength, currentDailyLimit, currentRoutePoints
-      );
-      for (let i = previousRests.length - 1; i >= 0; i--) {
-        // Привал, совпавший с последней точкой перед выбором города,
-        // тоже является полноценной контрольной точкой. Раньше строгое
-        // сравнение `< currentLength` отбрасывало его и могло обнулить
-        // снимок до самого отряда.
-        if (previousRests[i] <= currentLength + 0.05) {
-          checkpointDistance = Math.min(previousRests[i], currentLength);
-          break;
-        }
-      }
-
-      const previousSettlementCheckpoint =
-        window.getLastSettlementCenterCheckpointDistance(currentRoutePoints);
-      if (previousSettlementCheckpoint !== null &&
-          previousSettlementCheckpoint < currentLength - 0.01 &&
-          previousSettlementCheckpoint > checkpointDistance) {
-        checkpointDistance = previousSettlementCheckpoint;
-      }
-    }
-
-    let checkpointPoints = window.getRoutePointsUpToDistance(
-      currentRoutePoints, checkpointDistance
-    );
-
-    // Если последней контрольной точкой был центр предыдущего поселения,
-    // сохраняем весь фактический префикс маршрута до этой точки по индексу,
-    // а не обрезаем его только по длине. Это важно для коротких маршрутов:
-    // накопленная длина может быть близка к нулю, хотя подход к поселению и
-    // его собственная контрольная точка уже существуют.
-    let previousCenterIndex = -1;
-    for (let i = currentRoutePoints.length - 1; i >= 0; i--) {
-      const point = currentRoutePoints[i];
-      if (getRouteSegmentMode(point) === "settlement-zero" && point._routeSettlementId) {
-        const previousArea = (window.settlementAreas || []).find(item =>
-          String(item.id) === String(point._routeSettlementId)
-        );
-        if (previousArea && window.isRouteAtSettlementCenter(point, previousArea)) {
-          previousCenterIndex = i;
-          break;
-        }
-      }
-    }
-    const previousCenterDistanceForPrefix =
-      window.getLastSettlementCenterCheckpointDistance(currentRoutePoints);
-    if (previousCenterIndex >= 0 && previousCenterDistanceForPrefix !== null &&
-        previousCenterDistanceForPrefix >= checkpointDistance - 0.001) {
-      checkpointDistance = previousCenterDistanceForPrefix;
-      checkpointPoints = currentRoutePoints.slice(0, previousCenterIndex + 1);
-    }
-
-    // Нулевой переход к центру поселения не увеличивает длину маршрута,
-    // поэтому обрезка по расстоянию может закончиться на границе. Возвращаем
-    // центр в снимок, чтобы он оставался полноценной контрольной точкой.
-    const previousCenterPoint = [...currentRoutePoints].reverse().find(point => {
-      if (window.getRouteSegmentMode(point) !== "settlement-zero" ||
-          !point._routeSettlementId) return false;
-      const previousArea = (window.settlementAreas || []).find(item =>
-        String(item.id) === String(point._routeSettlementId)
-      );
-      return !!(previousArea && window.isRouteAtSettlementCenter(point, previousArea));
-    });
-    const previousCenterDistance = window.getLastSettlementCenterCheckpointDistance(currentRoutePoints);
-    if (previousCenterPoint !== undefined && previousCenterDistance !== null &&
-        Math.abs(checkpointDistance - previousCenterDistance) < 0.05) {
-      const lastCheckpointPoint = checkpointPoints[checkpointPoints.length - 1];
-      if (!lastCheckpointPoint ||
-          Math.hypot(
-            Number(lastCheckpointPoint.lat) - Number(previousCenterPoint.lat),
-            Number(lastCheckpointPoint.lng) - Number(previousCenterPoint.lng)
-          ) > 0.000001) {
-        checkpointPoints.push(window.copyRoutePointMetadata(
-          previousCenterPoint,
-          L.latLng(Number(previousCenterPoint.lat), Number(previousCenterPoint.lng))
-        ));
-      }
-    }
-
-    const retainedSettlementIds = (window.routeIntermediateCityIds || []).filter(id =>
-      checkpointPoints.some(point =>
-        String(point._routeSettlementId || "") === String(id) &&
-        window.getRouteSegmentMode(point) === "settlement-zero"
-      )
-    );
-    const checkpointForcedSegments = window.routeForcedSegments
-      .filter(segment => window.getForcedSegmentDistances(segment, currentDailyLimit).end <= checkpointDistance + 0.05)
-      .map(segment => ({ ...segment }));
-
-    const undoSnapshot = {
-      settlementId: String(area.id),
-      points: checkpointPoints.map(point =>
-        window.copyRoutePointMetadata(point, L.latLng(Number(point.lat), Number(point.lng)))
-      ),
-      intermediateIds: retainedSettlementIds,
-      forcedMarch: Boolean(window.routeForcedMarch),
-      forcedMarchPendingExit: Boolean(window.routeForcedMarchPendingExit),
-      forcedMarchStartDistance: Boolean(window.routeForcedMarch)
-        ? Number(window.routeForcedMarchStartDistance) || 0 : 0,
-      forcedMarchStartUnits: Boolean(window.routeForcedMarch)
-        ? Number(window.routeForcedMarchStartUnits) || 0 : 0,
-      forcedMarchEpochStartDistance: Boolean(window.routeForcedMarch)
-        ? Number(window.routeForcedMarchEpochStartDistance) || 0 : 0,
-      forcedSegments: checkpointForcedSegments
-    };
     const approachTarget = clickedPoint || originalLastPoint;
     const visualPolygon = getSettlementBrushErasePolygon(area, 0);
     const lastPointInsideBrush = pointInSettlement(originalLastPoint, visualPolygon);
@@ -4861,11 +4674,6 @@ map.on("zoomend", function() {
       console.warn("Не удалось определить фактическую границу поселения.");
       return;
     }
-
-    if (!Array.isArray(window.routeIntermediateSettlementUndoSnapshots)) {
-      window.routeIntermediateSettlementUndoSnapshots = [];
-    }
-    window.routeIntermediateSettlementUndoSnapshots.push(undoSnapshot);
 
     currentRoutePoints.push(window.setRouteSegmentMode(
       L.latLng(actualBoundary.point.lat, actualBoundary.point.lng),
