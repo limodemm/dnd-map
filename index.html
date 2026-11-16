@@ -1760,6 +1760,9 @@ function isRouteAtSettlementCenter(point, area) {
   if (!point || !area || !area.center) return false;
   return Math.hypot(Number(point.lat) - Number(area.center.lat), Number(point.lng) - Number(area.center.lng)) < 0.00002;
 }
+// Функция используется вложенными обработчиками маршрута и редактором поселений.
+// Публикуем её явно, чтобы область видимости не зависела от места объявления.
+window.isRouteAtSettlementCenter = isRouteAtSettlementCenter;
 
 function getRouteSegmentTerrainParts(start, end) {
   const dx = end.lng - start.lng;
@@ -4322,7 +4325,7 @@ map.on("zoomend", function() {
       ? window.routeIntermediateCityIds : [];
     const areas = Array.isArray(window.settlementAreas) ? window.settlementAreas : [];
     const area = ids.map(id => areas.find(item => String(item.id) === String(id)))
-      .filter(Boolean).find(item => isRouteAtSettlementCenter(start, item));
+      .filter(Boolean).find(item => window.isRouteAtSettlementCenter(start, item));
     if (!area) return null;
 
     // Пока курсор/клик остаётся внутри внешней визуальной кисти,
