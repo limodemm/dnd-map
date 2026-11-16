@@ -1618,7 +1618,19 @@ window.routePendingConfirmation = false;
     // Обычные клики/вершины маршрута и начало форсированного марша сюда
     // не попадают.
     const checkpoints = [];
-    const rests = getNormalRestDistances(totalLength, dailyLimit, routePoints);
+    let rests = getNormalRestDistances(totalLength, dailyLimit, routePoints);
+
+    // Если маршрут завершён флажком во время активного форсированного марша,
+    // обычный расчёт дневных привалов может принять разделитель в начале
+    // марша и промежуточные крестики истощения за точки отмены. Для «Вернуть»
+    // весь участок от начала активного марша до флажка считается единым
+    // действием: оставляем только привалы ДО начала марша и сам привал,
+    // с которого марш начался.
+    if (routeForcedMarch && !routeForcedMarchPendingExit) {
+      rests = rests.filter(distance =>
+        distance <= routeForcedMarchStartDistance + 0.001
+      );
+    }
 
     function routeIndexAtDistance(distance) {
       let passed = 0;
