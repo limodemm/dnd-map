@@ -2012,6 +2012,10 @@ function getRouteScreenDistanceAtDistance(points, targetDistance) {
   }
   return screenPassed;
 }
+// Функция нужна также блоку подготовки пауз анимации поселений, который
+// может выполняться из другого вложенного контекста. Публикуем ту же
+// реализацию, чтобы не создавать отдельную копию расчёта.
+window.getRouteScreenDistanceAtDistance = getRouteScreenDistanceAtDistance;
 
 // =====================================
 // ВИЗУАЛЬНАЯ ОБРАБОТКА ЛИНИИ МАРШРУТА
@@ -5547,7 +5551,7 @@ map.on("zoomend", function() {
       const totalRouteDistance = getRouteTravelLength(routePoints);
       const displayRouteDistance = totalRouteDistance > 0.001
         ? routeDistance / totalRouteDistance * getRouteTravelLength(displayPoints) : 0;
-      const screenDistance = getRouteScreenDistanceAtDistance(displayPoints, displayRouteDistance);
+      const screenDistance = window.getRouteScreenDistanceAtDistance(displayPoints, displayRouteDistance);
       const dashOffset = screenDistance % dashStep;
       let dashIndex = Math.floor(screenDistance / dashStep);
       if (dashOffset > (Number(window.routeLineDashLength) || 8)) dashIndex++;
