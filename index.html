@@ -683,6 +683,36 @@ let routeForcedMarchStartUnits = 0;
 let routeForcedMarchEpochStartDistance = 0;
 let routeForcedMarchPendingExit = false;
 
+// Мост к состоянию форсированного марша для обработчиков поселений,
+// которые находятся в отдельной области видимости ES-модуля.
+Object.defineProperties(window, {
+  routeForcedMarch: {
+    configurable: true,
+    get: function() { return routeForcedMarch; },
+    set: function(value) { routeForcedMarch = !!value; }
+  },
+  routeForcedMarchPendingExit: {
+    configurable: true,
+    get: function() { return routeForcedMarchPendingExit; },
+    set: function(value) { routeForcedMarchPendingExit = !!value; }
+  },
+  routeForcedMarchEpochStartDistance: {
+    configurable: true,
+    get: function() { return routeForcedMarchEpochStartDistance; },
+    set: function(value) { routeForcedMarchEpochStartDistance = Number(value) || 0; }
+  },
+  routeForcedMarchStartDistance: {
+    configurable: true,
+    get: function() { return routeForcedMarchStartDistance; },
+    set: function(value) { routeForcedMarchStartDistance = Number(value) || 0; }
+  },
+  routeForcedMarchStartUnits: {
+    configurable: true,
+    get: function() { return routeForcedMarchStartUnits; },
+    set: function(value) { routeForcedMarchStartUnits = Number(value) || 0; }
+  }
+});
+
 const routePaceLimits = {
   slow: 225,
   normal: 300,
@@ -4433,11 +4463,11 @@ map.on("zoomend", function() {
 
     // Если марш был включён внутри предыдущего поселения, он начинает
     // действовать только после выхода за его внешнюю границу.
-    if (routeForcedMarch && routeForcedMarchPendingExit) {
-      routeForcedMarchPendingExit = false;
-      routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(currentRoutePoints);
-      routeForcedMarchStartDistance = routeForcedMarchEpochStartDistance;
-      routeForcedMarchStartUnits = 0;
+    if (window.routeForcedMarch && window.routeForcedMarchPendingExit) {
+      window.routeForcedMarchPendingExit = false;
+      window.routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(currentRoutePoints);
+      window.routeForcedMarchStartDistance = window.routeForcedMarchEpochStartDistance;
+      window.routeForcedMarchStartUnits = 0;
     }
 
     // Форсированный марш заканчивается у внешней границы нового поселения.
