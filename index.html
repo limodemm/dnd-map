@@ -3116,7 +3116,9 @@ function updateRouteLine(cursorPosition = null) {
       getRouteMarkerAnimationDelay(boundaryDistance);
     const boundaryShouldAnimate = boundaryAnimationDelay !== null;
 
-    const boundaryZoomScale = map.getZoom() <= -1.5 ? 0.92 : 1;
+    // Разделительная отметка компактнее на среднем и минимальном зуме;
+    // на максимальном сохраняет исходный размер.
+    const boundaryZoomScale = 0.72 + 0.28 * getRouteZoomProgress();
     const boundaryWidth = 30 * boundaryZoomScale;
     const boundaryHeight = 4 * boundaryZoomScale;
     const boundaryIconWidth = boundaryWidth + 2;
@@ -3389,7 +3391,67 @@ window.applySynchronizedPartyRoute = function(data) {
 // ДОБАВЛЕНИЕ ТОЧКИ МАРШРУТА
 // =====================================
 
-window.addPartyRoutePoint = function(latlng) {
+// Находит первое пересечение строящегося участка с фактической границей
+// ещё не выбранного поселения. Проверяем именно area.points, а не внешнюю
+// сухую кисть: она остаётся только визуальной обводкой.
+function findFirstAutomaticSettlementCrossing(path) {
+  if (!Array.isArray(path) || path.length < 2) return null;
+  const selectedIds = new Set((Array.isArray(window.routeIntermediateCityIds)
+    ? window.routeIntermediateCityIds : []).map(id => String(id)));
+  const areas = (Array.isArray(window.settlementAreas) ? window.settlementAreas : [])
+    .filter(area => area && area.id != null && !selectedIds.has(String(area.id)) &&
+      Array.isArray(area.points) && area.points.length >= 3);
+
+  let best = null;
+  for (let segmentIndex = 1; segmentIndex < path.length; segmentIndex++) {
+    const start = path[segmentIndex - 1];
+    const end = path[segmentIndex];
+    if (!start || !end) continue;
+    const a = map.latLngToLayerPoint(start);
+    const b = map.latLngToLayerPoint(end);
+    const rx = b.x - a.x;
+    const ry = b.y - a.y;
+    if (rx * rx + ry * ry < 0.0001) continue;
+
+    for (const area of areas) {
+      if (pointInSettlement(start, area.points)) continue;
+      let firstT = Infinity;
+      let firstPoint = null;
+      for (let edge = 0; edge < area.points.length; edge++) {
+        const p1 = map.latLngToLayerPoint(area.points[edge]);
+        const p2 = map.latLngToLayerPoint(area.points[(edge + 1) % area.points.length]);
+        const sx = p2.x - p1.x;
+        const sy = p2.y - p1.y;
+        const denominator = rx * sy - ry * sx;
+        if (Math.abs(denominator) < 0.000001) continue;
+        const qx = p1.x - a.x;
+        const qy = p1.y - a.y;
+        const t = (qx * sy - qy * sx) / denominator;
+        const u = (qx * ry - qy * rx) / denominator;
+        if (t <= 0.00001 || t > 1.000001 || u < -0.000001 || u > 1.000001 || t >= firstT) continue;
+        firstT = t;
+        firstPoint = map.layerPointToLatLng(L.point(a.x + rx * t, a.y + ry * t));
+      }
+      if (!firstPoint) continue;
+      if (!best || segmentIndex < best.segmentIndex ||
+          (segmentIndex === best.segmentIndex && firstT < best.t) ||
+          (segmentIndex === best.segmentIndex && Math.abs(firstT - best.t) < 0.000001 &&
+            polygonArea(area.points) < polygonArea(best.area.points))) {
+        best = { area, point: firstPoint, segmentIndex, t: firstT };
+      }
+    }
+    // Первый сегмент пути, на котором есть поселение, всегда ближе
+    // последующих сегментов; дальше искать нужно только для выбора между ними.
+    if (best && best.segmentIndex === segmentIndex) break;
+  }
+  return best;
+}
+
+window.addPartyRoutePoint = function(latlng, automaticDepth = 0) {
+  if (automaticDepth > 20) {
+    console.warn("Автоматическое добавление поселений остановлено: слишком много пересечений.");
+    return false;
+  }
   const previousPoint = routePoints[routePoints.length - 1];
   const segment = previousPoint
     ? getRouteSegmentAroundIntermediateCities(previousPoint, latlng)
@@ -3400,9 +3462,27 @@ window.addPartyRoutePoint = function(latlng) {
     return false;
   }
 
-  // Записываем в геометрию весь обход, а не прямую кликнутую точку.
-  // Поэтому длина маршрута, привалы и все дальнейшие расчёты учитывают
-  // фактическую длину пути вокруг города.
+  // Если прямая или обходной участок пересекает фактическую границу
+  // нового поселения, автоматически выполняем ту же операцию, что и
+  // одиночный клик по его обводке: подводим маршрут к центру и продолжаем.
+  const crossing = findFirstAutomaticSettlementCrossing(segment);
+  if (crossing) {
+    const id = String(crossing.area.id);
+    const wasSelected = (window.routeIntermediateCityIds || [])
+      .some(existingId => String(existingId) === id);
+    activateIntermediateRouteCity(crossing.area, crossing.point);
+    const isSelected = (window.routeIntermediateCityIds || [])
+      .some(existingId => String(existingId) === id);
+    if (!wasSelected && isSelected) {
+      return window.addPartyRoutePoint(latlng, automaticDepth + 1);
+    }
+    // Если центр поселения не задан или добавить его не удалось,
+    // не прокладываем маршрут сквозь город молча.
+    return false;
+  }
+
+  // Записываем весь рассчитанный путь, включая обходы ранее выбранных
+  // поселений. Длина, привалы и остальные механики считают его целиком.
   routePoints.push(...segment.slice(1));
 
   if (routeForcedMarch && routeForcedMarchPendingExit && !getLastPointAtSettlementCenter(routePoints)) {
@@ -3414,7 +3494,6 @@ window.addPartyRoutePoint = function(latlng) {
 
   lastCursorPosition = null;
   updateRouteLine(null, true);
-
   console.log("Точки маршрута:", routePoints);
   return true;
 };
@@ -3435,20 +3514,23 @@ function finishPartyRoute(latlng) {
     map.latLngToContainerPoint(lastPoint)
       .distanceTo(map.latLngToContainerPoint(latlng)) > (window.routeDestinationCityId ? 0.05 : 3)
   ) {
-    const finalSegment = lastPoint
-      ? getRouteSegmentAroundIntermediateCities(lastPoint, latlng)
-      : [latlng];
-
-    if (!finalSegment || finalSegment.length < 2) {
-      console.warn("Не удалось построить финальный участок маршрута.");
-      return;
-    }
-    routePoints.push(...finalSegment.slice(1));
-    if (routeForcedMarch && routeForcedMarchPendingExit && !getLastPointAtSettlementCenter(routePoints)) {
-      routeForcedMarchPendingExit = false;
-      routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(routePoints);
-      routeForcedMarchStartDistance = routeForcedMarchEpochStartDistance;
-      routeForcedMarchStartUnits = 0;
+    if (!window.routeDestinationCityId) {
+      if (!window.addPartyRoutePoint(latlng)) return;
+    } else {
+      const finalSegment = lastPoint
+        ? getRouteSegmentAroundIntermediateCities(lastPoint, latlng)
+        : [latlng];
+      if (!finalSegment || finalSegment.length < 2) {
+        console.warn("Не удалось построить финальный участок маршрута.");
+        return;
+      }
+      routePoints.push(...finalSegment.slice(1));
+      if (routeForcedMarch && routeForcedMarchPendingExit && !getLastPointAtSettlementCenter(routePoints)) {
+        routeForcedMarchPendingExit = false;
+        routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(routePoints);
+        routeForcedMarchStartDistance = routeForcedMarchEpochStartDistance;
+        routeForcedMarchStartUnits = 0;
+      }
     }
   }
 
