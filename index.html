@@ -2770,6 +2770,16 @@ function updateRouteLine(cursorPosition = null) {
     )) settlementMaskAreas.push(hoveredArea);
   }
 
+  // Города, которые маршрут только предварительно пересекает, получают
+  // ту же маску, что и уже выбранные промежуточные поселения. Поэтому
+  // предварительная линия не видна внутри внешней визуальной кисти.
+  automaticPreviewIds.forEach(id => {
+    const area = allSettlementAreas.find(item => String(item.id) === String(id));
+    if (area && !settlementMaskAreas.some(
+      item => String(item.id) === String(area.id)
+    )) settlementMaskAreas.push(area);
+  });
+
   const isMarkerInsideSettlementMask = (position, extraPixels = 0) =>
     !!(window.isRouteMarkerMaskedBySettlement &&
       settlementMaskAreas.some(area =>
@@ -3399,15 +3409,13 @@ function updateRouteLine(cursorPosition = null) {
     });
   }
 
-  // Затем накладываем маски всех выбранных промежуточных поселений.
-  // Линия физически проходит через их визуальную кисть, но внутри неё
-  // не отображается; жетоны уже отфильтрованы по тем же областям выше.
+  // Затем накладываем маски выбранных поселений и городов,
+  // которые маршрут только предварительно пересекает.
+  // Линия физически проходит через них, но не отображается внутри
+  // визуальной кисти; жетоны отфильтрованы по тем же областям выше.
   if (window.hideRouteDashesInsideSettlement) {
-    const intermediateAreas = (Array.isArray(window.routeIntermediateCityIds)
-      ? window.routeIntermediateCityIds : [])
-      .map(id => allSettlementAreas.find(area => String(area.id) === String(id)))
-      .filter(Boolean);
-    intermediateAreas.forEach(area => {
+    const maskedAreas = settlementMaskAreas;
+    maskedAreas.forEach(area => {
       window.hideRouteDashesInsideSettlement(area, true);
     });
   }
