@@ -768,6 +768,15 @@ window.settlementTraceDashInterval = settlementTraceDashInterval;
 // Штрих имеет постоянный экранный размер, поэтому для одинаковой
 // скорости движения по самой карте временной интервал корректируется
 // обратно пропорционально масштабу относительно средней точки.
+function getRouteZoomProgress() {
+  if (!map || typeof map.getZoom !== "function") return 0.5;
+  const minZoom = typeof map.getMinZoom === "function" ? map.getMinZoom() : -2;
+  const maxZoom = typeof map.getMaxZoom === "function" ? map.getMaxZoom() : 0;
+  if (!(maxZoom > minZoom)) return 0.5;
+  return Math.max(0, Math.min(1, (map.getZoom() - minZoom) / (maxZoom - minZoom)));
+}
+window.getRouteZoomProgress = getRouteZoomProgress;
+
 function getRouteZoomSpeedMultiplier() {
   if (!map || typeof map.getZoomScale !== "function") return 1;
   const referenceZoom = (map.getMinZoom() + map.getMaxZoom()) / 2;
@@ -1648,8 +1657,11 @@ window.routePendingConfirmation = false;
     let settlementUndoApplied = false;
     if (latestSettlementUndo && Array.isArray(latestSettlementUndo.points)) {
       const snapshotDistance = getRouteTravelLength(latestSettlementUndo.points);
-      if (snapshotDistance < totalLength - 0.01 &&
-          snapshotDistance >= targetDistance - 0.01) {
+      // Контрольная точка последнего промежуточного города имеет приоритет
+      // над любыми промежуточными точками/привалами, появившимися после него.
+      // Иначе первый возврат мог остановиться на последнем клике маршрута,
+      // а до предыдущего города приходилось нажимать «Вернуть» повторно.
+      if (snapshotDistance < totalLength - 0.01) {
         targetDistance = snapshotDistance;
         settlementUndoApplied = true;
         routePoints = latestSettlementUndo.points.map(point =>
@@ -2351,7 +2363,13 @@ function getNormalRestDistances(totalLength, dailyLimit, routeGeometry = routePo
     }
   });
 
-  return result.sort((a, b) => a - b);
+  // Если форсированный марш (или обычный дневной переход) заканчивается
+  // ровно у внешней границы города, его конечный привал не рисуем:
+  // прибытие в поселение само завершает этот участок маршрута.
+  const settlementEntryDistances = transitIntervals.map(interval => interval.start);
+  return result
+    .filter(distance => !settlementEntryDistances.some(entry => Math.abs(entry - distance) <= 0.05))
+    .sort((a, b) => a - b);
 }
 
 // =====================================
@@ -2508,9 +2526,9 @@ function getExhaustionMarkerClusters(markers, markerSize = 28, routeGeometry = r
 
 function getExhaustionClusterDisplaySize() {
   const zoom = map && typeof map.getZoom === "function" ? map.getZoom() : -1;
-  // При максимальном масштабе сохраняем прежний размер;
-  // на среднем уменьшаем немного, на минимальном — заметнее.
-  if (zoom <= -1.5) return 39;
+  // На минимальном масштабе объединённый крестик чуть компактнее;
+  // остальные размеры сохраняют прежний вид.
+  if (zoom <= -1.5) return 36;
   if (zoom <= -0.5) return 46;
   return 56;
 }
@@ -3095,13 +3113,18 @@ function updateRouteLine(cursorPosition = null) {
       getRouteMarkerAnimationDelay(boundaryDistance);
     const boundaryShouldAnimate = boundaryAnimationDelay !== null;
 
+    const boundaryZoomScale = map.getZoom() <= -1.5 ? 0.92 : 1;
+    const boundaryWidth = 30 * boundaryZoomScale;
+    const boundaryHeight = 4 * boundaryZoomScale;
+    const boundaryIconWidth = boundaryWidth + 2;
+    const boundaryIconHeight = boundaryHeight + 2;
     const boundaryIcon = L.divIcon({
       className:
         "route-march-boundary" +
         (boundaryIsPreview ? " route-preview-marker" : ""),
-      html: `<div class="${boundaryShouldAnimate ? "route-token-appear" : ""}" style="--route-animation-delay:${boundaryAnimationDelay || 0}ms;width:30px;height:4px;"><div style="width:30px;height:4px;background:#e6c77d;border:1px solid #211b16;border-radius:1px;transform:rotate(${angle}deg);box-shadow:1px 2px 4px #000;"></div></div>`,
-      iconSize: [32, 6],
-      iconAnchor: [16, 3]
+      html: `<div class="${boundaryShouldAnimate ? "route-token-appear" : ""}" style="--route-animation-delay:${boundaryAnimationDelay || 0}ms;width:${boundaryWidth}px;height:${boundaryHeight}px;"><div style="width:${boundaryWidth}px;height:${boundaryHeight}px;background:#e6c77d;border:1px solid #211b16;border-radius:1px;transform:rotate(${angle}deg);box-shadow:1px 2px 4px #000;"></div></div>`,
+      iconSize: [boundaryIconWidth, boundaryIconHeight],
+      iconAnchor: [boundaryIconWidth / 2, boundaryIconHeight / 2]
     });
     const boundaryMarker = L.marker(boundaryPosition, {
       icon: boundaryIcon,
@@ -3149,7 +3172,7 @@ function updateRouteLine(cursorPosition = null) {
       const exhaustionShouldAnimate = exhaustionAnimationDelay !== null;
 
       const countBadge = cluster.count > 1
-        ? `<span class="route-exhaustion-count">${cluster.count}</span>`
+        ? `<span class="route-exhaustion-count"${map.getZoom() <= -1.5 ? ' style="min-width:13px;height:13px;padding:0 1px;font-size:8px;line-height:11px;"' : ""}>${cluster.count}</span>`
         : "";
 
       const clusterDisplaySize = cluster.count > 1
@@ -3186,8 +3209,10 @@ function updateRouteLine(cursorPosition = null) {
     const restAnimationDelay = getRouteMarkerAnimationDelay(distance);
     const restShouldAnimate = restAnimationDelay !== null;
 
-    const restZoom = map && typeof map.getZoom === "function" ? map.getZoom() : -1;
-    const restMarkerRadius = restZoom <= -1.5 ? 6.5 : 7;
+    // Жетон немного крупнее при максимальном приближении и компактнее
+    // при максимальном отдалении; изменение плавное между крайними зумами.
+    const restZoomProgress = getRouteZoomProgress();
+    const restMarkerRadius = 7 * (0.92 + 0.14 * restZoomProgress);
     const marker = L.circleMarker(position, {
       pane: "route-rest-pane",
       radius: restMarkerRadius,
@@ -4590,18 +4615,94 @@ map.on("zoomend", function() {
     const currentRoutePoints = window.routePoints;
     const originalLastPoint = currentRoutePoints[currentRoutePoints.length - 1];
     if (!originalLastPoint) return;
+
+    // Снимок для отмены поселения должен содержать только последнюю
+    // настоящую контрольную точку маршрута (привал/центр поселения/начало
+    // активного форсированного марша), а не последнюю вершину геометрии,
+    // добавленную обычным кликом игрока.
+    const currentLength = window.getRouteTravelLength(currentRoutePoints);
+    const currentDailyLimit =
+      routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
+    let checkpointDistance = 0;
+
+    if (window.routeForcedMarch) {
+      checkpointDistance = Math.max(0, Number(window.routeForcedMarchStartDistance) || 0);
+    } else {
+      const previousRests = getNormalRestDistances(
+        currentLength, currentDailyLimit, currentRoutePoints
+      );
+      for (let i = previousRests.length - 1; i >= 0; i--) {
+        if (previousRests[i] < currentLength - 0.01) {
+          checkpointDistance = previousRests[i];
+          break;
+        }
+      }
+
+      const previousSettlementCheckpoint =
+        getLastSettlementCenterCheckpointDistance(currentRoutePoints);
+      if (previousSettlementCheckpoint !== null &&
+          previousSettlementCheckpoint < currentLength - 0.01 &&
+          previousSettlementCheckpoint > checkpointDistance) {
+        checkpointDistance = previousSettlementCheckpoint;
+      }
+    }
+
+    let checkpointPoints = getRoutePointsUpToDistance(
+      currentRoutePoints, checkpointDistance
+    );
+
+    // Нулевой переход к центру поселения не увеличивает длину маршрута,
+    // поэтому обрезка по расстоянию может закончиться на границе. Возвращаем
+    // центр в снимок, чтобы он оставался полноценной контрольной точкой.
+    const previousCenterPoint = [...currentRoutePoints].reverse().find(point => {
+      if (getRouteSegmentMode(point) !== "settlement-zero" ||
+          !point._routeSettlementId) return false;
+      const previousArea = (window.settlementAreas || []).find(item =>
+        String(item.id) === String(point._routeSettlementId)
+      );
+      return !!(previousArea && window.isRouteAtSettlementCenter(point, previousArea));
+    });
+    const previousCenterDistance = getLastSettlementCenterCheckpointDistance(currentRoutePoints);
+    if (previousCenterPoint !== undefined && previousCenterDistance !== null &&
+        Math.abs(checkpointDistance - previousCenterDistance) < 0.05) {
+      const lastCheckpointPoint = checkpointPoints[checkpointPoints.length - 1];
+      if (!lastCheckpointPoint ||
+          Math.hypot(
+            Number(lastCheckpointPoint.lat) - Number(previousCenterPoint.lat),
+            Number(lastCheckpointPoint.lng) - Number(previousCenterPoint.lng)
+          ) > 0.000001) {
+        checkpointPoints.push(window.copyRoutePointMetadata(
+          previousCenterPoint,
+          L.latLng(Number(previousCenterPoint.lat), Number(previousCenterPoint.lng))
+        ));
+      }
+    }
+
+    const retainedSettlementIds = (window.routeIntermediateCityIds || []).filter(id =>
+      checkpointPoints.some(point =>
+        String(point._routeSettlementId || "") === String(id) &&
+        getRouteSegmentMode(point) === "settlement-zero"
+      )
+    );
+    const checkpointForcedSegments = routeForcedSegments
+      .filter(segment => getForcedSegmentDistances(segment, currentDailyLimit).end <= checkpointDistance + 0.05)
+      .map(segment => ({ ...segment }));
+
     const undoSnapshot = {
       settlementId: String(area.id),
-      points: currentRoutePoints.map(point =>
+      points: checkpointPoints.map(point =>
         window.copyRoutePointMetadata(point, L.latLng(Number(point.lat), Number(point.lng)))
       ),
-      intermediateIds: window.routeIntermediateCityIds.slice(),
+      intermediateIds: retainedSettlementIds,
       forcedMarch: Boolean(window.routeForcedMarch),
       forcedMarchPendingExit: Boolean(window.routeForcedMarchPendingExit),
-      forcedMarchStartDistance: Number(window.routeForcedMarchStartDistance) || 0,
-      forcedMarchStartUnits: Number(window.routeForcedMarchStartUnits) || 0,
-      forcedMarchEpochStartDistance: Number(window.routeForcedMarchEpochStartDistance) || 0,
-      forcedSegments: routeForcedSegments.map(segment => ({ ...segment }))
+      forcedMarchStartDistance: Boolean(window.routeForcedMarch)
+        ? Number(window.routeForcedMarchStartDistance) || 0 : 0,
+      forcedMarchStartUnits: Boolean(window.routeForcedMarch)
+        ? Number(window.routeForcedMarchStartUnits) || 0 : 0,
+      forcedMarchEpochStartDistance: Boolean(window.routeForcedMarch)
+        ? Number(window.routeForcedMarchEpochStartDistance) || 0 : 0,
+      forcedSegments: checkpointForcedSegments
     };
     const approachTarget = clickedPoint || originalLastPoint;
     const visualPolygon = getSettlementBrushErasePolygon(area, 0);
