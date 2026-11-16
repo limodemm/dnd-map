@@ -4586,10 +4586,27 @@ map.on("zoomend", function() {
     ids.forEach(id => {
       const area = areas.find(item => String(item.id) === String(id));
       if (!area) return;
-      routeIntermediateBrushLayers.push(
-        ...createSettlementDryBrushLayers(area, 0.96)
-      );
+      const layers = createSettlementDryBrushLayers(area, 0.96);
+      // Помечаем статические слои ID поселения, чтобы убрать только его
+      // непосредственно перед запуском анимации, не затрагивая следующие города.
+      layers.forEach(layer => {
+        layer._routeIntermediateSettlementId = String(id);
+      });
+      routeIntermediateBrushLayers.push(...layers);
     });
+  }
+
+  function removeRouteIntermediateCityOutline(id) {
+    const targetId = String(id);
+    const remaining = [];
+    routeIntermediateBrushLayers.forEach(layer => {
+      if (String(layer._routeIntermediateSettlementId || '') === targetId) {
+        removeSettlementLayer(layer);
+      } else {
+        remaining.push(layer);
+      }
+    });
+    routeIntermediateBrushLayers = remaining;
   }
 
   function findNearestRoutePointOnSettlementBrush(origin, area) {
@@ -5551,6 +5568,10 @@ map.on("zoomend", function() {
           distance: target.distance,
           delayUntilBoundary: delay
         });
+        // До этого момента промежуточный город показывается статичной кистью.
+        // Убираем только его статичный слой, чтобы анимация была видна ровно
+        // тогда, когда маршрут дошёл до его границы.
+        removeRouteIntermediateCityOutline(target.id);
         animateSettlementTrace(target.area, target.boundaryPoint, target.approachPoint);
       }
 
