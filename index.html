@@ -864,8 +864,8 @@ function beginRouteMarkerAnimation(startDistance, endDistance, synchronizedStart
   const displayEnd = routeTotalLength > 0.001
     ? endDistance / routeTotalLength * displayTotalLength
     : displayTotalLength;
-  const lineStartScreen = getRouteScreenDistanceAtDistance(displayPoints, displayStart);
-  const lineEndScreen = getRouteScreenDistanceAtDistance(displayPoints, displayEnd);
+  const lineStartScreen = window.getRouteScreenDistanceAtDistance(displayPoints, displayStart);
+  const lineEndScreen = window.getRouteScreenDistanceAtDistance(displayPoints, displayEnd);
   const lineDuration = getRouteLineRevealDuration(lineEndScreen - lineStartScreen);
   // Держим анимацию активной и на время плавного появления последнего жетона.
   const duration = lineDuration + routeRevealFadeDuration;
@@ -911,11 +911,11 @@ function rebaseRouteMarkerAnimationsForZoom() {
     const elapsed = Math.max(0, now - animation.startedAt);
     const progress = Math.max(0, Math.min(1, elapsed / oldDuration));
 
-    const lineStartScreen = getRouteScreenDistanceAtDistance(
+    const lineStartScreen = window.getRouteScreenDistanceAtDistance(
       animation.displayPoints,
       animation.start / animation.routeTotalLength * animation.displayTotalLength
     );
-    const lineEndScreen = getRouteScreenDistanceAtDistance(
+    const lineEndScreen = window.getRouteScreenDistanceAtDistance(
       animation.displayPoints,
       animation.end / animation.routeTotalLength * animation.displayTotalLength
     );
@@ -969,7 +969,7 @@ function getRouteDashIndexAtDistance(points, routeTotalLength, displayTotalLengt
   const displayDistance = routeTotalLength > 0.001
     ? distance / routeTotalLength * displayTotalLength
     : 0;
-  const screenDistance = getRouteScreenDistanceAtDistance(points, displayDistance);
+  const screenDistance = window.getRouteScreenDistanceAtDistance(points, displayDistance);
   const relativeScreenDistance = Math.max(0, screenDistance - lineStartScreen);
   const dashOffset = relativeScreenDistance % routeLineDashStep;
   let dashIndex = Math.floor(relativeScreenDistance / routeLineDashStep);
@@ -1993,7 +1993,7 @@ function getTerrainTravelIntervals(points) {
 
 // Экранное расстояние вдоль визуальной линии. Используется только для
 // равномерного по пикселям проявления штрихов, а не для расчёта пути.
-function getRouteScreenDistanceAtDistance(points, targetDistance) {
+window.getRouteScreenDistanceAtDistance = function(points, targetDistance) {
   if (!points || points.length < 2) return 0;
   let travelPassed = 0;
   let screenPassed = 0;
@@ -2023,10 +2023,8 @@ function getRouteScreenDistanceAtDistance(points, targetDistance) {
   }
   return screenPassed;
 }
-// Функция нужна также блоку подготовки пауз анимации поселений, который
-// может выполняться из другого вложенного контекста. Публикуем ту же
-// реализацию, чтобы не создавать отдельную копию расчёта.
-window.getRouteScreenDistanceAtDistance = getRouteScreenDistanceAtDistance;
+// Расчёт опубликован непосредственно в window, чтобы все части модуля
+// и обработчики маршрута использовали одну и ту же функцию.
 
 // =====================================
 // ВИЗУАЛЬНАЯ ОБРАБОТКА ЛИНИИ МАРШРУТА
@@ -3085,7 +3083,7 @@ function updateRouteLine(cursorPosition = null) {
           return points.map(point => map.layerPointToLatLng(point));
         }
 
-        const globalScreenStart = getRouteScreenDistanceAtDistance(
+        const globalScreenStart = window.getRouteScreenDistanceAtDistance(
           displayRoutePoints,
           partDisplayStart
         );
