@@ -508,6 +508,9 @@ document.addEventListener("keydown", function(e) {
   window.routeDestinationBoundaryPoint = null;
   window.routeDestinationApproachPoint = null;
   window.routeIntermediateCityIds = [];
+  // История точек возврата перед входом в каждое промежуточное поселение.
+  // Нужна, чтобы возврат от второго поселения сохранял первое.
+  window.routeIntermediateSettlementUndoSnapshots = [];
 
 // UID ведущего. Используется только для разграничения прав.
   const GAME_MASTER_UID = "qxdgnWhXmQeqHTLPMI3q8EK60Fi2";
@@ -611,6 +614,7 @@ window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
 window.routeDestinationApproachPoint = null;
 window.routeIntermediateCityIds = [];
+window.routeIntermediateSettlementUndoSnapshots = [];
 clearRouteIntermediateCityOutlines();
 // Сбрасываем состояние форсированного марша
 routeForcedMarch = false;
@@ -1433,7 +1437,7 @@ forcedMarchButton.addEventListener("click", function() {
       routeForcedMarch = true;
       routeForcedMarchPendingExit = true;
       routeForcedMarchStartDistance = fixedLength;
-      routeForcedMarchStartEpochDistance = fixedLength;
+      routeForcedMarchEpochStartDistance = fixedLength;
       routeForcedMarchStartUnits = 0;
       this.classList.add("active");
       this.setAttribute("aria-pressed", "true");
@@ -1627,19 +1631,61 @@ window.routePendingConfirmation = false;
       }
     }
 
-    routePoints = getRoutePointsUpToDistance(routePoints, targetDistance);
-    // Расчёт длины не включает нулевое соединение фактической границы с
-    // центром. Поэтому общий обрезатель может остановиться на предыдущей
-    // точке границы; явно возвращаем центральную точку в конец маршрута.
-    if (settlementCheckpointPoint && settlementCheckpointDistance !== null &&
-        Math.abs(targetDistance - settlementCheckpointDistance) < 0.05) {
-      const last = routePoints[routePoints.length - 1];
-      if (!last || Math.hypot(
-        Number(last.lat) - Number(settlementCheckpointPoint.lat),
-        Number(last.lng) - Number(settlementCheckpointPoint.lng)
-      ) > 0.000001) {
-        routePoints.push(settlementCheckpointPoint);
+    // Каждый промежуточный город запоминает маршрут непосредственно перед
+    // входом в него. Поэтому возврат от второго города останавливается у
+    // первого, а возврат от первого — на подходе до него.
+    const settlementUndoHistory = Array.isArray(window.routeIntermediateSettlementUndoSnapshots)
+      ? window.routeIntermediateSettlementUndoSnapshots : [];
+    const latestSettlementUndo = settlementUndoHistory.length
+      ? settlementUndoHistory[settlementUndoHistory.length - 1] : null;
+    let settlementUndoApplied = false;
+    if (latestSettlementUndo && Array.isArray(latestSettlementUndo.points)) {
+      const snapshotDistance = getRouteTravelLength(latestSettlementUndo.points);
+      if (snapshotDistance < totalLength - 0.01 &&
+          snapshotDistance >= targetDistance - 0.01) {
+        targetDistance = snapshotDistance;
+        settlementUndoApplied = true;
+        routePoints = latestSettlementUndo.points.map(point =>
+          copyRoutePointMetadata(point, L.latLng(Number(point.lat), Number(point.lng)))
+        );
+        window.routeIntermediateCityIds = Array.isArray(latestSettlementUndo.intermediateIds)
+          ? latestSettlementUndo.intermediateIds.slice() : [];
+        routeForcedMarch = Boolean(latestSettlementUndo.forcedMarch);
+        routeForcedMarchPendingExit = Boolean(latestSettlementUndo.forcedMarchPendingExit);
+        routeForcedMarchStartDistance = Number(latestSettlementUndo.forcedMarchStartDistance) || 0;
+        routeForcedMarchStartUnits = Number(latestSettlementUndo.forcedMarchStartUnits) || 0;
+        routeForcedMarchEpochStartDistance = Number(latestSettlementUndo.forcedMarchEpochStartDistance) || 0;
+        routeForcedSegments = Array.isArray(latestSettlementUndo.forcedSegments)
+          ? latestSettlementUndo.forcedSegments.map(segment => ({ ...segment })) : [];
+        settlementUndoHistory.pop();
+        const forcedButton = document.getElementById("route-forced-march");
+        if (forcedButton) {
+          forcedButton.classList.toggle("active", routeForcedMarch);
+          forcedButton.setAttribute("aria-pressed", routeForcedMarch ? "true" : "false");
+        }
       }
+    }
+
+    if (!settlementUndoApplied) {
+      routePoints = getRoutePointsUpToDistance(routePoints, targetDistance);
+      // Расчёт длины не включает нулевое соединение фактической границы с
+      // центром. Поэтому общий обрезатель может остановиться на предыдущей
+      // точке границы; явно возвращаем центральную точку в конец маршрута.
+      if (settlementCheckpointPoint && settlementCheckpointDistance !== null &&
+          Math.abs(targetDistance - settlementCheckpointDistance) < 0.05) {
+        const last = routePoints[routePoints.length - 1];
+        if (!last || Math.hypot(
+          Number(last.lat) - Number(settlementCheckpointPoint.lat),
+          Number(last.lng) - Number(settlementCheckpointPoint.lng)
+        ) > 0.000001) {
+          routePoints.push(settlementCheckpointPoint);
+        }
+      }
+      // Если возврат ушёл раньше точки входа, история более поздних
+      // поселений больше не применима.
+      window.routeIntermediateSettlementUndoSnapshots = settlementUndoHistory.filter(snapshot =>
+        Array.isArray(snapshot.points) && getRouteTravelLength(snapshot.points) <= targetDistance + 0.01
+      );
     }
 
     // Промежуточный город остаётся выбранным только если маршрут всё ещё
@@ -1654,8 +1700,10 @@ window.routePendingConfirmation = false;
         ));
       });
     refreshRouteIntermediateCityOutlines();
-    routeForcedMarchPendingExit = false;
-    routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(routePoints);
+    if (!settlementUndoApplied) {
+      routeForcedMarchPendingExit = false;
+      routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(routePoints);
+    }
 
 // Синхронизируем историю форсированных маршей
 // с фактической длиной обрезанного маршрута.
@@ -1941,8 +1989,15 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
   const roundedPoints = [];
   const cornerRadius = 30;
 
-  // Скругляем углы, только если в маршруте есть хотя бы 3 точки
+  // Скругляем углы, только если в маршруте есть хотя бы 3 точки.
+  // Накопленные расстояния считаем один раз: прежний вложенный цикл
+  // пересчитывал длину всех предыдущих сегментов для каждого угла (O(n²)).
   roundedPoints.push(points[0]);
+  const cumulativeTravelDistances = new Array(points.length).fill(0);
+  for (let i = 1; i < points.length; i++) {
+    cumulativeTravelDistances[i] = cumulativeTravelDistances[i - 1] +
+      getRouteTravelLength([points[i - 1], points[i]]);
+  }
 
   if (points.length >= 3) {
     for (let i = 1; i < points.length - 1; i++) {
@@ -1951,10 +2006,7 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
       const next = points[i + 1];
 
       // Не скругляем вершину, если на ней расположен привал или другой маркер.
-      let cornerDistance = 0;
-      for (let k = 1; k <= i; k++) {
-        cornerDistance += getRouteTravelLength([points[k - 1], points[k]]);
-      }
+      const cornerDistance = cumulativeTravelDistances[i];
       // Не сглаживаем повороты рядом с привалом/маркером: иначе
       // следующий резкий изгиб может визуально утянуть линию от точки привала.
       const isSettlementTransitCorner =
@@ -2338,6 +2390,7 @@ function cancelPartyRoute() {
   window.routeDestinationBoundaryPoint = null;
   window.routeDestinationApproachPoint = null;
   window.routeIntermediateCityIds = [];
+  window.routeIntermediateSettlementUndoSnapshots = [];
   clearRouteIntermediateCityOutlines();
 
   stopRouteMarkerAnimation();
@@ -3481,14 +3534,29 @@ window.handlePartyRouteClick = function(latlng) {
   }, 180);
 };
 
-// Движение курсора на ПК
+// Движение курсора на ПК.
+// Схлопываем частые mousemove-события в один рендер на кадр браузера:
+// при длинном маршруте не нужно запускать полную перерисовку несколько
+// раз за один кадр, иначе очередь обновлений начинает ощущаться как лаги.
+let routePreviewFramePending = false;
 map.on("mousemove", function(e) {
   if (!window.routeMode || !hasMouse) return;
 
   lastCursorPosition = e.latlng;
-  // updateRouteLine обновляет маршрут и в конце применяет маску
-  // наведённого поселения вместе со всеми выбранными промежуточными.
-  updateRouteLine(e.latlng);
+  if (routePreviewFramePending) return;
+
+  routePreviewFramePending = true;
+  requestAnimationFrame(function() {
+    routePreviewFramePending = false;
+    // Используем последнее актуальное положение курсора. Если за это время
+    // пользователь кликнул, отменил маршрут или переключил режим, null не
+    // даст отрисовать устаревший предпросмотр поверх нового состояния.
+    const position = lastCursorPosition;
+    if (!window.routeMode || !hasMouse || !position) return;
+    // updateRouteLine обновляет маршрут и в конце применяет маску
+    // наведённого поселения вместе со всеми выбранными промежуточными.
+    updateRouteLine(position);
+  });
 });
 
 // При изменении масштаба пересобираем группы крестиков,
@@ -4512,6 +4580,19 @@ map.on("zoomend", function() {
     const currentRoutePoints = window.routePoints;
     const originalLastPoint = currentRoutePoints[currentRoutePoints.length - 1];
     if (!originalLastPoint) return;
+    const undoSnapshot = {
+      settlementId: String(area.id),
+      points: currentRoutePoints.map(point =>
+        copyRoutePointMetadata(point, L.latLng(Number(point.lat), Number(point.lng)))
+      ),
+      intermediateIds: window.routeIntermediateCityIds.slice(),
+      forcedMarch: Boolean(window.routeForcedMarch),
+      forcedMarchPendingExit: Boolean(window.routeForcedMarchPendingExit),
+      forcedMarchStartDistance: Number(window.routeForcedMarchStartDistance) || 0,
+      forcedMarchStartUnits: Number(window.routeForcedMarchStartUnits) || 0,
+      forcedMarchEpochStartDistance: Number(window.routeForcedMarchEpochStartDistance) || 0,
+      forcedSegments: routeForcedSegments.map(segment => ({ ...segment }))
+    };
     const approachTarget = clickedPoint || originalLastPoint;
     const visualPolygon = getSettlementBrushErasePolygon(area, 0);
     const lastPointInsideBrush = pointInSettlement(originalLastPoint, visualPolygon);
@@ -4580,6 +4661,11 @@ map.on("zoomend", function() {
       return;
     }
 
+    if (!Array.isArray(window.routeIntermediateSettlementUndoSnapshots)) {
+      window.routeIntermediateSettlementUndoSnapshots = [];
+    }
+    window.routeIntermediateSettlementUndoSnapshots.push(undoSnapshot);
+
     currentRoutePoints.push(window.setRouteSegmentMode(
       L.latLng(actualBoundary.point.lat, actualBoundary.point.lng),
       "settlement-count-only",
@@ -4612,13 +4698,12 @@ map.on("zoomend", function() {
   // Используется updateRouteLine для проверки самих игровых жетонов.
   // Маска стабильна при любом масштабе: маркер не исчезает из-за изменения
   // внешнего экранного отступа визуальной кисти.
-  window.isRouteMarkerMaskedBySettlement = function(position, area, extraPixels = 0) {
+  window.isRouteMarkerMaskedBySettlement = function(position, area) {
     if (!position || !area) return false;
-    // Обычные жетоны проверяем по стабильной геометрии. Для специальных
-    // крупных отметок форсированного марша сохраняем прежний экранный запас.
-    const polygon = Number(extraPixels) > 0
-      ? getSettlementBrushErasePolygon(area, extraPixels)
-      : getSettlementMarkerMaskPolygon(area);
+    // Проверяем положение центра маркера только по стабильной геометрии.
+    // Экранное расширение на 16/28 px меняет охват в координатах мира при
+    // zoom и из-за этого ошибочно прячет маркеры рядом с поселением.
+    const polygon = getSettlementMarkerMaskPolygon(area);
     return polygon.length >= 3 && pointInSettlement(position, polygon);
   };
 
