@@ -1676,7 +1676,21 @@ window.routePendingConfirmation = false;
       // над любыми промежуточными точками/привалами, появившимися после него.
       // Иначе первый возврат мог остановиться на последнем клике маршрута,
       // а до предыдущего города приходилось нажимать «Вернуть» повторно.
-      if (snapshotDistance < totalLength - 0.01) {
+      // Отмена промежуточного поселения определяется историей контрольных
+      // точек, а не сравнением пройденного расстояния. Два поселения могут
+      // находиться очень близко друг к другу (или иметь одинаковую
+      // накопленную длину из-за нулевых переходов), поэтому сравнение
+      // расстояний способно пропустить последний снимок и удалить сразу
+      // несколько обводок обычным откатом по расстоянию.
+      const latestSettlementIsStillOnRoute =
+        Array.isArray(window.routeIntermediateCityIds) &&
+        window.routeIntermediateCityIds.some(id =>
+          String(id) === String(latestSettlementUndo.settlementId)
+        ) && routePoints.some(point =>
+          String(point._routeSettlementId || "") === String(latestSettlementUndo.settlementId) &&
+          getRouteSegmentMode(point) === "settlement-zero"
+        );
+      if (latestSettlementIsStillOnRoute) {
         targetDistance = snapshotDistance;
         settlementUndoApplied = true;
         routePoints = latestSettlementUndo.points.map(point =>
@@ -4673,6 +4687,32 @@ map.on("zoomend", function() {
     let checkpointPoints = window.getRoutePointsUpToDistance(
       currentRoutePoints, checkpointDistance
     );
+
+    // Если последней контрольной точкой был центр предыдущего поселения,
+    // сохраняем весь фактический префикс маршрута до этой точки по индексу,
+    // а не обрезаем его только по длине. Это важно для коротких маршрутов:
+    // накопленная длина может быть близка к нулю, хотя подход к поселению и
+    // его собственная контрольная точка уже существуют.
+    let previousCenterIndex = -1;
+    for (let i = currentRoutePoints.length - 1; i >= 0; i--) {
+      const point = currentRoutePoints[i];
+      if (getRouteSegmentMode(point) === "settlement-zero" && point._routeSettlementId) {
+        const previousArea = (window.settlementAreas || []).find(item =>
+          String(item.id) === String(point._routeSettlementId)
+        );
+        if (previousArea && window.isRouteAtSettlementCenter(point, previousArea)) {
+          previousCenterIndex = i;
+          break;
+        }
+      }
+    }
+    const previousCenterDistanceForPrefix =
+      window.getLastSettlementCenterCheckpointDistance(currentRoutePoints);
+    if (previousCenterIndex >= 0 && previousCenterDistanceForPrefix !== null &&
+        previousCenterDistanceForPrefix >= checkpointDistance - 0.001) {
+      checkpointDistance = previousCenterDistanceForPrefix;
+      checkpointPoints = currentRoutePoints.slice(0, previousCenterIndex + 1);
+    }
 
     // Нулевой переход к центру поселения не увеличивает длину маршрута,
     // поэтому обрезка по расстоянию может закончиться на границе. Возвращаем
