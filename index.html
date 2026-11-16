@@ -729,6 +729,21 @@ const routePaceLimits = {
   normal: 300,
   fast: 375
 };
+// Публичный мост к состоянию темпа для обработчиков выбора поселений,
+// расположенных вне initializeParty().
+Object.defineProperties(window, {
+  routePaceLimits: { configurable: true, value: routePaceLimits },
+  routePace: {
+    configurable: true,
+    get: () => routePace,
+    set: value => { routePace = value; }
+  },
+  routeSpeedReduced: {
+    configurable: true,
+    get: () => routeSpeedReduced,
+    set: value => { routeSpeedReduced = !!value; }
+  }
+});
 const KM_PER_PIXEL = 38.6 / 300;
 let routePanel = null;
 let routeStatus = null;
@@ -2593,6 +2608,14 @@ function getLastSettlementCenterCheckpointDistance(points) {
   }
   return checkpoint;
 }
+
+// Вспомогательные функции используются обработчиком промежуточных поселений,
+// который находится за пределами initializeParty().
+window.getRoutePointsUpToDistance = getRoutePointsUpToDistance;
+window.getNormalRestDistances = getNormalRestDistances;
+window.getLastSettlementCenterCheckpointDistance = getLastSettlementCenterCheckpointDistance;
+window.getRouteSegmentMode = getRouteSegmentMode;
+window.getForcedSegmentDistances = getForcedSegmentDistances;
 
 function terminateForcedMarchAtSettlement(outerBoundaryDistance) {
   const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
@@ -4622,13 +4645,13 @@ map.on("zoomend", function() {
     // добавленную обычным кликом игрока.
     const currentLength = window.getRouteTravelLength(currentRoutePoints);
     const currentDailyLimit =
-      routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
+      window.routePaceLimits[window.routePace] * (window.routeSpeedReduced ? 0.5 : 1);
     let checkpointDistance = 0;
 
     if (window.routeForcedMarch) {
       checkpointDistance = Math.max(0, Number(window.routeForcedMarchStartDistance) || 0);
     } else {
-      const previousRests = getNormalRestDistances(
+      const previousRests = window.getNormalRestDistances(
         currentLength, currentDailyLimit, currentRoutePoints
       );
       for (let i = previousRests.length - 1; i >= 0; i--) {
@@ -4639,7 +4662,7 @@ map.on("zoomend", function() {
       }
 
       const previousSettlementCheckpoint =
-        getLastSettlementCenterCheckpointDistance(currentRoutePoints);
+        window.getLastSettlementCenterCheckpointDistance(currentRoutePoints);
       if (previousSettlementCheckpoint !== null &&
           previousSettlementCheckpoint < currentLength - 0.01 &&
           previousSettlementCheckpoint > checkpointDistance) {
@@ -4647,7 +4670,7 @@ map.on("zoomend", function() {
       }
     }
 
-    let checkpointPoints = getRoutePointsUpToDistance(
+    let checkpointPoints = window.getRoutePointsUpToDistance(
       currentRoutePoints, checkpointDistance
     );
 
@@ -4655,14 +4678,14 @@ map.on("zoomend", function() {
     // поэтому обрезка по расстоянию может закончиться на границе. Возвращаем
     // центр в снимок, чтобы он оставался полноценной контрольной точкой.
     const previousCenterPoint = [...currentRoutePoints].reverse().find(point => {
-      if (getRouteSegmentMode(point) !== "settlement-zero" ||
+      if (window.getRouteSegmentMode(point) !== "settlement-zero" ||
           !point._routeSettlementId) return false;
       const previousArea = (window.settlementAreas || []).find(item =>
         String(item.id) === String(point._routeSettlementId)
       );
       return !!(previousArea && window.isRouteAtSettlementCenter(point, previousArea));
     });
-    const previousCenterDistance = getLastSettlementCenterCheckpointDistance(currentRoutePoints);
+    const previousCenterDistance = window.getLastSettlementCenterCheckpointDistance(currentRoutePoints);
     if (previousCenterPoint !== undefined && previousCenterDistance !== null &&
         Math.abs(checkpointDistance - previousCenterDistance) < 0.05) {
       const lastCheckpointPoint = checkpointPoints[checkpointPoints.length - 1];
@@ -4681,11 +4704,11 @@ map.on("zoomend", function() {
     const retainedSettlementIds = (window.routeIntermediateCityIds || []).filter(id =>
       checkpointPoints.some(point =>
         String(point._routeSettlementId || "") === String(id) &&
-        getRouteSegmentMode(point) === "settlement-zero"
+        window.getRouteSegmentMode(point) === "settlement-zero"
       )
     );
-    const checkpointForcedSegments = routeForcedSegments
-      .filter(segment => getForcedSegmentDistances(segment, currentDailyLimit).end <= checkpointDistance + 0.05)
+    const checkpointForcedSegments = window.routeForcedSegments
+      .filter(segment => window.getForcedSegmentDistances(segment, currentDailyLimit).end <= checkpointDistance + 0.05)
       .map(segment => ({ ...segment }));
 
     const undoSnapshot = {
