@@ -1705,8 +1705,6 @@ function setRouteSegmentMode(point, mode, settlementId = null) {
   }
   return point;
 }
-// Доступ к метаданным сегментов из обработчиков поселений вне initializeParty.
-window.setRouteSegmentMode = setRouteSegmentMode;
 
 function copyRoutePointMetadata(source, target) {
   if (!source || !target) return target;
@@ -1754,15 +1752,11 @@ function getLastSettlementTransitEndDistance(points) {
   const intervals = getRouteSettlementTransitIntervals(points || routePoints);
   return intervals.length ? intervals[intervals.length - 1].end : 0;
 }
-window.getLastSettlementTransitEndDistance = getLastSettlementTransitEndDistance;
 
 function isRouteAtSettlementCenter(point, area) {
   if (!point || !area || !area.center) return false;
   return Math.hypot(Number(point.lat) - Number(area.center.lat), Number(point.lng) - Number(area.center.lng)) < 0.00002;
 }
-// Функция используется вложенными обработчиками маршрута и редактором поселений.
-// Публикуем её явно, чтобы область видимости не зависела от места объявления.
-window.isRouteAtSettlementCenter = isRouteAtSettlementCenter;
 
 function getRouteSegmentTerrainParts(start, end) {
   const dx = end.lng - start.lng;
@@ -1840,8 +1834,6 @@ function getRouteTravelLength(points) {
   }
   return total;
 }
-// Используется также функциями выбора поселения, расположенными вне initializeParty.
-window.getRouteTravelLength = getRouteTravelLength;
 
 // Получает интервалы внутри труднопроходимых зон в шкале времени пути.
 function getTerrainTravelIntervals(points) {
@@ -2486,7 +2478,6 @@ function terminateForcedMarchAtSettlement(outerBoundaryDistance) {
     button.setAttribute("aria-pressed", "false");
   }
 }
-window.terminateForcedMarchAtSettlement = terminateForcedMarchAtSettlement;
 
 function updateRouteLine(cursorPosition = null) {
   // Перерисовка карты не отменяет и не перезапускает анимацию жетонов.
@@ -3261,7 +3252,7 @@ window.addPartyRoutePoint = function(latlng) {
   if (routeForcedMarch && routeForcedMarchPendingExit && !getLastPointAtSettlementCenter(routePoints)) {
     routeForcedMarchPendingExit = false;
     routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(routePoints);
-    window.routeForcedMarchStartDistance = window.routeForcedMarchEpochStartDistance;
+    routeForcedMarchStartDistance = routeForcedMarchEpochStartDistance;
     routeForcedMarchStartUnits = 0;
   }
 
@@ -4325,7 +4316,7 @@ map.on("zoomend", function() {
       ? window.routeIntermediateCityIds : [];
     const areas = Array.isArray(window.settlementAreas) ? window.settlementAreas : [];
     const area = ids.map(id => areas.find(item => String(item.id) === String(id)))
-      .filter(Boolean).find(item => window.isRouteAtSettlementCenter(start, item));
+      .filter(Boolean).find(item => isRouteAtSettlementCenter(start, item));
     if (!area) return null;
 
     // Пока курсор/клик остаётся внутри внешней визуальной кисти,
@@ -4447,7 +4438,7 @@ map.on("zoomend", function() {
         outerApproach = findNearestRoutePointOnSettlementBrush(routeStart, area);
         if (!outerApproach) return;
         currentRoutePoints.splice(1, currentRoutePoints.length - 1);
-        currentRoutePoints.push(window.setRouteSegmentMode(
+        currentRoutePoints.push(setRouteSegmentMode(
           L.latLng(outerApproach.lat, outerApproach.lng),
           "settlement-count-only",
           area.id
@@ -4474,15 +4465,15 @@ map.on("zoomend", function() {
     // действовать только после выхода за его внешнюю границу.
     if (window.routeForcedMarch && window.routeForcedMarchPendingExit) {
       window.routeForcedMarchPendingExit = false;
-      window.routeForcedMarchEpochStartDistance = window.getLastSettlementTransitEndDistance(currentRoutePoints);
+      window.routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(currentRoutePoints);
       window.routeForcedMarchStartDistance = window.routeForcedMarchEpochStartDistance;
       window.routeForcedMarchStartUnits = 0;
     }
 
     // Форсированный марш заканчивается у внешней границы нового поселения.
     // Его остаток не переносится внутрь и не возобновляется после выхода.
-    const outerBoundaryDistance = window.getRouteTravelLength(currentRoutePoints);
-    window.terminateForcedMarchAtSettlement(outerBoundaryDistance);
+    const outerBoundaryDistance = getRouteTravelLength(currentRoutePoints);
+    terminateForcedMarchAtSettlement(outerBoundaryDistance);
 
     const actualBoundary = findNearestSettlementBoundaryPoint(approachTarget, area.points);
     if (!actualBoundary || !actualBoundary.point) {
@@ -4490,12 +4481,12 @@ map.on("zoomend", function() {
       return;
     }
 
-    currentRoutePoints.push(window.setRouteSegmentMode(
+    currentRoutePoints.push(setRouteSegmentMode(
       L.latLng(actualBoundary.point.lat, actualBoundary.point.lng),
       "settlement-count-only",
       area.id
     ));
-    currentRoutePoints.push(window.setRouteSegmentMode(
+    currentRoutePoints.push(setRouteSegmentMode(
       L.latLng(Number(area.center.lat), Number(area.center.lng)),
       "settlement-zero",
       area.id
@@ -4504,7 +4495,7 @@ map.on("zoomend", function() {
     window.routeIntermediateCityIds.push(String(area.id));
     window.lastCursorPosition = null;
     refreshRouteIntermediateCityOutlines();
-    window.updateRouteLine(null, true);
+    updateRouteLine(null, true);
     console.log("Поселение добавлено как промежуточное; маршрут продолжен из центра:", area.id);
   }
   // Используется updateRouteLine для проверки самих игровых жетонов.
