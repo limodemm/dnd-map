@@ -803,14 +803,27 @@ window.getRouteZoomSpeedMultiplier = getRouteZoomSpeedMultiplier;
 // Задержка каждого штриха считается от начала линии. С каждым штрихом
 // интервал немного сокращается, пока не достигнет безопасного минимума.
 // Затем весь интервал нормализуется относительно среднего масштаба.
+// Паузы маршрута на время обводки промежуточных поселений.
+// После каждой такой паузы ускорение пунктира начинается заново.
+let routeSettlementRevealPauses = [];
+
 function getRouteLineRevealDelay(dashIndex) {
   let delay = 0;
+  let localDashIndex = 0;
   const zoomSpeedMultiplier = getRouteZoomSpeedMultiplier();
   for (let i = 0; i < dashIndex; i++) {
     delay += Math.max(
       routeLineMinimumDashDelay,
-      routeLineFirstDashDelay - i * routeLineDashAcceleration
+      routeLineFirstDashDelay - localDashIndex * routeLineDashAcceleration
     ) * zoomSpeedMultiplier;
+
+    const pausesHere = routeSettlementRevealPauses.filter(pause => pause.afterDashIndex === i);
+    if (pausesHere.length) {
+      pausesHere.forEach(pause => { delay += pause.duration; });
+      localDashIndex = 0;
+    } else {
+      localDashIndex++;
+    }
   }
   return delay;
 }
@@ -822,6 +835,7 @@ function getRouteLineRevealDuration(screenLength) {
 }
 
 function stopRouteMarkerAnimation() {
+  routeSettlementRevealPauses = [];
   routeMarkerAnimations.forEach(animation => {
     if (animation.timer) clearTimeout(animation.timer);
   });
@@ -3458,7 +3472,8 @@ window.applySynchronizedPartyRoute = function(data) {
   window.routeIntermediateCityIds = Array.isArray(data.intermediateSettlementIds)
     ? data.intermediateSettlementIds.map(id => String(id)) : [];
   clearRouteIntermediateCityOutlines();
-  refreshRouteIntermediateCityOutlines();
+  // После подтверждения промежуточные города остаются без статичной кисти:
+  // каждый из них проявляется только своей маршрутной анимацией.
   lastCursorPosition = null;
 
   if (routePanel) routePanel.style.display = "none";
@@ -3467,7 +3482,10 @@ window.applySynchronizedPartyRoute = function(data) {
 
   const total = getRouteTravelLength(routePoints);
   if (total > 0.001) {
+    prepareSettlementRevealPauses(data);
     beginRouteMarkerAnimation(0, total, Number(data.startedAt) || Date.now());
+  } else {
+    routeSettlementRevealPauses = [];
   }
   updateRouteLine(null);
   console.log("Получен общий маршрут:", data);
@@ -4578,6 +4596,9 @@ map.on("zoomend", function() {
 
   function refreshRouteIntermediateCityOutlines() {
     clearRouteIntermediateCityOutlines();
+    // Статичные обводки используются только при построении маршрута.
+    // После подтверждения города ждут своей очереди анимации без контура.
+    if (routeFinished && !window.routeMode) return;
     const ids = Array.isArray(window.routeIntermediateCityIds)
       ? window.routeIntermediateCityIds : [];
     const areas = Array.isArray(window.settlementAreas)
@@ -5451,6 +5472,95 @@ map.on("zoomend", function() {
   let settlementTraceWaitTimers = [];
   let settlementTraceWaitToken = 0;
 
+  // Рассчитываем остановки анимации линии заранее, до её запуска.
+  // Каждая остановка длится ровно столько, сколько занимает росчерк кисти
+  // соответствующего города. После неё темп линии снова начинает разгоняться.
+  function prepareSettlementRevealPauses(routeData) {
+    routeSettlementRevealPauses = [];
+    if (!routeData || !Array.isArray(routePoints) || routePoints.length < 2) return;
+
+    const intermediateIds = Array.isArray(routeData.intermediateSettlementIds)
+      ? routeData.intermediateSettlementIds.map(String) : [];
+    const destinationId = routeData.destinationSettlementId != null
+      ? String(routeData.destinationSettlementId) : null;
+    const ids = [...intermediateIds, ...(destinationId ? [destinationId] : [])];
+    const displayPoints = typeof window.createRouteDisplayPoints === 'function'
+      ? window.createRouteDisplayPoints(routePoints, []) : routePoints;
+    let displayLength = 0;
+    for (let i = 1; i < displayPoints.length; i++) {
+      displayLength += map.latLngToLayerPoint(displayPoints[i - 1]).distanceTo(
+        map.latLngToLayerPoint(displayPoints[i])
+      );
+    }
+
+    const dashStep = Number(window.routeLineDashStep) || 18;
+    const minimumDashDelay = Number(window.routeLineMinimumDashDelay) || 95;
+    const firstDashDelay = Number(window.routeLineFirstDashDelay) || 240;
+    const dashAcceleration = Number(window.routeLineDashAcceleration) || 2;
+    const zoomSpeedMultiplier = typeof window.getRouteZoomSpeedMultiplier === 'function'
+      ? window.getRouteZoomSpeedMultiplier() : 1;
+    const referenceLength = displayLength * zoomSpeedMultiplier;
+    const finalDashIndex = Math.max(0, Math.floor((referenceLength - 2) / dashStep));
+    const routeDashInterval = Math.max(
+      minimumDashDelay,
+      firstDashDelay - finalDashIndex * dashAcceleration
+    );
+    window.settlementTraceDashInterval = routeDashInterval;
+
+    const seen = new Set();
+    ids.forEach(id => {
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      let boundaryIndex = -1;
+      for (let i = 1; i < routePoints.length; i++) {
+        if (String(routePoints[i]._routeSettlementId || '') === id &&
+            routePoints[i]._routeSegmentMode === 'settlement-count-only') {
+          boundaryIndex = i;
+          break;
+        }
+      }
+      if (id === destinationId && routeData.destinationBoundaryPoint) {
+        const target = map.latLngToLayerPoint(L.latLng(
+          Number(routeData.destinationBoundaryPoint.lat),
+          Number(routeData.destinationBoundaryPoint.lng)
+        ));
+        let nearest = Infinity;
+        for (let i = 1; i < routePoints.length; i++) {
+          const distance = map.latLngToLayerPoint(routePoints[i]).distanceTo(target);
+          if (distance < nearest) { nearest = distance; boundaryIndex = i; }
+        }
+      }
+      if (boundaryIndex < 1) return;
+      const area = (window.settlementAreas || []).find(item => String(item.id) === id);
+      if (!area || !shouldUseSettlementDryBrush(area)) return;
+
+      const routeDistance = getRouteTravelLength(routePoints.slice(0, boundaryIndex + 1));
+      const totalRouteDistance = getRouteTravelLength(routePoints);
+      const displayRouteDistance = totalRouteDistance > 0.001
+        ? routeDistance / totalRouteDistance * getRouteTravelLength(displayPoints) : 0;
+      const screenDistance = getRouteScreenDistanceAtDistance(displayPoints, displayRouteDistance);
+      const dashOffset = screenDistance % dashStep;
+      let dashIndex = Math.floor(screenDistance / dashStep);
+      if (dashOffset > (Number(window.routeLineDashLength) || 8)) dashIndex++;
+      dashIndex = Math.min(dashIndex, finalDashIndex);
+
+      const path = getSettlementDryBrushPath(area);
+      const contourLength = path.reduce((sum, point, index) => {
+        return index ? sum + point.distanceTo(path[index - 1]) : sum;
+      }, 0);
+      const halfContourLength = contourLength / 2;
+      const dashInterval = Math.max(minimumDashDelay, routeDashInterval) * 0.82 * zoomSpeedMultiplier;
+      const duration = Math.max(
+        Number(window.routeLineRevealFadeDuration) || 220,
+        (halfContourLength / dashStep) * dashInterval + (Number(window.routeLineRevealFadeDuration) || 220)
+      );
+      routeSettlementRevealPauses.push({ afterDashIndex: dashIndex, duration, id });
+    });
+
+    routeSettlementRevealPauses.sort((a, b) => a.afterDashIndex - b.afterDashIndex);
+    console.log('Паузы анимации маршрута для поселений:', routeSettlementRevealPauses);
+  }
+
   function waitForRouteRevealThenTraceSettlements(routeData) {
     settlementTraceWaitTimers.forEach(timer => clearTimeout(timer));
     settlementTraceWaitTimers = [];
@@ -5568,9 +5678,8 @@ map.on("zoomend", function() {
           distance: target.distance,
           delayUntilBoundary: delay
         });
-        // До этого момента промежуточный город показывается статичной кистью.
-        // Убираем только его статичный слой, чтобы анимация была видна ровно
-        // тогда, когда маршрут дошёл до его границы.
+        // До прибытия линии город вообще не имеет обводки. Запускаем
+        // росчерк только сейчас, а линия продолжит движение после его завершения.
         removeRouteIntermediateCityOutline(target.id);
         animateSettlementTrace(target.area, target.boundaryPoint, target.approachPoint);
       }
