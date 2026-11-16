@@ -530,12 +530,30 @@ let partyMarker = null;
 let partyListenerStarted = false;
 window.routeMode = false;
 
-  // Внешний вид маркера отряда
- const partyIcon = L.icon({
-  iconUrl: "party.png",
-  iconSize: [48, 48],
-  iconAnchor: [24, 24]
-});
+  // Внешний вид маркера отряда с адаптацией под масштаб карты
+function getPartyIconSize() {
+  const minZoom = map.getMinZoom();
+  const maxZoom = map.getMaxZoom();
+  const zoom = map.getZoom();
+
+  const progress = (zoom - minZoom) / (maxZoom - minZoom);
+
+  if (progress <= 1 / 3) return 26;
+  if (progress <= 2 / 3) return 34;
+  return 41;
+}
+
+function createPartyIcon() {
+  const size = getPartyIconSize();
+
+  return L.icon({
+    iconUrl: "party.png",
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2]
+  });
+}
+
+let partyIcon = createPartyIcon();
 
   // Подключение общего положения отряда
   async function initializeParty() {
@@ -3768,6 +3786,11 @@ map.on("mousemove", function(e) {
 // При изменении масштаба пересобираем группы крестиков,
 // чтобы они не накладывались друг на друга.
 map.on("zoomend", function() {
+  // Обновляем размер маркера отряда при изменении масштаба
+  if (partyMarker) {
+    partyIcon = createPartyIcon();
+    partyMarker.setIcon(partyIcon);
+  }
   // Сначала переводим активные анимации на новую экранную шкалу,
   // сохраняя их текущий прогресс, и только затем перерисовываем маршрут.
   rebaseRouteMarkerAnimationsForZoom();
