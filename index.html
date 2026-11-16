@@ -1797,6 +1797,9 @@ function copyRoutePointMetadata(source, target) {
   }
   return target;
 }
+// Эта функция нужна также обработчикам выбора промежуточного поселения,
+// которые выполняются вне локальной области initializeParty().
+window.copyRoutePointMetadata = copyRoutePointMetadata;
 
 function getRouteSegmentMode(point) {
   return point && point._routeSegmentMode ? point._routeSegmentMode : "normal";
@@ -4554,7 +4557,7 @@ map.on("zoomend", function() {
           ));
           latestEntry = {
             segmentIndex: i,
-            point: copyRoutePointMetadata(end, crossing)
+            point: window.copyRoutePointMetadata(end, crossing)
           };
         }
 
@@ -4583,7 +4586,7 @@ map.on("zoomend", function() {
     const undoSnapshot = {
       settlementId: String(area.id),
       points: currentRoutePoints.map(point =>
-        copyRoutePointMetadata(point, L.latLng(Number(point.lat), Number(point.lng)))
+        window.copyRoutePointMetadata(point, L.latLng(Number(point.lat), Number(point.lng)))
       ),
       intermediateIds: window.routeIntermediateCityIds.slice(),
       forcedMarch: Boolean(window.routeForcedMarch),
