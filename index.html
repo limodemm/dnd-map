@@ -807,7 +807,7 @@ window.getRouteZoomSpeedMultiplier = getRouteZoomSpeedMultiplier;
 // Затем весь интервал нормализуется относительно среднего масштаба.
 // Паузы маршрута на время обводки промежуточных поселений.
 // После каждой такой паузы ускорение пунктира начинается заново.
-let routeSettlementRevealPauses = [];
+window.routeSettlementRevealPauses = [];
 
 function getRouteLineRevealDelay(dashIndex) {
   let delay = 0;
@@ -819,7 +819,7 @@ function getRouteLineRevealDelay(dashIndex) {
       routeLineFirstDashDelay - localDashIndex * routeLineDashAcceleration
     ) * zoomSpeedMultiplier;
 
-    const pausesHere = routeSettlementRevealPauses.filter(pause => pause.afterDashIndex === i);
+    const pausesHere = window.routeSettlementRevealPauses.filter(pause => pause.afterDashIndex === i);
     if (pausesHere.length) {
       pausesHere.forEach(pause => { delay += pause.duration; });
       localDashIndex = 0;
@@ -837,7 +837,7 @@ function getRouteLineRevealDuration(screenLength) {
 }
 
 function stopRouteMarkerAnimation() {
-  routeSettlementRevealPauses = [];
+  window.routeSettlementRevealPauses = [];
   routeMarkerAnimations.forEach(animation => {
     if (animation.timer) clearTimeout(animation.timer);
   });
@@ -3490,7 +3490,7 @@ window.routeFinished = true;
     prepareSettlementRevealPauses(data);
     beginRouteMarkerAnimation(0, total, Number(data.startedAt) || Date.now());
   } else {
-    routeSettlementRevealPauses = [];
+    window.routeSettlementRevealPauses = [];
   }
   updateRouteLine(null);
   console.log("Получен общий маршрут:", data);
@@ -3795,11 +3795,14 @@ map.on("zoomend", function() {
   // Сначала переводим активные анимации на новую экранную шкалу,
   // сохраняя их текущий прогресс, и только затем перерисовываем маршрут.
   rebaseRouteMarkerAnimationsForZoom();
-  if (routeIntermediateBrushLayers.length) {
-    refreshRouteIntermediateCityOutlines();
-  }
   if (routePoints.length >= 2 || window.routeMode) {
     updateRouteLine(lastCursorPosition);
+  }
+  // Перерисовываем внешние обводки после обновления линии и предпросмотра:
+  // updateRouteLine может пересобрать маски/слои при новом масштабе.
+  if (window.routeMode && Array.isArray(window.routeIntermediateCityIds) &&
+      window.routeIntermediateCityIds.length) {
+    refreshRouteIntermediateCityOutlines();
   }
 });
 
@@ -5482,7 +5485,7 @@ map.on("zoomend", function() {
   // Каждая остановка длится ровно столько, сколько занимает росчерк кисти
   // соответствующего города. После неё темп линии снова начинает разгоняться.
   function prepareSettlementRevealPauses(routeData) {
-    routeSettlementRevealPauses = [];
+    window.routeSettlementRevealPauses = [];
     if (!routeData || !Array.isArray(routePoints) || routePoints.length < 2) return;
 
     const intermediateIds = Array.isArray(routeData.intermediateSettlementIds)
@@ -5560,11 +5563,11 @@ map.on("zoomend", function() {
         Number(window.routeLineRevealFadeDuration) || 220,
         (halfContourLength / dashStep) * dashInterval + (Number(window.routeLineRevealFadeDuration) || 220)
       );
-      routeSettlementRevealPauses.push({ afterDashIndex: dashIndex, duration, id });
+      window.routeSettlementRevealPauses.push({ afterDashIndex: dashIndex, duration, id });
     });
 
-    routeSettlementRevealPauses.sort((a, b) => a.afterDashIndex - b.afterDashIndex);
-    console.log('Паузы анимации маршрута для поселений:', routeSettlementRevealPauses);
+    window.routeSettlementRevealPauses.sort((a, b) => a.afterDashIndex - b.afterDashIndex);
+    console.log('Паузы анимации маршрута для поселений:', window.routeSettlementRevealPauses);
   }
 
   function waitForRouteRevealThenTraceSettlements(routeData) {
