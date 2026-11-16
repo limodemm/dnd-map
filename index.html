@@ -2005,9 +2005,14 @@ window.getRouteScreenDistanceAtDistance = function(points, targetDistance) {
     const fullScreenLength = a.distanceTo(b);
     const parts = getRouteSegmentTerrainParts(previous, current);
     const fullRawLength = Math.hypot(current.lat - previous.lat, current.lng - previous.lng);
+    // Сегменты settlement-count-only физически скрыты под кистью поселения.
+    // Они продолжают учитываться в игровом расстоянии (дни/лимиты), но не
+    // расходуют экранное время анимации: после обводки линия появляется
+    // у внешней границы выхода, а не «проявляется» под городом.
+    const hiddenSettlementTransit = getRouteSegmentMode(current) === "settlement-count-only";
     for (const part of parts) {
       const partTravelLength = part.travelLength;
-      const partScreenLength = part.zeroLength ? 0 : (fullRawLength > 0
+      const partScreenLength = (part.zeroLength || hiddenSettlementTransit) ? 0 : (fullRawLength > 0
         ? fullScreenLength * (part.t1 - part.t0)
         : 0);
       if (partTravelLength <= 0.000001) continue;
@@ -5550,7 +5555,12 @@ map.on("zoomend", function() {
       const area = (window.settlementAreas || []).find(item => String(item.id) === id);
       if (!area || !shouldUseSettlementDryBrush(area)) return;
 
-      const routeDistance = getRouteTravelLength(routePoints.slice(0, boundaryIndex + 1));
+      // У промежуточного города видимая линия заканчивается на внешнем
+      // краю кисти: следующий сегмент до фактической границы скрыт маской.
+      // Поэтому паузу ставим перед скрытым сегментом. Для конечного города
+      // оставляем прежнюю точку прибытия — фактическую границу.
+      const arrivalIndex = id !== destinationId ? Math.max(0, boundaryIndex - 1) : boundaryIndex;
+      const routeDistance = getRouteTravelLength(routePoints.slice(0, arrivalIndex + 1));
       const dashIndex = window.getRouteDashIndexAtDistance(
         displayPoints,
         totalRouteDistance,
@@ -5669,6 +5679,17 @@ map.on("zoomend", function() {
       if (boundaryIndex < 1 || !boundaryPoint) {
         console.warn('Анимация поселения: не найдена точка входа на маршруте', id);
         return;
+      }
+
+      // Для промежуточного поселения фактическая граница находится уже
+      // под маской кисти. Видимый пунктир приходит к предыдущей точке —
+      // внешнему краю кисти. Запускаем росчерк от неё, а направление входа
+      // берём по предыдущей точке маршрута. Конечное поселение не меняем.
+      if (id !== destinationId && boundaryIndex > 1) {
+        const visibleEntryIndex = boundaryIndex - 1;
+        approachPoint = route[Math.max(0, visibleEntryIndex - 1)];
+        boundaryPoint = route[visibleEntryIndex];
+        boundaryIndex = visibleEntryIndex;
       }
 
       const distance = window.getRouteTravelLength(route.slice(0, boundaryIndex + 1));
