@@ -2628,6 +2628,70 @@ function terminateForcedMarchAtSettlement(outerBoundaryDistance) {
 }
 window.terminateForcedMarchAtSettlement = terminateForcedMarchAtSettlement;
 
+// Строит временный предпросмотр автоматического прохождения через города.
+// Для точного совпадения с подтверждением повторно использует тот же обработчик
+// добавления точки, но на временной копии маршрута и без побочных обновлений UI.
+function getAutomaticSettlementPreview(cursorPosition) {
+  if (!cursorPosition || !window.routeMode || !routePoints.length ||
+      window.routeDestinationCityId || typeof window.addPartyRoutePoint !== "function") {
+    return { points: null, addedIds: [] };
+  }
+
+  const originalPoints = routePoints;
+  const originalIds = Array.isArray(window.routeIntermediateCityIds)
+    ? window.routeIntermediateCityIds.slice() : [];
+  const originalLastCursor = lastCursorPosition;
+  const originalUpdate = window.updateRouteLine;
+  const originalTerminate = window.terminateForcedMarchAtSettlement;
+  const originalForcedState = {
+    active: routeForcedMarch,
+    pendingExit: routeForcedMarchPendingExit,
+    startDistance: routeForcedMarchStartDistance,
+    startUnits: routeForcedMarchStartUnits,
+    epochStartDistance: routeForcedMarchEpochStartDistance,
+    segments: routeForcedSegments.slice()
+  };
+
+  try {
+    routePoints = originalPoints.slice();
+    window.routeIntermediateCityIds = originalIds.slice();
+    window.updateRouteLine = function() {};
+    window.terminateForcedMarchAtSettlement = function() {};
+    window.addPartyRoutePoint(cursorPosition);
+
+    const simulatedPoints = routePoints.slice();
+    const simulatedIds = window.routeIntermediateCityIds.slice();
+    return {
+      points: simulatedPoints.length > originalPoints.length
+        ? simulatedPoints.slice(originalPoints.length - 1) : null,
+      addedIds: simulatedIds.filter(id => !originalIds.some(old => String(old) === String(id)))
+    };
+  } catch (error) {
+    console.warn("Не удалось построить предварительный маршрут через поселение:", error);
+    return { points: null, addedIds: [] };
+  } finally {
+    routePoints = originalPoints;
+    window.routeIntermediateCityIds = originalIds;
+    routeForcedMarch = originalForcedState.active;
+    routeForcedMarchPendingExit = originalForcedState.pendingExit;
+    routeForcedMarchStartDistance = originalForcedState.startDistance;
+    routeForcedMarchStartUnits = originalForcedState.startUnits;
+    routeForcedMarchEpochStartDistance = originalForcedState.epochStartDistance;
+    routeForcedSegments = originalForcedState.segments;
+    lastCursorPosition = originalLastCursor;
+    window.updateRouteLine = originalUpdate;
+    window.terminateForcedMarchAtSettlement = originalTerminate;
+    if (typeof refreshRouteIntermediateCityOutlines === "function") {
+      refreshRouteIntermediateCityOutlines();
+    }
+  }
+}
+
+let routeAutoPreviewBrushLayers = [];
+function clearRouteAutoPreviewBrushes() {
+  routeAutoPreviewBrushLayers = removeSettlementBrushLayers(routeAutoPreviewBrushLayers);
+}
+
 function updateRouteLine(cursorPosition = null) {
   // Перерисовка карты не отменяет и не перезапускает анимацию жетонов.
   // Время анимации учитывается при создании каждого нового DOM-элемента.
@@ -2636,11 +2700,13 @@ function updateRouteLine(cursorPosition = null) {
   // Для preview используем те же расчёты, что и для зафиксированного маршрута,
   // но ничего не записываем в состояние до клика.
   const pointsToDraw = [...routePoints];
+  let automaticPreviewIds = [];
   if (cursorPosition && hasMouse && window.routeMode && routePoints.length > 0) {
-    const previewPath = getRouteSegmentAroundIntermediateCities(
-      routePoints[routePoints.length - 1],
-      cursorPosition
+    const automaticPreview = getAutomaticSettlementPreview(cursorPosition);
+    const previewPath = automaticPreview.points || getRouteSegmentAroundIntermediateCities(
+      routePoints[routePoints.length - 1], cursorPosition
     );
+    automaticPreviewIds = automaticPreview.addedIds || [];
     if (previewPath && previewPath.length > 1) {
       pointsToDraw.push(...previewPath.slice(1));
     }
@@ -3319,6 +3385,18 @@ function updateRouteLine(cursorPosition = null) {
     }
   } else if (window.routeMode && cursorPosition && window.previewSettlementAt) {
     window.previewSettlementAt(cursorPosition);
+  }
+
+  // Дополнительно подсвечиваем города, через которые маршрут пройдёт
+  // автоматически. Эти контуры существуют только в предпросмотре и исчезают
+  // либо пересчитываются при следующем движении курсора.
+  clearRouteAutoPreviewBrushes();
+  if (automaticPreviewIds.length) {
+    automaticPreviewIds.forEach(id => {
+      const area = allSettlementAreas.find(item => String(item.id) === String(id));
+      if (!area) return;
+      routeAutoPreviewBrushLayers.push(...createSettlementDryBrushLayers(area, 0.76));
+    });
   }
 
   // Затем накладываем маски всех выбранных промежуточных поселений.
