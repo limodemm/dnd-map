@@ -804,27 +804,22 @@ window.getRouteZoomSpeedMultiplier = getRouteZoomSpeedMultiplier;
 
 // Задержка каждого штриха считается от начала линии. С каждым штрихом
 // интервал немного сокращается, пока не достигнет безопасного минимума.
-// Затем весь интервал нормализуется относительно среднего масштаба.
-// Паузы маршрута на время обводки промежуточных поселений.
-// После каждой такой паузы ускорение пунктира начинается заново.
+// Паузы у поселений останавливают линию, но НЕ сбрасывают и не пересчитывают
+// накопленное ускорение: после обводки линия продолжает тот же темповой ряд.
 window.routeSettlementRevealPauses = [];
 
 function getRouteLineRevealDelay(dashIndex) {
   let delay = 0;
-  let localDashIndex = 0;
   const zoomSpeedMultiplier = getRouteZoomSpeedMultiplier();
   for (let i = 0; i < dashIndex; i++) {
     delay += Math.max(
       routeLineMinimumDashDelay,
-      routeLineFirstDashDelay - localDashIndex * routeLineDashAcceleration
+      routeLineFirstDashDelay - i * routeLineDashAcceleration
     ) * zoomSpeedMultiplier;
 
     const pausesHere = window.routeSettlementRevealPauses.filter(pause => pause.afterDashIndex === i);
     if (pausesHere.length) {
       pausesHere.forEach(pause => { delay += pause.duration; });
-      localDashIndex = 0;
-    } else {
-      localDashIndex++;
     }
   }
   return delay;
@@ -5576,18 +5571,15 @@ map.on("zoomend", function() {
       candidates.push({ id, dashIndex, halfContourLength: contourLength / 2 });
     });
 
-    // Обрабатываем города по порядку прохождения. После каждой обводки
-    // счётчик ускорения линии начинается заново — точно как в самой линии.
+    // Обрабатываем города по порядку прохождения. Ускорение не сбрасывается
+    // после промежуточных поселений: каждый город использует тот интервал,
+    // который соответствует его реальному месту в единой последовательности штрихов.
     candidates.sort((a, b) => a.dashIndex - b.dashIndex);
-    let previousPauseDashIndex = null;
     let lastBaseDashInterval = minimumDashDelay;
     candidates.forEach(candidate => {
-      const localDashIndex = previousPauseDashIndex === null
-        ? candidate.dashIndex
-        : Math.max(0, candidate.dashIndex - previousPauseDashIndex - 1);
       const baseDashInterval = Math.max(
         minimumDashDelay,
-        firstDashDelay - localDashIndex * dashAcceleration
+        firstDashDelay - candidate.dashIndex * dashAcceleration
       );
       const brushDashInterval = baseDashInterval * 0.82;
       const brushDuration = Math.max(
@@ -5607,7 +5599,6 @@ map.on("zoomend", function() {
         brushDuration,
         id: candidate.id
       });
-      previousPauseDashIndex = candidate.dashIndex;
     });
 
     window.routeSettlementRevealPauses.sort((a, b) => a.afterDashIndex - b.afterDashIndex);
