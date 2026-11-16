@@ -610,6 +610,7 @@ partyMarker.on("click", function() {
 
 window.routeMode = true;
 routeFinished = false;
+window.routeFinished = false;
 window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
 window.routeDestinationApproachPoint = null;
@@ -667,6 +668,7 @@ let routeEndMarker = null;
 
 // Состояние завершения маршрута
 let routeFinished = false;
+window.routeFinished = false;
 
 // Обработка одиночного и двойного клика
 let pendingRouteClickTimer = null;
@@ -1745,6 +1747,7 @@ window.routePendingConfirmation = false;
 
     if (routeFinished) {
       routeFinished = false;
+window.routeFinished = false;
       window.routePendingConfirmation = false;
       window.routeMode = true;
       map.doubleClickZoom.disable();
@@ -2411,6 +2414,7 @@ function cancelPartyRoute() {
   pendingRouteClickPosition = null;
 
   routeFinished = false;
+window.routeFinished = false;
   window.routePendingConfirmation = false;
   window.routeMode = false;
   map.doubleClickZoom.enable();
@@ -3462,6 +3466,7 @@ window.applySynchronizedPartyRoute = function(data) {
   routeForcedMarchPendingExit = Boolean(data.forcedMarchPendingExit);
   routeForcedSegments = Array.isArray(data.forcedSegments) ? data.forcedSegments : [];
   routeFinished = true;
+window.routeFinished = true;
   window.routeMode = false;
   window.routePendingConfirmation = false;
   window.routeDestinationCityId = data.destinationSettlementId || null;
@@ -3646,6 +3651,7 @@ function finishPartyRoute(latlng) {
 
   // До подтверждения маршрут остаётся статичным предпросмотром.
   routeFinished = true;
+window.routeFinished = true;
   window.routeMode = false;
   window.routePendingConfirmation = true;
 
@@ -4598,7 +4604,7 @@ map.on("zoomend", function() {
     clearRouteIntermediateCityOutlines();
     // Статичные обводки используются только при построении маршрута.
     // После подтверждения города ждут своей очереди анимации без контура.
-    if (routeFinished && !window.routeMode) return;
+    if (window.routeFinished && !window.routeMode) return;
     const ids = Array.isArray(window.routeIntermediateCityIds)
       ? window.routeIntermediateCityIds : [];
     const areas = Array.isArray(window.settlementAreas)
