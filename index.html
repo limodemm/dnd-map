@@ -1622,7 +1622,7 @@ window.routePendingConfirmation = false;
           const area = (window.settlementAreas || []).find(item =>
             String(item.id) === String(point._routeSettlementId)
           );
-          return !!(area && isRouteAtSettlementCenter(point, area));
+          return !!(area && window.isRouteAtSettlementCenter(point, area));
         }) || null;
       }
     }
@@ -1650,7 +1650,7 @@ window.routePendingConfirmation = false;
         return !!(area && routePoints.some(point =>
           String(point._routeSettlementId || "") === String(id) &&
           getRouteSegmentMode(point) === "settlement-zero" &&
-          isRouteAtSettlementCenter(point, area)
+          window.isRouteAtSettlementCenter(point, area)
         ));
       });
     refreshRouteIntermediateCityOutlines();
@@ -1793,6 +1793,10 @@ function isRouteAtSettlementCenter(point, area) {
   if (!point || !area || !area.center) return false;
   return Math.hypot(Number(point.lat) - Number(area.center.lat), Number(point.lng) - Number(area.center.lng)) < 0.00002;
 }
+// Функция объявлена внутри initializeParty(), но также используется
+// обработчиками прокладки маршрута, расположенными вне этой области видимости.
+// Публикуем ту же реализацию, не создавая второй независимой копии.
+window.isRouteAtSettlementCenter = isRouteAtSettlementCenter;
 
 function getRouteSegmentTerrainParts(start, end) {
   const dx = end.lng - start.lng;
@@ -2482,7 +2486,7 @@ function getLastPointAtSettlementCenter(points) {
     const area = areas.find(item => String(item.id) === String(id));
     if (area && String(last._routeSettlementId || "") === String(id) &&
         getRouteSegmentMode(last) === "settlement-zero" &&
-        isRouteAtSettlementCenter(last, area)) return area;
+        window.isRouteAtSettlementCenter(last, area)) return area;
   }
   return null;
 }
@@ -2500,7 +2504,7 @@ function getLastSettlementCenterCheckpointDistance(points) {
       const area = (window.settlementAreas || []).find(item =>
         String(item.id) === String(end._routeSettlementId)
       );
-      if (area && isRouteAtSettlementCenter(end, area)) checkpoint = passed;
+      if (area && window.isRouteAtSettlementCenter(end, area)) checkpoint = passed;
     }
     getRouteSegmentTerrainParts(points[i - 1], end).forEach(part => {
       passed += part.travelLength;
@@ -4377,7 +4381,7 @@ map.on("zoomend", function() {
       ? window.routeIntermediateCityIds : [];
     const areas = Array.isArray(window.settlementAreas) ? window.settlementAreas : [];
     const area = ids.map(id => areas.find(item => String(item.id) === String(id)))
-      .filter(Boolean).find(item => isRouteAtSettlementCenter(start, item));
+      .filter(Boolean).find(item => window.isRouteAtSettlementCenter(start, item));
     if (!area) return null;
 
     const visualPolygon = getSettlementBrushErasePolygon(area, 0);
