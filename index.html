@@ -4758,6 +4758,8 @@ map.on("zoomend", function() {
   let settlementContourEditorAddMode = false;
   let settlementContourEditorHandles = [];
   let settlementContourEditorBrushLayers = [];
+  let settlementCenterEditMode = false;
+  let settlementCenterMarker = null;
 
   function getSettlementEditorAreaLabel(area) {
     const customName = area.name || area.title || area.label;
@@ -4913,10 +4915,81 @@ map.on("zoomend", function() {
     setSettlementContourEditorStatus("Точек: " + settlementContourEditorPoints.length + ". Перетаскивай точки или включи добавление новых.");
   }
 
+  function removeSettlementCenterMarker() {
+    if (settlementCenterMarker && map.hasLayer(settlementCenterMarker)) map.removeLayer(settlementCenterMarker);
+    settlementCenterMarker = null;
+  }
+
+  function renderSettlementCenterMarker() {
+    removeSettlementCenterMarker();
+    const area = getSelectedSettlementContourEditorArea();
+    if (!area || area.type === "terrain" || !area.center || !Number.isFinite(Number(area.center.lat)) || !Number.isFinite(Number(area.center.lng))) return;
+    const marker = L.marker([Number(area.center.lat), Number(area.center.lng)], {
+      draggable: true,
+      zIndexOffset: 1800,
+      icon: L.divIcon({
+        className: "settlement-center-editor-marker",
+        html: '<div style="width:22px;height:22px;border-radius:50%;background:#e5b94f;border:3px solid #211b16;box-shadow:0 0 0 3px #f5e7bd99,0 2px 7px #000b;display:flex;align-items:center;justify-content:center;color:#211b16;font:bold 15px Georgia;">✦</div>',
+        iconSize: [28, 28], iconAnchor: [14, 14]
+      })
+    }).addTo(map);
+    marker.on("dragend", async function(event) {
+      const p = event.target.getLatLng();
+      const selected = getSelectedSettlementContourEditorArea();
+      if (!selected || !pointInSettlement({ lat: p.lat, lng: p.lng }, selected.points || [])) {
+        renderSettlementCenterMarker();
+        setSettlementContourEditorStatus("Центр должен находиться внутри невидимой границы поселения.");
+        return;
+      }
+      await saveSettlementCenter(selected, p);
+    });
+    settlementCenterMarker = marker;
+  }
+
+  async function saveSettlementCenter(area, latlng) {
+    if (!area || area.type === "terrain") return;
+    const center = { lat: Number(Number(latlng.lat).toFixed(7)), lng: Number(Number(latlng.lng).toFixed(7)) };
+    if (!pointInSettlement(center, area.points || [])) {
+      setSettlementContourEditorStatus("Нельзя поставить центр за пределами невидимой границы поселения.");
+      return;
+    }
+    try {
+      if (!window.dndFirebase || typeof window.dndFirebase.saveSettlementCenter !== "function") throw new Error("Firebase ещё не готов к сохранению центра");
+      await window.dndFirebase.saveSettlementCenter(area.id, center);
+      area.center = center;
+      renderSettlementCenterMarker();
+      setSettlementContourEditorStatus("Центр поселения сохранён. Координаты: " + center.lat + ", " + center.lng + ".");
+    } catch (error) {
+      console.error("Не удалось сохранить центр поселения:", error);
+      setSettlementContourEditorStatus("Ошибка сохранения центра: " + error.message);
+      alert("Не удалось сохранить центр поселения в Firebase: " + error.message);
+    }
+  }
+
+  function toggleSettlementCenterEditMode() {
+    const area = getSelectedSettlementContourEditorArea();
+    if (!area || area.type === "terrain") {
+      setSettlementContourEditorStatus("Центр можно задавать только для города или деревни.");
+      return;
+    }
+    settlementCenterEditMode = !settlementCenterEditMode;
+    const button = document.getElementById("settlement-center-edit-toggle");
+    if (button) {
+      button.textContent = settlementCenterEditMode ? "Завершить установку центра" : "Указать центр поселения";
+      button.style.background = settlementCenterEditMode ? "#526044" : "#393027";
+    }
+    settlementContourEditorAddMode = false;
+    setSettlementContourEditorStatus(settlementCenterEditMode
+      ? "Режим установки центра включён. Нажми внутри невидимой границы поселения. Существующий центр можно перетащить."
+      : "Режим установки центра выключен.");
+  }
+
   function closeSettlementContourEditor() {
     window.settlementContourEditorActive = false;
     window.handleSettlementContourEditorMapClick = null;
     settlementContourEditorAddMode = false;
+    settlementCenterEditMode = false;
+    removeSettlementCenterMarker();
     settlementContourEditorSelectedIndex = -1;
     removeSettlementContourEditorVisuals();
     const panel = document.getElementById("settlement-contour-editor-controls");
@@ -4956,7 +5029,18 @@ map.on("zoomend", function() {
     settlementContourEditorAddMode = false;
     window.settlementContourEditorActive = true;
     window.handleSettlementContourEditorMapClick = function(latlng) {
-      if (!window.settlementContourEditorActive || !settlementContourEditorAddMode) return;
+      if (!window.settlementContourEditorActive) return;
+      const selectedArea = getSelectedSettlementContourEditorArea();
+      if (settlementCenterEditMode) {
+        if (!selectedArea || selectedArea.type === "terrain") return;
+        if (!pointInSettlement({ lat: latlng.lat, lng: latlng.lng }, selectedArea.points || [])) {
+          setSettlementContourEditorStatus("Точка находится за пределами поселения. Выбери место внутри невидимой границы.");
+          return;
+        }
+        saveSettlementCenter(selectedArea, latlng);
+        return;
+      }
+      if (!settlementContourEditorAddMode) return;
       const clickPoint = map.latLngToLayerPoint(latlng);
       let insertIndex = settlementContourEditorPoints.length;
       let nearestDistance = Infinity;
@@ -4986,6 +5070,13 @@ map.on("zoomend", function() {
     const startButton = document.getElementById("settlement-contour-editor-start");
     if (startButton) startButton.textContent = "Редактор открыт";
     refreshSettlementContourEditor();
+    renderSettlementCenterMarker();
+    const centerButton = document.getElementById("settlement-center-edit-toggle");
+    if (centerButton) {
+      centerButton.disabled = area.type === "terrain";
+      centerButton.textContent = "Указать центр поселения";
+      centerButton.style.background = "#393027";
+    }
     setSettlementContourEditorStatus("Редактируется: " + getSettlementEditorAreaLabel(area) + ". Перетаскивай вершины; для новых включи добавление точек и нажимай на карту.");
   }
 
@@ -5046,6 +5137,7 @@ map.on("zoomend", function() {
       <select id="settlement-contour-area-select" style="width:100%;padding:6px;background:#eee2c8;color:#211b16;border:1px solid #756044;border-radius:4px;"></select>
       <button type="button" id="settlement-contour-editor-start">Открыть редактор контура</button>
       <div id="settlement-contour-editor-controls" style="display:none;flex-direction:column;gap:6px;">
+        <button type="button" id="settlement-center-edit-toggle">Указать центр поселения</button>
         <button type="button" id="settlement-contour-editor-add">Добавить точки на карте</button>
         <button type="button" id="settlement-contour-editor-remove" disabled>Удалить выбранную точку</button>
         <button type="button" id="settlement-contour-editor-reset">Сбросить к границе поселения</button>
@@ -5100,7 +5192,8 @@ map.on("zoomend", function() {
     const editorReset = toolbar.querySelector("#settlement-contour-editor-reset");
     const editorSave = toolbar.querySelector("#settlement-contour-editor-save");
     const editorClose = toolbar.querySelector("#settlement-contour-editor-close");
-    [editorStart, editorAdd, editorRemove, editorReset, editorSave, editorClose].forEach(button => {
+    const centerToggle = toolbar.querySelector("#settlement-center-edit-toggle");
+    [editorStart, editorAdd, editorRemove, editorReset, editorSave, editorClose, centerToggle].forEach(button => {
       button.style.cssText = "padding:7px;background:#393027;color:#eee2c8;border:1px solid #756044;border-radius:5px;";
     });
     editorStart.addEventListener("click", function() {
@@ -5145,6 +5238,7 @@ map.on("zoomend", function() {
     });
     editorSave.addEventListener("click", saveSettlementContourEditor);
     editorClose.addEventListener("click", closeSettlementContourEditor);
+    centerToggle.addEventListener("click", toggleSettlementCenterEditMode);
     refreshSettlementContourEditorOptions();
 
     map.getContainer().addEventListener("pointerdown", handleSettlementPointerDown, true);
@@ -5297,6 +5391,18 @@ map.on("zoomend", function() {
         throw new Error("Создавать поселения может только ведущий");
       }
       await set(ref(database, "settlements/areas/" + area.id), area);
+    };
+    window.dndFirebase.saveSettlementCenter = async function(areaId, center) {
+      if (!window.dndFirebase.ready || !window.dndFirebase.isGameMaster) {
+        throw new Error("Устанавливать центры поселений может только ведущий");
+      }
+      if (!center || !Number.isFinite(Number(center.lat)) || !Number.isFinite(Number(center.lng))) {
+        throw new Error("Некорректные координаты центра поселения");
+      }
+      await set(ref(database, "settlements/areas/" + areaId + "/center"), {
+        lat: Number(Number(center.lat).toFixed(7)),
+        lng: Number(Number(center.lng).toFixed(7))
+      });
     };
     window.dndFirebase.saveSettlementBrushPoints = async function(areaId, brushPoints) {
       if (!window.dndFirebase.ready || !window.dndFirebase.isGameMaster) {
