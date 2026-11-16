@@ -616,6 +616,8 @@ clearRouteIntermediateCityOutlines();
 routeForcedMarch = false;
 routeForcedMarchStartDistance = 0;
 routeForcedMarchStartUnits = 0;
+routeForcedMarchEpochStartDistance = 0;
+routeForcedMarchPendingExit = false;
 routeForcedSegments = [];
 
 const forcedButton = document.getElementById("route-forced-march");
@@ -678,6 +680,8 @@ let routeForcedSegments = [];
 // чтобы оно перемещалось вместе с привалами при смене темпа.
 let routeForcedMarchStartDistance = 0;
 let routeForcedMarchStartUnits = 0;
+let routeForcedMarchEpochStartDistance = 0;
+let routeForcedMarchPendingExit = false;
 
 const routePaceLimits = {
   slow: 225,
@@ -1385,72 +1389,77 @@ reducedSpeedButton.addEventListener("click", function() {
 const forcedMarchButton = document.getElementById("route-forced-march");
 
 forcedMarchButton.addEventListener("click", function() {
-  // После установки флажка переключатель недоступен.
   if (routeFinished || window.routePendingConfirmation) return;
 
   const fixedLength = getRouteTravelLength(routePoints);
-  const dailyLimit =
-    routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
-
+  const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
   lastCursorPosition = null;
 
   if (!routeForcedMarch) {
-    // Начинаем форсированный марш от последнего обычного привала.
-    const previousRests = getNormalRestDistances(fixedLength, dailyLimit);
+    const currentSettlement = getLastPointAtSettlementCenter(routePoints);
+    if (currentSettlement) {
+      // Внутри поселения переключатель можно включить заранее. Сам марш
+      // начнётся только после выхода за внешнюю визуальную границу.
+      routeForcedMarch = true;
+      routeForcedMarchPendingExit = true;
+      routeForcedMarchStartDistance = fixedLength;
+      routeForcedMarchStartEpochDistance = fixedLength;
+      routeForcedMarchStartUnits = 0;
+      this.classList.add("active");
+      this.setAttribute("aria-pressed", "true");
+      updateRouteLine();
+      return;
+    }
+
+    const epochStart = getLastSettlementTransitEndDistance(routePoints);
+    const previousRests = getNormalRestDistances(fixedLength, dailyLimit, routePoints)
+      .filter(distance => distance >= epochStart - 0.001);
     const lastRestDistance = previousRests.length
       ? previousRests[previousRests.length - 1]
-      : 0;
+      : epochStart;
 
-    // Здесь маршрут действительно откатывается к последнему привалу.
     routePoints = getRoutePointsUpToDistance(routePoints, lastRestDistance);
     routeForcedSegments = routeForcedSegments.filter(segment => {
       const recalculated = getForcedSegmentDistances(segment, dailyLimit);
       return recalculated.end <= lastRestDistance + 0.001;
     });
 
+    routeForcedMarchEpochStartDistance = epochStart;
     routeForcedMarchStartDistance = lastRestDistance;
     routeForcedMarchStartUnits = dailyLimit > 0
-      ? lastRestDistance / dailyLimit
-      : 0;
+      ? (lastRestDistance - epochStart) / dailyLimit : 0;
+    routeForcedMarchPendingExit = false;
     routeForcedMarch = true;
-
     this.classList.add("active");
     this.setAttribute("aria-pressed", "true");
     console.log("Форсированный марш включён");
   } else {
-    // Выключаем форсированный марш.
-    const forcedDistance = fixedLength - routeForcedMarchStartDistance;
+    const forcedDistance = routeForcedMarchPendingExit
+      ? 0 : fixedLength - routeForcedMarchStartDistance;
 
-    if (forcedDistance >= dailyLimit - 0.001) {
-      // Весь форсированный участок считается одним днём,
-      // независимо от того, сколько норм пройдено.
+    if (!routeForcedMarchPendingExit && forcedDistance >= dailyLimit - 0.001) {
       routeForcedSegments.push({
         start: routeForcedMarchStartDistance,
         end: fixedLength,
-        startUnits: dailyLimit > 0
-          ? routeForcedMarchStartDistance / dailyLimit
-          : 0,
-        lengthUnits: dailyLimit > 0
-          ? forcedDistance / dailyLimit
-          : 0
+        epochStartDistance: routeForcedMarchEpochStartDistance,
+        startUnits: routeForcedMarchStartUnits,
+        lengthUnits: dailyLimit > 0 ? forcedDistance / dailyLimit : 0
       });
       console.log("Форсированный марш завершён: создан один привал");
-    } else {
-      // Если дневная черта не достигнута — возвращаемся к началу марша.
-      routePoints = getRoutePointsUpToDistance(
-        routePoints,
-        routeForcedMarchStartDistance
-      );
+    } else if (!routeForcedMarchPendingExit) {
+      routePoints = getRoutePointsUpToDistance(routePoints, routeForcedMarchStartDistance);
       routeForcedSegments = routeForcedSegments.filter(segment => {
         const recalculated = getForcedSegmentDistances(segment, dailyLimit);
         return recalculated.end <= routeForcedMarchStartDistance + 0.001;
       });
-      console.log("Форсированный марш отменён: маршрут возвращён к привалу");
+      console.log("Форсированный марш отменён: маршрут возвращён к началу марша");
     }
 
     routeForcedMarch = false;
+    routeForcedMarchPendingExit = false;
     routeForcedMarchStartDistance = 0;
     routeForcedMarchStartUnits = 0;
+    routeForcedMarchEpochStartDistance = 0;
     this.classList.remove("active");
     this.setAttribute("aria-pressed", "false");
   }
@@ -1467,7 +1476,12 @@ map.doubleClickZoom.enable();
 window.routePendingConfirmation = false;
 
     const routePayload = {
-      points: routePoints.map(point => ({ lat: point.lat, lng: point.lng })),
+      points: routePoints.map((point, index) => ({
+        lat: point.lat,
+        lng: point.lng,
+        segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
+        settlementId: point._routeSettlementId || null
+      })),
       destinationSettlementId: window.routeDestinationCityId || null,
       destinationBoundaryPoint: window.routeDestinationBoundaryPoint
         ? { lat: window.routeDestinationBoundaryPoint.lat, lng: window.routeDestinationBoundaryPoint.lng }
@@ -1480,6 +1494,8 @@ window.routePendingConfirmation = false;
       forcedMarch: routeForcedMarch,
       forcedMarchStartDistance: routeForcedMarchStartDistance,
       forcedMarchStartUnits: routeForcedMarchStartUnits,
+      forcedMarchEpochStartDistance: routeForcedMarchEpochStartDistance,
+      forcedMarchPendingExit: routeForcedMarchPendingExit,
       forcedSegments: routeForcedSegments.map(segment => ({ ...segment })),
       intermediateSettlementIds: Array.isArray(window.routeIntermediateCityIds)
         ? window.routeIntermediateCityIds.slice() : [],
@@ -1543,6 +1559,8 @@ window.routePendingConfirmation = false;
       routeForcedMarch = false;
       routeForcedMarchStartDistance = 0;
       routeForcedMarchStartUnits = 0;
+      routeForcedMarchEpochStartDistance = 0;
+      routeForcedMarchPendingExit = false;
       const forcedButton = document.getElementById("route-forced-march");
       if (forcedButton) {
         forcedButton.classList.remove("active");
@@ -1550,7 +1568,7 @@ window.routePendingConfirmation = false;
       }
     } else {
       // Выбираем последний привал строго перед текущим концом маршрута.
-      const rests = getNormalRestDistances(totalLength, dailyLimit);
+      const rests = getNormalRestDistances(totalLength, dailyLimit, routePoints);
       for (let i = rests.length - 1; i >= 0; i--) {
         if (rests[i] < totalLength - 0.01) {
           targetDistance = rests[i];
@@ -1560,6 +1578,21 @@ window.routePendingConfirmation = false;
     }
 
     routePoints = getRoutePointsUpToDistance(routePoints, targetDistance);
+
+    // Промежуточный город остаётся выбранным только если маршрут всё ещё
+    // содержит его центральную точку. Иначе снимаем обводку и разрешаем вход заново.
+    window.routeIntermediateCityIds = (Array.isArray(window.routeIntermediateCityIds)
+      ? window.routeIntermediateCityIds : []).filter(id => {
+        const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
+        return !!(area && routePoints.some(point =>
+          String(point._routeSettlementId || "") === String(id) &&
+          getRouteSegmentMode(point) === "settlement-zero" &&
+          isRouteAtSettlementCenter(point, area)
+        ));
+      });
+    refreshRouteIntermediateCityOutlines();
+    routeForcedMarchPendingExit = false;
+    routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(routePoints);
 
 // Синхронизируем историю форсированных маршей
 // с фактической длиной обрезанного маршрута.
@@ -1600,6 +1633,7 @@ function getRouteLength(points) {
     const dy = points[i].lat - points[i - 1].lat;
     const dx = points[i].lng - points[i - 1].lng;
 
+    if (getRouteSegmentMode(points[i]) === "settlement-zero") continue;
     total += Math.sqrt(dx * dx + dy * dy);
   }
 
@@ -1630,11 +1664,84 @@ function isPointInsideTerrain(point) {
   });
 }
 
+// Служебные метки хранят тип отрезка, который заканчивается в данной точке.
+// Они сериализуются отдельно в Firebase, поэтому не зависят от внутреннего
+// устройства Leaflet LatLng.
+function setRouteSegmentMode(point, mode, settlementId = null) {
+  if (!point) return point;
+  point._routeSegmentMode = mode || "normal";
+  if (settlementId !== null && settlementId !== undefined) {
+    point._routeSettlementId = String(settlementId);
+  }
+  return point;
+}
+
+function copyRoutePointMetadata(source, target) {
+  if (!source || !target) return target;
+  if (source._routeSegmentMode) target._routeSegmentMode = source._routeSegmentMode;
+  if (source._routeSettlementId !== undefined) {
+    target._routeSettlementId = source._routeSettlementId;
+  }
+  return target;
+}
+
+function getRouteSegmentMode(point) {
+  return point && point._routeSegmentMode ? point._routeSegmentMode : "normal";
+}
+
+// Возвращает интервалы пути, на которых жетоны и маршевые механики отключены.
+// Смежные входной/внутренний/выходной сегменты объединяются в один интервал.
+function getRouteSettlementTransitIntervals(points) {
+  const intervals = [];
+  let passed = 0;
+  let active = null;
+
+  for (let i = 1; i < (points || []).length; i++) {
+    const start = points[i - 1];
+    const end = points[i];
+    const mode = getRouteSegmentMode(end);
+    const parts = getRouteSegmentTerrainParts(start, end);
+    const length = parts.reduce((sum, part) => sum + part.travelLength, 0);
+    const isTransit = mode === "settlement-count-only" || mode === "settlement-zero";
+
+    if (isTransit) {
+      if (!active) active = { start: passed, end: passed, settlementId: end._routeSettlementId || null };
+      active.end = passed + length;
+      if (end._routeSettlementId) active.settlementId = String(end._routeSettlementId);
+    } else if (active) {
+      intervals.push(active);
+      active = null;
+    }
+    passed += length;
+  }
+  if (active) intervals.push(active);
+  return intervals;
+}
+
+function getLastSettlementTransitEndDistance(points) {
+  const intervals = getRouteSettlementTransitIntervals(points || routePoints);
+  return intervals.length ? intervals[intervals.length - 1].end : 0;
+}
+
+function isRouteAtSettlementCenter(point, area) {
+  if (!point || !area || !area.center) return false;
+  return Math.hypot(Number(point.lat) - Number(area.center.lat), Number(point.lng) - Number(area.center.lng)) < 0.00002;
+}
+
 function getRouteSegmentTerrainParts(start, end) {
   const dx = end.lng - start.lng;
   const dy = end.lat - start.lat;
   const rawLength = Math.hypot(dx, dy);
   if (rawLength < 0.000001) return [];
+
+  // Соединение центра поселения с фактической границей геометрически
+  // существует, но не имеет длины и не участвует ни в одной механике.
+  if (getRouteSegmentMode(end) === "settlement-zero") {
+    return [{
+      t0: 0, t1: 1, inside: false, rawLength,
+      travelLength: 0, settlementTransit: true, zeroLength: true
+    }];
+  }
 
   const cuts = [0, 1];
   const areas = Array.isArray(window.terrainAreas) ? window.terrainAreas : [];
@@ -1735,9 +1842,10 @@ function getRouteScreenDistanceAtDistance(points, targetDistance) {
     const fullRawLength = Math.hypot(current.lat - previous.lat, current.lng - previous.lng);
     for (const part of parts) {
       const partTravelLength = part.travelLength;
-      const partScreenLength = fullRawLength > 0
+      const partScreenLength = part.zeroLength ? 0 : (fullRawLength > 0
         ? fullScreenLength * (part.t1 - part.t0)
-        : 0;
+        : 0);
+      if (partTravelLength <= 0.000001) continue;
       if (travelPassed + partTravelLength >= targetDistance - 0.001) {
         const fraction = partTravelLength > 0
           ? Math.max(0, Math.min(1, (targetDistance - travelPassed) / partTravelLength))
@@ -1777,7 +1885,9 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
       }
       // Не сглаживаем повороты рядом с привалом/маркером: иначе
       // следующий резкий изгиб может визуально утянуть линию от точки привала.
-      const isProtectedCorner = protectedDistances.some(
+      const isSettlementTransitCorner =
+        getRouteSegmentMode(corner) !== "normal" || getRouteSegmentMode(next) !== "normal";
+      const isProtectedCorner = isSettlementTransitCorner || protectedDistances.some(
         distance => Math.abs(distance - cornerDistance) <= cornerRadius * 2
       );
       if (isProtectedCorner) {
@@ -1873,10 +1983,10 @@ function createRouteDisplayPoints(points, protectedDistances = []) {
       const taper = Math.sin(Math.PI * t);
       const offset = noise * 8 * taper;
 
-      result.push(L.latLng(
+      result.push(copyRoutePointMetadata(end, L.latLng(
         start.lat + dy * t + (dx / length) * offset,
         start.lng + dx * t - (dy / length) * offset
-      ));
+      )));
     }
 
     result.push(end);
@@ -1895,12 +2005,13 @@ function getRoutePointAtDistance(points, targetDistance) {
     const dy = end.lat - start.lat;
     const parts = getRouteSegmentTerrainParts(start, end);
     for (const part of parts) {
+      if (part.travelLength <= 0.000001) continue;
       if (passed + part.travelLength >= targetDistance - 0.000001) {
         const withinPart = Math.max(0, targetDistance - passed);
         const rawWithinPart = withinPart / (part.inside ? 2 : 1);
         const rawLength = Math.hypot(dx, dy);
         const t = rawLength > 0 ? part.t0 + rawWithinPart / rawLength : part.t0;
-        return L.latLng(start.lat + dy * t, start.lng + dx * t);
+        return copyRoutePointMetadata(end, L.latLng(start.lat + dy * t, start.lng + dx * t));
       }
       passed += part.travelLength;
     }
@@ -1924,10 +2035,10 @@ function getRoutePointsUpToDistance(points, targetDistance) {
     const dy = end.lat - start.lat;
     for (const part of getRouteSegmentTerrainParts(start, end)) {
       if (passed + part.travelLength <= targetDistance + 0.001) {
-        const partEnd = L.latLng(
+        const partEnd = copyRoutePointMetadata(end, L.latLng(
           start.lat + dy * part.t1,
           start.lng + dx * part.t1
-        );
+        ));
         const last = result[result.length - 1];
         if (!last || Math.hypot(last.lat - partEnd.lat, last.lng - partEnd.lng) > 0.000001) {
           result.push(partEnd);
@@ -1939,7 +2050,7 @@ function getRoutePointsUpToDistance(points, targetDistance) {
         const rawWithin = remainingTravel / (part.inside ? 2 : 1);
         const rawLength = Math.hypot(dx, dy);
         const t = part.t0 + (rawLength > 0 ? rawWithin / rawLength : 0);
-        result.push(L.latLng(start.lat + dy * t, start.lng + dx * t));
+        result.push(copyRoutePointMetadata(end, L.latLng(start.lat + dy * t, start.lng + dx * t)));
         return result;
       }
     }
@@ -2016,73 +2127,97 @@ function getPerpendicularRouteAngle(points, targetDistance) {
 // Переводит сохранённый форсированный участок в расстояния
 // для текущей дневной нормы. startUnits и lengthUnits — доли дневного пути.
 function getForcedSegmentDistances(segment, dailyLimit) {
+  const base = Number.isFinite(segment.epochStartDistance)
+    ? segment.epochStartDistance : 0;
   const start = Number.isFinite(segment.startUnits)
-    ? segment.startUnits * dailyLimit
+    ? base + segment.startUnits * dailyLimit
     : segment.start;
   const length = Number.isFinite(segment.lengthUnits)
     ? segment.lengthUnits * dailyLimit
     : segment.end - segment.start;
+  const end = Number.isFinite(segment.fixedEndDistance)
+    ? Math.max(start, segment.fixedEndDistance) : start + length;
 
-  return {
-    start,
-    end: start + length
-  };
+  return { start, end };
 }
 
 // Пересчитывает все привалы для текущей дневной нормы.
 // Завершённый форсированный участок считается ровно одним днём.
-function getNormalRestDistances(totalLength, dailyLimit) {
+function getNormalRestDistances(totalLength, dailyLimit, routeGeometry = routePoints) {
   const result = [];
-  const segments = routeForcedSegments
+  if (!(dailyLimit > 0) || !(totalLength > 0)) return result;
+
+  const transitIntervals = getRouteSettlementTransitIntervals(routeGeometry)
+    .map(interval => ({
+      start: Math.max(0, Math.min(totalLength, interval.start)),
+      end: Math.max(0, Math.min(totalLength, interval.end))
+    }))
+    .filter(interval => interval.end >= interval.start - 0.001);
+
+  // Разбиваем маршрут на обычные участки. Каждый выход из поселения
+  // начинает новый отсчёт дневной нормы с нуля.
+  const activeIntervals = [];
+  let cursor = 0;
+  transitIntervals.forEach(interval => {
+    if (interval.start > cursor + 0.001) {
+      activeIntervals.push({ start: cursor, end: interval.start });
+    }
+    cursor = Math.max(cursor, interval.end);
+  });
+  if (cursor < totalLength - 0.001) {
+    activeIntervals.push({ start: cursor, end: totalLength });
+  }
+  if (!activeIntervals.length && !transitIntervals.length && totalLength > 0.001) {
+    activeIntervals.push({ start: 0, end: totalLength });
+  }
+
+  const forcedSegments = routeForcedSegments
     .map(segment => getForcedSegmentDistances(segment, dailyLimit))
-    .filter(segment => segment.start < totalLength + 0.01)
     .sort((a, b) => a.start - b.start);
 
-  let previousAnchor = 0;
-
-  function addRest(distance) {
-  if (distance <= 0.001) return;
-
-  // Если привал практически совпадает с концом маршрута,
-  // привязываем его непосредственно к концу.
-  if (distance > totalLength && distance - totalLength <= 0.05) {
-    distance = totalLength;
+  function addRest(distance, intervalEnd) {
+    if (distance <= 0.001 || distance > intervalEnd + 0.05) return;
+    if (distance > intervalEnd) distance = intervalEnd;
+    if (!result.length || Math.abs(result[result.length - 1] - distance) > 0.001) {
+      result.push(distance);
+    }
   }
 
-  if (!result.length || Math.abs(result[result.length - 1] - distance) > 0.001) {
-    result.push(distance);
-  }
-}
+  activeIntervals.forEach(interval => {
+    const intervalStart = interval.start;
+    const intervalEnd = interval.end;
+    if (intervalEnd <= intervalStart + 0.001) return;
 
-  segments.forEach(segment => {
-    // Обычные дневные привалы до начала форсированного участка.
+    let previousAnchor = intervalStart;
+    const localForced = forcedSegments.filter(segment =>
+      segment.end > intervalStart + 0.001 && segment.start < intervalEnd - 0.001
+    );
+
+    localForced.forEach(segment => {
+      const forcedStart = Math.max(intervalStart, segment.start);
+      const forcedEnd = Math.min(intervalEnd, segment.end);
+      let nextRest = previousAnchor + dailyLimit;
+      while (nextRest < forcedStart - 0.001) {
+        addRest(nextRest, intervalEnd);
+        nextRest += dailyLimit;
+      }
+      if (forcedStart > previousAnchor + 0.001) addRest(forcedStart, intervalEnd);
+      // Конец форсированного марша становится привалом только тогда,
+      // когда весь сохранённый участок действительно помещается в маршрут.
+      if (segment.end <= intervalEnd + 0.05 && forcedEnd > forcedStart + 0.001) {
+        addRest(forcedEnd, intervalEnd);
+      }
+      previousAnchor = Math.max(previousAnchor, forcedEnd);
+    });
+
     let nextRest = previousAnchor + dailyLimit;
-    while (nextRest < segment.start - 0.001) {
-      addRest(nextRest);
+    while (nextRest <= intervalEnd + 0.05) {
+      addRest(nextRest, intervalEnd);
       nextRest += dailyLimit;
     }
-
-    // Точка начала марша — привал, от которого он был начат.
-    if (segment.start > previousAnchor + 0.001) {
-      addRest(segment.start);
-    }
-
-    // Конец форсированного участка — следующий привал, если он
-    // ещё находится в пределах проложенного маршрута.
-    if (segment.end <= totalLength + 0.05) {
-      addRest(segment.end);
-    }
-    previousAnchor = segment.end;
   });
 
-  // Обычные дни после последнего завершённого форсированного участка.
-  let nextRest = previousAnchor + dailyLimit;
-  while (nextRest <= totalLength + 0.05) {
-    addRest(nextRest);
-    nextRest += dailyLimit;
-  }
-
-  return result;
+  return result.sort((a, b) => a - b);
 }
 
 // =====================================
@@ -2122,6 +2257,8 @@ function cancelPartyRoute() {
   routeForcedMarch = false;
   routeForcedMarchStartDistance = 0;
   routeForcedMarchStartUnits = 0;
+  routeForcedMarchEpochStartDistance = 0;
+  routeForcedMarchPendingExit = false;
   routeForcedSegments = [];
   routePoints = [];
   lastCursorPosition = null;
@@ -2243,6 +2380,75 @@ function getExhaustionClusterDisplaySize() {
   return 56;
 }
 
+function getRouteActiveIntervals(points, totalLength) {
+  const transit = getRouteSettlementTransitIntervals(points);
+  const result = [];
+  let cursor = 0;
+  transit.forEach(interval => {
+    if (interval.start > cursor + 0.001) result.push({ start: cursor, end: interval.start });
+    cursor = Math.max(cursor, interval.end);
+  });
+  if (cursor < totalLength - 0.001) result.push({ start: cursor, end: totalLength });
+  if (!result.length && !transit.length && totalLength > 0.001) {
+    result.push({ start: 0, end: totalLength });
+  }
+  return result;
+}
+
+function clipIntervalToActiveRoute(start, end, activeIntervals) {
+  const pieces = [];
+  activeIntervals.forEach(interval => {
+    const a = Math.max(start, interval.start);
+    const b = Math.min(end, interval.end);
+    if (b > a + 0.001) pieces.push({ start: a, end: b });
+  });
+  return pieces;
+}
+
+function getLastPointAtSettlementCenter(points) {
+  if (!points || !points.length) return null;
+  const last = points[points.length - 1];
+  const ids = Array.isArray(window.routeIntermediateCityIds) ? window.routeIntermediateCityIds : [];
+  const areas = Array.isArray(window.settlementAreas) ? window.settlementAreas : [];
+  for (const id of ids) {
+    const area = areas.find(item => String(item.id) === String(id));
+    if (area && String(last._routeSettlementId || "") === String(id) &&
+        getRouteSegmentMode(last) === "settlement-zero" &&
+        isRouteAtSettlementCenter(last, area)) return area;
+  }
+  return null;
+}
+
+function terminateForcedMarchAtSettlement(outerBoundaryDistance) {
+  const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
+  routeForcedSegments = routeForcedSegments.filter(segment => {
+    const recalculated = getForcedSegmentDistances(segment, dailyLimit);
+    return recalculated.end <= outerBoundaryDistance + 0.001;
+  });
+  if (!routeForcedMarch) return;
+  const forcedDistance = Math.max(0, outerBoundaryDistance - routeForcedMarchStartDistance);
+  if (forcedDistance >= dailyLimit - 0.001) {
+    routeForcedSegments.push({
+      start: routeForcedMarchStartDistance,
+      end: outerBoundaryDistance,
+      epochStartDistance: routeForcedMarchEpochStartDistance,
+      startUnits: routeForcedMarchStartUnits,
+      lengthUnits: dailyLimit > 0 ? forcedDistance / dailyLimit : 0,
+      fixedEndDistance: outerBoundaryDistance
+    });
+  }
+  routeForcedMarch = false;
+  routeForcedMarchPendingExit = false;
+  routeForcedMarchStartDistance = 0;
+  routeForcedMarchStartUnits = 0;
+  routeForcedMarchEpochStartDistance = 0;
+  const button = document.getElementById("route-forced-march");
+  if (button) {
+    button.classList.remove("active");
+    button.setAttribute("aria-pressed", "false");
+  }
+}
+
 function updateRouteLine(cursorPosition = null) {
   // Перерисовка карты не отменяет и не перезапускает анимацию жетонов.
   // Время анимации учитывается при создании каждого нового DOM-элемента.
@@ -2276,7 +2482,16 @@ function updateRouteLine(cursorPosition = null) {
   // Если новая точка начала пока дальше проложенного пути, она проявится
   // по мере дальнейшего построения маршрута.
   if (routeForcedMarch) {
-    routeForcedMarchStartDistance = routeForcedMarchStartUnits * dailyLimit;
+    if (routeForcedMarchPendingExit) {
+      const transitIntervals = getRouteSettlementTransitIntervals(pointsToDraw);
+      routeForcedMarchStartDistance = transitIntervals.length
+        ? transitIntervals[transitIntervals.length - 1].end
+        : totalLength;
+      routeForcedMarchEpochStartDistance = routeForcedMarchStartDistance;
+      routeForcedMarchStartUnits = 0;
+    } else {
+      routeForcedMarchStartDistance = routeForcedMarchEpochStartDistance + routeForcedMarchStartUnits * dailyLimit;
+    }
   }
 
   const restCalculationLength = routeForcedMarch
@@ -2316,33 +2531,37 @@ function updateRouteLine(cursorPosition = null) {
         window.isRouteMarkerMaskedBySettlement(position, area, extraPixels)
       ));
 
+  const restGeometry = routeForcedMarch
+    ? getRoutePointsUpToDistance(pointsToDraw, restCalculationLength)
+    : pointsToDraw;
   const restDistancesToDraw = getNormalRestDistances(
     restCalculationLength,
-    dailyLimit
+    dailyLimit,
+    restGeometry
   ).filter(distance => {
     const position = getRoutePointAtDistance(pointsToDraw, distance);
     return !position || !isMarkerInsideSettlementMask(position);
   });
 
   // Подготовим историю завершённых маршей и текущий активный марш.
-  const forcedVisualSegments = routeForcedSegments
+  const activeRouteIntervals = getRouteActiveIntervals(pointsToDraw, totalLength);
+  const forcedVisualSegments = [];
+  routeForcedSegments
     .map(segment => getForcedSegmentDistances(segment, dailyLimit))
     .filter(segment => segment.start < totalLength + 0.01)
-    .map(segment => ({
-      start: segment.start,
-      end: Math.min(segment.end, totalLength),
-      // Черта и интервалы крестиков всегда пересчитываются
-      // по текущему темпу, а не по темпу в момент выключения марша.
-      dailyLimit: dailyLimit
-    }));
+    .forEach(segment => {
+      clipIntervalToActiveRoute(segment.start, Math.min(segment.end, totalLength), activeRouteIntervals)
+        .forEach(piece => forcedVisualSegments.push({ ...piece, dailyLimit }));
+    });
 
   if (routeForcedMarch) {
-    forcedVisualSegments.push({
-      start: routeForcedMarchStartDistance,
-      end: totalLength,
-      dailyLimit: dailyLimit,
-      active: true
-    });
+    clipIntervalToActiveRoute(routeForcedMarchStartDistance, totalLength, activeRouteIntervals)
+      .forEach(piece => forcedVisualSegments.push({
+        start: piece.start,
+        end: piece.end,
+        dailyLimit: dailyLimit,
+        active: true
+      }));
   }
 
   const terrainIntervals = getTerrainTravelIntervals(pointsToDraw);
@@ -2887,8 +3106,9 @@ function updateRouteLine(cursorPosition = null) {
       (getRouteLength(pointsToDraw) * KM_PER_PIXEL).toFixed(1) + " км";
 
     const completedDays = routeForcedMarch
-      ? getNormalRestDistances(routeForcedMarchStartDistance, dailyLimit).length
-      : getNormalRestDistances(totalLength, dailyLimit).length;
+      ? getNormalRestDistances(routeForcedMarchStartDistance, dailyLimit,
+          getRoutePointsUpToDistance(routePoints, routeForcedMarchStartDistance)).length
+      : getNormalRestDistances(totalLength, dailyLimit, routePoints).length;
     document.getElementById("route-days").textContent = completedDays;
 
     routeConfirmButton.disabled = !routeFinished;
@@ -2938,12 +3158,20 @@ window.applySynchronizedPartyRoute = function(data) {
   if (!data || !Array.isArray(data.points) || data.points.length < 2) return;
 
   stopRouteMarkerAnimation();
-  routePoints = data.points.map(point => L.latLng(Number(point.lat), Number(point.lng)));
+  routePoints = data.points.map((point, index) => {
+    const routePoint = L.latLng(Number(point.lat), Number(point.lng));
+    if (index > 0 && point.segmentMode) {
+      setRouteSegmentMode(routePoint, point.segmentMode, point.settlementId || null);
+    }
+    return routePoint;
+  });
   routePace = data.pace || "normal";
   routeSpeedReduced = Boolean(data.speedReduced);
   routeForcedMarch = Boolean(data.forcedMarch);
   routeForcedMarchStartDistance = Number(data.forcedMarchStartDistance) || 0;
   routeForcedMarchStartUnits = Number(data.forcedMarchStartUnits) || 0;
+  routeForcedMarchEpochStartDistance = Number(data.forcedMarchEpochStartDistance) || 0;
+  routeForcedMarchPendingExit = Boolean(data.forcedMarchPendingExit);
   routeForcedSegments = Array.isArray(data.forcedSegments) ? data.forcedSegments : [];
   routeFinished = true;
   window.routeMode = false;
@@ -2991,6 +3219,13 @@ window.addPartyRoutePoint = function(latlng) {
   // фактическую длину пути вокруг города.
   routePoints.push(...segment.slice(1));
 
+  if (routeForcedMarch && routeForcedMarchPendingExit && !getLastPointAtSettlementCenter(routePoints)) {
+    routeForcedMarchPendingExit = false;
+    routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(routePoints);
+    routeForcedMarchStartDistance = routeForcedMarchEpochStartDistance;
+    routeForcedMarchStartUnits = 0;
+  }
+
   lastCursorPosition = null;
   updateRouteLine(null, true);
 
@@ -3023,6 +3258,12 @@ function finishPartyRoute(latlng) {
       return;
     }
     routePoints.push(...finalSegment.slice(1));
+    if (routeForcedMarch && routeForcedMarchPendingExit && !getLastPointAtSettlementCenter(routePoints)) {
+      routeForcedMarchPendingExit = false;
+      routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(routePoints);
+      routeForcedMarchStartDistance = routeForcedMarchEpochStartDistance;
+      routeForcedMarchStartUnits = 0;
+    }
   }
 
   // Маршрут должен содержать хотя бы одну линию
@@ -3119,7 +3360,7 @@ window.handlePartyRouteClick = function(latlng) {
     pendingRouteClickPosition = null;
 
     if (previousArea) {
-      activateIntermediateRouteCity(previousArea);
+      activateIntermediateRouteCity(previousArea, previousPosition);
     } else {
       window.addPartyRoutePoint(previousPosition);
     }
@@ -3138,7 +3379,7 @@ window.handlePartyRouteClick = function(latlng) {
     if (area) {
       // Одиночный клик по городу делает его промежуточным препятствием,
       // но не завершает маршрут и не добавляет фиктивную точку внутрь города.
-      activateIntermediateRouteCity(area);
+      activateIntermediateRouteCity(area, position);
     } else {
       window.addPartyRoutePoint(position);
     }
@@ -3862,8 +4103,13 @@ map.on("zoomend", function() {
   // Применяем препятствия по очереди к каждому пересекающему их сегменту.
   // Благодаря этому несколько выбранных городов не зависят от того,
   // в каком порядке игрок кликнул по ним.
-  function getRouteSegmentAroundIntermediateCities(start, end) {
+  function getRouteSegmentAroundIntermediateCities(start, end, skipSettlementExit = false) {
     if (!start || !end) return null;
+
+    if (!skipSettlementExit) {
+      const exitPath = getRouteSegmentFromSettlementCenter(start, end);
+      if (exitPath) return exitPath;
+    }
 
     let path = [start, end];
     const ids = Array.isArray(window.routeIntermediateCityIds)
@@ -4032,54 +4278,196 @@ map.on("zoomend", function() {
     return map.layerPointToLatLng(safePoint);
   }
 
-  function activateIntermediateRouteCity(area) {
-    if (!area || !area.id) return;
-    if (!Array.isArray(window.routeIntermediateCityIds)) {
-      window.routeIntermediateCityIds = [];
-    }
+  // Если маршрут начинается в центре уже выбранного поселения, сначала
+  // выводим его к фактической границе (нулевая длина), затем к внешней
+  // границе кисти (длина учитывается, но механики выключены).
+  function getRouteSegmentFromSettlementCenter(start, end) {
+    const ids = Array.isArray(window.routeIntermediateCityIds)
+      ? window.routeIntermediateCityIds : [];
+    const areas = Array.isArray(window.settlementAreas) ? window.settlementAreas : [];
+    const area = ids.map(id => areas.find(item => String(item.id) === String(id)))
+      .filter(Boolean).find(item => isRouteAtSettlementCenter(start, item));
+    if (!area) return null;
 
-    // Повторный клик по уже выбранному городу не должен добавлять
-    // вторую опорную точку в том же месте.
-    if (window.routeIntermediateCityIds.some(
-      id => String(id) === String(area.id)
-    )) return;
+    // Пока курсор/клик остаётся внутри внешней визуальной кисти,
+    // маршрут не покидает центр и никакие механики не возобновляются.
+    const visualPolygon = getSettlementBrushErasePolygon(area, 0);
+    if (pointInSettlement(end, visualPolygon)) return [start];
 
-    const currentRoutePoints = window.routePoints;
-    const previousPoint = currentRoutePoints[currentRoutePoints.length - 1];
-    if (!previousPoint) return;
+    const actualBoundary = findNearestSettlementBoundaryPoint(end, area.points || []);
+    if (!actualBoundary || !actualBoundary.point) return null;
+    const outerBoundary = findNearestRoutePointOnSettlementBrush(actualBoundary.point, area);
+    if (!outerBoundary) return null;
 
-    // Одиночный клик подтверждает путь ДО ближайшей точки внешней
-    // границы кисти. Эта точка становится новым началом следующего участка.
-    const approachPoint = findNearestRoutePointOnSettlementBrush(previousPoint, area);
-    if (!approachPoint) {
-      console.warn("Не удалось определить точку подхода к промежуточному городу.");
-      return;
-    }
-
-    // Если до этого уже были выбраны другие промежуточные города,
-    // подходим к новому городу с учётом всех прежних препятствий.
-    const approachSegment = getRouteSegmentAroundIntermediateCities(
-      previousPoint,
-      approachPoint
+    const actualPoint = setRouteSegmentMode(
+      L.latLng(actualBoundary.point.lat, actualBoundary.point.lng),
+      "settlement-zero",
+      area.id
     );
-    if (!approachSegment || approachSegment.length < 2) {
-      console.warn("Не удалось зафиксировать путь до промежуточного города.");
-      return;
-    }
-    currentRoutePoints.push(...approachSegment.slice(1));
-
-    window.routeIntermediateCityIds.push(area.id);
-    window.lastCursorPosition = null;
-    refreshRouteIntermediateCityOutlines();
-
-    // Перерисовываем только что подтверждённый участок. Дальнейший маршрут
-    // после движения мыши будет начинаться уже от approachPoint.
-    if (typeof window.updateRouteLine === "function") {
-      window.updateRouteLine(null, true);
-    }
-    console.log("Город добавлен как промежуточный:", area.id, "точка подхода:", approachPoint);
+    const outerPoint = setRouteSegmentMode(
+      L.latLng(outerBoundary.lat, outerBoundary.lng),
+      "settlement-count-only",
+      area.id
+    );
+    const outsidePath = getRouteSegmentAroundIntermediateCities(outerPoint, end, true);
+    if (!outsidePath || outsidePath.length < 2) return null;
+    return [start, actualPoint, outerPoint, ...outsidePath.slice(1)];
   }
 
+  function findLastRouteEntryIntoSettlementBrush(points, area) {
+    if (!Array.isArray(points) || points.length < 2 || !area) return null;
+    const polygon = getSettlementBrushErasePolygon(area, 0);
+    if (!Array.isArray(polygon) || polygon.length < 3) return null;
+    if (!pointInSettlement(points[points.length - 1], polygon)) return null;
+
+    let latestEntry = null;
+    for (let i = 1; i < points.length; i++) {
+      const start = points[i - 1];
+      const end = points[i];
+      const a = map.latLngToLayerPoint(start);
+      const b = map.latLngToLayerPoint(end);
+      const screenLength = a.distanceTo(b);
+      const steps = Math.max(2, Math.ceil(screenLength / 2));
+      let previousT = 0;
+      let previousInside = pointInSettlement(start, polygon);
+
+      for (let step = 1; step <= steps; step++) {
+        const currentT = step / steps;
+        const sample = map.layerPointToLatLng(L.point(
+          a.x + (b.x - a.x) * currentT,
+          a.y + (b.y - a.y) * currentT
+        ));
+        const currentInside = pointInSettlement(sample, polygon);
+
+        if (!previousInside && currentInside) {
+          let low = previousT;
+          let high = currentT;
+          for (let iteration = 0; iteration < 14; iteration++) {
+            const middleT = (low + high) / 2;
+            const middle = map.layerPointToLatLng(L.point(
+              a.x + (b.x - a.x) * middleT,
+              a.y + (b.y - a.y) * middleT
+            ));
+            if (pointInSettlement(middle, polygon)) high = middleT;
+            else low = middleT;
+          }
+          const crossing = map.layerPointToLatLng(L.point(
+            a.x + (b.x - a.x) * ((low + high) / 2),
+            a.y + (b.y - a.y) * ((low + high) / 2)
+          ));
+          latestEntry = {
+            segmentIndex: i,
+            point: copyRoutePointMetadata(end, crossing)
+          };
+        }
+
+        previousInside = currentInside;
+        previousT = currentT;
+      }
+    }
+    return latestEntry;
+  }
+
+  function activateIntermediateRouteCity(area, clickedPoint = null) {
+    if (!area || !area.id) return;
+    if (!Array.isArray(window.routeIntermediateCityIds)) window.routeIntermediateCityIds = [];
+    if (window.routeIntermediateCityIds.some(id => String(id) === String(area.id))) return;
+
+    if (!area.center || !Number.isFinite(Number(area.center.lat)) ||
+        !Number.isFinite(Number(area.center.lng)) ||
+        !pointInSettlement(area.center, area.points || [])) {
+      alert("У этого поселения ещё не установлен корректный центр. Попроси ведущего указать его в редакторе поселений.");
+      return;
+    }
+
+    const currentRoutePoints = window.routePoints;
+    const originalLastPoint = currentRoutePoints[currentRoutePoints.length - 1];
+    if (!originalLastPoint) return;
+    const approachTarget = clickedPoint || originalLastPoint;
+    const visualPolygon = getSettlementBrushErasePolygon(area, 0);
+    const lastPointInsideBrush = pointInSettlement(originalLastPoint, visualPolygon);
+    let outerApproach = null;
+
+    if (lastPointInsideBrush) {
+      // Если до фактической границы уже успели добавить обычные точки
+      // внутри визуальной кисти, удаляем этот участок целиком: все его
+      // жетоны/дни перестают учитываться после выбора поселения.
+      const entry = findLastRouteEntryIntoSettlementBrush(currentRoutePoints, area);
+      if (entry) {
+        const prefix = currentRoutePoints.slice(0, entry.segmentIndex);
+        const lastPrefixPoint = prefix[prefix.length - 1];
+        if (!lastPrefixPoint || lastPrefixPoint.distanceTo(entry.point) > 0.01) {
+          prefix.push(entry.point);
+        }
+        currentRoutePoints.splice(0, currentRoutePoints.length, ...prefix);
+        outerApproach = currentRoutePoints[currentRoutePoints.length - 1];
+      } else {
+        // Редкий случай: сам маршрут начался внутри визуальной кисти.
+        // Считаем путь от старта до выхода транзитным, без игровых механик.
+        const routeStart = currentRoutePoints[0];
+        outerApproach = findNearestRoutePointOnSettlementBrush(routeStart, area);
+        if (!outerApproach) return;
+        currentRoutePoints.splice(1, currentRoutePoints.length - 1);
+        currentRoutePoints.push(setRouteSegmentMode(
+          L.latLng(outerApproach.lat, outerApproach.lng),
+          "settlement-count-only",
+          area.id
+        ));
+        outerApproach = currentRoutePoints[currentRoutePoints.length - 1];
+      }
+    } else {
+      // Если маршрут ещё не заходил в кисть, прокладываем его до внешней
+      // границы обычным способом, сохраняя уже построенную геометрию.
+      outerApproach = findNearestRoutePointOnSettlementBrush(originalLastPoint, area);
+      if (!outerApproach) {
+        console.warn("Не удалось определить внешнюю границу кисти поселения.");
+        return;
+      }
+      const approachSegment = getRouteSegmentAroundIntermediateCities(originalLastPoint, outerApproach);
+      if (!approachSegment || approachSegment.length < 2) {
+        console.warn("Не удалось зафиксировать путь до промежуточного поселения.");
+        return;
+      }
+      currentRoutePoints.push(...approachSegment.slice(1));
+    }
+
+    // Если марш был включён внутри предыдущего поселения, он начинает
+    // действовать только после выхода за его внешнюю границу.
+    if (routeForcedMarch && routeForcedMarchPendingExit) {
+      routeForcedMarchPendingExit = false;
+      routeForcedMarchEpochStartDistance = getLastSettlementTransitEndDistance(currentRoutePoints);
+      routeForcedMarchStartDistance = routeForcedMarchEpochStartDistance;
+      routeForcedMarchStartUnits = 0;
+    }
+
+    // Форсированный марш заканчивается у внешней границы нового поселения.
+    // Его остаток не переносится внутрь и не возобновляется после выхода.
+    const outerBoundaryDistance = getRouteTravelLength(currentRoutePoints);
+    terminateForcedMarchAtSettlement(outerBoundaryDistance);
+
+    const actualBoundary = findNearestSettlementBoundaryPoint(approachTarget, area.points);
+    if (!actualBoundary || !actualBoundary.point) {
+      console.warn("Не удалось определить фактическую границу поселения.");
+      return;
+    }
+
+    currentRoutePoints.push(setRouteSegmentMode(
+      L.latLng(actualBoundary.point.lat, actualBoundary.point.lng),
+      "settlement-count-only",
+      area.id
+    ));
+    currentRoutePoints.push(setRouteSegmentMode(
+      L.latLng(Number(area.center.lat), Number(area.center.lng)),
+      "settlement-zero",
+      area.id
+    ));
+
+    window.routeIntermediateCityIds.push(String(area.id));
+    window.lastCursorPosition = null;
+    refreshRouteIntermediateCityOutlines();
+    updateRouteLine(null, true);
+    console.log("Поселение добавлено как промежуточное; маршрут продолжен из центра:", area.id);
+  }
   // Используется updateRouteLine для проверки самих игровых жетонов.
   // Проверка доступна только при активной маске выбранного/наведённого города.
   window.isRouteMarkerMaskedBySettlement = function(position, area, extraPixels = 9) {
