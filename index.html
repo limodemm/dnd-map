@@ -2,6 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>DND Map</title>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
@@ -659,7 +660,7 @@ routePoints = [partyMarker.getLatLng()];
 
   // Показываем панель управления
   createRoutePanel();
-  routePanel.style.display = window.matchMedia("(max-height: 600px) and (orientation: landscape) and (pointer: coarse)").matches ? "grid" : "block";
+  routePanel.style.display = isCompactRoutePanelLandscape() ? "grid" : "block";
 
   // Отображаем начальные значения
   updateRouteLine();
@@ -1011,6 +1012,22 @@ const hasMouse = window.matchMedia(
 // =====================================
 // ПАНЕЛЬ УПРАВЛЕНИЯ
 // =====================================
+
+function isCompactRoutePanelLandscape() {
+  return window.matchMedia("(max-height: 600px) and (orientation: landscape) and (pointer: coarse)").matches;
+}
+
+function syncRoutePanelOrientation() {
+  if (!routePanel || routePanel.style.display === "none") return;
+  routePanel.style.display = isCompactRoutePanelLandscape() ? "grid" : "block";
+}
+
+// Перестраиваем уже открытую панель при повороте телефона и изменении viewport.
+window.addEventListener("resize", syncRoutePanelOrientation, { passive: true });
+window.addEventListener("orientationchange", syncRoutePanelOrientation, { passive: true });
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", syncRoutePanelOrientation, { passive: true });
+}
 
 function createRoutePanel() {
   if (routePanel) return;
@@ -1386,64 +1403,67 @@ function createRoutePanel() {
   /* Компактная панель маршрута для телефона в горизонтальной ориентации */
   @media screen and (max-height: 600px) and (orientation: landscape) and (pointer: coarse) {
     #party-route-panel {
-      width: min(620px, calc(100vw - 20px));
-      max-width: calc(100vw - 20px);
+      width: min(470px, calc(100vw - 12px));
+      max-width: calc(100vw - 12px);
       max-height: calc(100dvh - 12px);
       overflow-y: auto;
-      bottom: 6px;
-      padding: 6px 8px;
+      overscroll-behavior: contain;
+      position: fixed;
+      left: 50%;
+      bottom: max(6px, env(safe-area-inset-bottom));
+      transform: translateX(-50%);
+      padding: 5px 6px;
       border-width: 1px;
-      border-radius: 8px;
-      display: grid;
-      grid-template-columns: 148px minmax(145px, 1fr) minmax(140px, 1fr);
-      grid-template-rows: 16px 24px 24px 28px;
-      column-gap: 8px;
-      row-gap: 3px;
+      border-radius: 7px;
+      grid-template-columns: 106px minmax(105px, 1fr) minmax(112px, 1fr);
+      grid-template-rows: 13px 20px 20px 23px;
+      column-gap: 6px;
+      row-gap: 2px;
       align-items: center;
     }
     #party-route-panel .route-heading {
       grid-column: 1 / -1; grid-row: 1;
-      font-size: 12px; line-height: 16px; margin: 0;
+      font-size: 11px; line-height: 13px; margin: 0;
     }
     #party-route-panel .route-speeds {
       grid-column: 1; grid-row: 2 / 4;
       display: flex; justify-content: center; align-items: center;
-      gap: 3px; margin: 0;
+      gap: 2px; margin: 0;
     }
     #party-route-panel .route-speed {
-      flex: 0 0 46px; width: 46px; height: 46px; border-radius: 5px;
+      flex: 0 0 33px; width: 33px; height: 33px;
+      min-width: 0; border-radius: 4px;
     }
     #party-route-panel .route-speed-image {
-      flex: 0 0 42px; width: 42px; height: 42px;
+      flex: 0 0 30px; width: 30px; height: 30px;
     }
     #party-route-panel .route-reduced-speed,
     #party-route-panel .route-forced-march {
-      grid-column: 2; min-width: 0; min-height: 24px; height: 24px;
-      margin: 0; padding: 3px 6px; font-size: 10px; line-height: 1.1; gap: 4px;
+      grid-column: 2; min-width: 0; min-height: 20px; height: 20px;
+      margin: 0; padding: 2px 4px; font-size: 9px; line-height: 1; gap: 3px;
     }
     #party-route-panel .route-reduced-speed { grid-row: 2; }
     #party-route-panel .route-forced-march { grid-row: 3; }
-    #party-route-panel .route-toggle { width: 27px; height: 15px; flex: 0 0 27px; }
+    #party-route-panel .route-toggle { width: 23px; height: 13px; flex: 0 0 23px; }
     #party-route-panel .route-toggle::after {
-      width: 9px; height: 9px; top: 2px; left: 2px;
+      width: 7px; height: 7px; top: 2px; left: 2px;
     }
     #party-route-panel .route-reduced-speed.active .route-toggle::after,
     #party-route-panel .route-forced-march.active .route-toggle::after {
-      transform: translateX(11px);
+      transform: translateX(9px);
     }
     #party-route-panel .route-info {
       grid-column: 3; grid-row: 2 / 4; align-self: center;
-      font-size: 10px; line-height: 1.25; margin: 0;
+      font-size: 9px; line-height: 1.15; margin: 0;
     }
     #party-route-panel .route-actions {
       grid-column: 1 / -1; grid-row: 4;
-      display: flex; gap: 5px; margin: 0;
+      display: flex; gap: 4px; margin: 0;
     }
     #party-route-panel .route-action {
-      min-height: 27px; padding: 4px; font-size: 11px; line-height: 1.1;
+      min-height: 23px; padding: 3px 2px; font-size: 10px; line-height: 1;
     }
   }
-    
   `;
 
   document.head.appendChild(style);
@@ -1657,7 +1677,7 @@ window.routePendingConfirmation = false;
       console.error("Синхронизация маршрута ещё не готова");
       alert("Не удалось подтвердить маршрут: нет соединения с Firebase.");
       window.routePendingConfirmation = true;
-      routePanel.style.display = window.matchMedia("(max-height: 600px) and (orientation: landscape) and (pointer: coarse)").matches ? "grid" : "block";
+      routePanel.style.display = isCompactRoutePanelLandscape() ? "grid" : "block";
       return;
     }
 
@@ -1667,7 +1687,7 @@ window.routePendingConfirmation = false;
       console.error("Ошибка публикации маршрута:", error);
       alert("Не удалось опубликовать маршрут: " + error.message);
       window.routePendingConfirmation = true;
-      routePanel.style.display = window.matchMedia("(max-height: 600px) and (orientation: landscape) and (pointer: coarse)").matches ? "grid" : "block";
+      routePanel.style.display = isCompactRoutePanelLandscape() ? "grid" : "block";
     });
   });
 
