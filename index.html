@@ -556,8 +556,8 @@ window.routeMode = false;
       if (typeof window.applySynchronizedPartyRoute === "function") {
         window.applySynchronizedPartyRoute(data);
       }
-      if (data.destinationSettlementId) {
-        waitForRouteRevealThenTraceSettlement(data.destinationSettlementId, data.points);
+      if ((Array.isArray(data.intermediateSettlementIds) && data.intermediateSettlementIds.length) || data.destinationSettlementId) {
+        waitForRouteRevealThenTraceSettlements(data);
       }
     }, function(error) {
       console.error("Ошибка синхронизации маршрута:", error);
@@ -4016,7 +4016,10 @@ map.on("zoomend", function() {
   // Отдельное хранилище для завершённых и анимируемых контуров сухой кисти.
   // Оно нужно, чтобы сохранять обводку при смене масштаба.
   const settlementBrushTraceLayers = new Map();
-  let activeSettlementBrushTrace = null;
+  // Несколько поселений могут начать анимацию почти одновременно, если
+  // маршрут проходит через них близко друг к другу. Храним активные
+  // анимации отдельно, чтобы следующая не обрывала предыдущую.
+  const activeSettlementBrushTraces = new Map();
 
   // Изолированный тестовый рендерер сухой кисти А.
   // Он использует уже сохранённую геометрию area.points и не меняет
@@ -5167,11 +5170,9 @@ map.on("zoomend", function() {
     });
   }
 
-  function animateSettlementDryBrushTrace(area) {
-    // Останавливаем только предыдущую анимацию кистевой обводки.
-    // Анимация маршрута и старого контура здесь не затрагивается.
-    activeSettlementBrushTrace = null;
-
+  function animateSettlementDryBrushTrace(area, revealStartPoint = null) {
+    // Анимации разных поселений независимы: маршрут может дойти до
+    // следующего города до того, как закончится росчерк предыдущего.
     const previousLayers = settlementBrushTraceLayers.get(String(area.id));
     if (previousLayers) removeSettlementBrushLayers(previousLayers);
 
@@ -5181,7 +5182,7 @@ map.on("zoomend", function() {
       settlementBrushSelectedAreaId = null;
     }
 
-    const revealStartPoint = window.routeDestinationBoundaryPoint || null;
+    revealStartPoint = revealStartPoint || null;
     const layers = createSettlementDryBrushLayers(area, 0.96, revealStartPoint);
     if (!layers.length) return;
     layers._settlementBrushRevealStartPoint = revealStartPoint;
@@ -5228,11 +5229,11 @@ map.on("zoomend", function() {
     });
 
     settlementBrushTraceLayers.set(String(area.id), layers);
-    activeSettlementBrushTrace = state;
+    activeSettlementBrushTraces.set(String(area.id), state);
     applySettlementBrushTraceProgress(state, 0);
 
     function frame(now) {
-      if (activeSettlementBrushTrace !== state) return;
+      if (activeSettlementBrushTraces.get(String(area.id)) !== state) return;
       // Линейное раскрытие сохраняет постоянную скорость последнего штриха маршрута.
       const progress = Math.max(0, Math.min(1, (now - state.startedAt) / state.duration));
       applySettlementBrushTraceProgress(state, progress);
@@ -5241,7 +5242,7 @@ map.on("zoomend", function() {
         requestAnimationFrame(frame);
       } else {
         applySettlementBrushTraceProgress(state, 1);
-        activeSettlementBrushTrace = null;
+        activeSettlementBrushTraces.delete(String(area.id));
         console.log("Обводка поселения: анимация сухой кисти завершена", area.id);
       }
     }
@@ -5250,12 +5251,14 @@ map.on("zoomend", function() {
     console.log("Обводка поселения: анимация сухой кисти началась", area.id);
   }
 
-  function animateSettlementTrace(area) {
+  function animateSettlementTrace(area, boundaryPoint = null, approachPoint = null) {
     try {
-      // Поселения с новой геометрией получают анимацию той же сухой кистью,
-      // которой они отображаются при наведении и выборе.
+      // Для каждого поселения передаём собственную точку входа: у каждого
+      // города на маршруте она своя, а не только у конечного поселения.
+      boundaryPoint = boundaryPoint || window.routeDestinationBoundaryPoint || null;
+      approachPoint = approachPoint || boundaryPoint;
       if (shouldUseSettlementDryBrush(area)) {
-        animateSettlementDryBrushTrace(area);
+        animateSettlementDryBrushTrace(area, boundaryPoint);
         return;
       }
       // Статичная выбранная кисть нужна для этапа наведения/клика.
@@ -5265,12 +5268,12 @@ map.on("zoomend", function() {
         settlementBrushSelectedArea = null;
         settlementBrushSelectedAreaId = null;
       }
-      const startPoint = window.routeDestinationBoundaryPoint;
+      const startPoint = boundaryPoint;
       if (!startPoint) return;
       const contour = getSettlementContourVariant(
         area,
         startPoint,
-        window.routeDestinationApproachPoint || startPoint,
+        approachPoint || startPoint,
         false
       );
       if (contour.length < 2) return;
@@ -5397,9 +5400,10 @@ map.on("zoomend", function() {
       newLayers._settlementBrushRevealStartPoint = revealStartPoint;
       settlementBrushTraceLayers.set(String(id), newLayers);
 
-      if (activeSettlementBrushTrace && String(activeSettlementBrushTrace.area.id) === String(id)) {
-        activeSettlementBrushTrace.layers = newLayers;
-        applySettlementBrushTraceProgress(activeSettlementBrushTrace, activeSettlementBrushTrace.progress);
+      const activeBrushTrace = activeSettlementBrushTraces.get(String(id));
+      if (activeBrushTrace) {
+        activeBrushTrace.layers = newLayers;
+        applySettlementBrushTraceProgress(activeBrushTrace, activeBrushTrace.progress);
       } else {
         newLayers.forEach(layer => {
           const opacity = Number.isFinite(layer.options.opacity) ? layer.options.opacity : 1;
@@ -5423,136 +5427,136 @@ map.on("zoomend", function() {
     });
   });
 
-  // Запускаем обводку не после всей анимации маршрута, а в тот момент,
-  // когда анимированный пунктир доходит до конечной точки у границы поселения.
-  // Время берём из той же системы расчёта штрихов, что и для появления жетонов.
-  let settlementTraceWaitTimer = null;
+  // Каждое поселение на подтверждённом маршруте начинает обводиться
+  // отдельно — в тот момент, когда анимированный пунктир доходит до его
+  // фактической границы. Расстояния берём из той же взвешенной геометрии,
+  // что и сама анимация маршрута (включая нулевые переходы через центры).
+  let settlementTraceWaitTimers = [];
   let settlementTraceWaitToken = 0;
 
-  function waitForRouteRevealThenTraceSettlement(cityId, synchronizedRoutePoints) {
-    if (settlementTraceWaitTimer) clearTimeout(settlementTraceWaitTimer);
-    settlementTraceWaitTimer = null;
+  function waitForRouteRevealThenTraceSettlements(routeData) {
+    settlementTraceWaitTimers.forEach(timer => clearTimeout(timer));
+    settlementTraceWaitTimers = [];
     const waitToken = ++settlementTraceWaitToken;
-    const startedAt = Date.now();
-    let loggedStart = false;
+    const route = Array.isArray(window.routePoints) ? window.routePoints.slice() : [];
+    if (route.length < 2) return;
 
-    const area = (window.settlementAreas || []).find(
-      item => String(item.id) === String(cityId)
-    );
-    if (!area) {
-      console.warn("Обводка поселения: область пока не найдена", cityId);
-    }
+    const targets = [];
+    const seenIds = new Set();
+    const intermediateIds = Array.isArray(routeData.intermediateSettlementIds)
+      ? routeData.intermediateSettlementIds.map(String) : [];
+    const destinationId = routeData.destinationSettlementId != null
+      ? String(routeData.destinationSettlementId) : null;
+    const orderedIds = [...intermediateIds, ...(destinationId ? [destinationId] : [])];
 
-    // Берём точки непосредственно из подтверждённого Firebase-маршрута.
-    // routePoints — локальная переменная другого обработчика и здесь недоступна.
-    const boundaryPoint = window.routeDestinationBoundaryPoint;
-    const routePointsForTrace = Array.isArray(synchronizedRoutePoints)
-      ? synchronizedRoutePoints
-      : [];
-    let routeScreenLength = 0;
-    for (let i = 1; i < routePointsForTrace.length; i++) {
-      const previous = routePointsForTrace[i - 1];
-      const current = routePointsForTrace[i];
-      const a = map.latLngToLayerPoint(L.latLng(Number(previous.lat), Number(previous.lng)));
-      const b = map.latLngToLayerPoint(L.latLng(Number(current.lat), Number(current.lng)));
-      routeScreenLength += a.distanceTo(b);
+    orderedIds.forEach(id => {
+      if (!id || seenIds.has(id)) return;
+      seenIds.add(id);
+      let boundaryIndex = -1;
+      let boundaryPoint = null;
+      let approachPoint = null;
+
+      // У промежуточных поселений входная точка помечена специальным
+      // сегментом settlement-count-only и несёт ID своего поселения.
+      for (let i = 1; i < route.length; i++) {
+        if (String(route[i]._routeSettlementId || '') === id &&
+            route[i]._routeSegmentMode === 'settlement-count-only') {
+          boundaryIndex = i;
+          boundaryPoint = route[i];
+          approachPoint = route[i - 1];
+          break;
+        }
+      }
+
+      // У конечного города граница передаётся отдельно. Находим её
+      // соответствующую точку в итоговой геометрии маршрута.
+      if (id === destinationId && routeData.destinationBoundaryPoint) {
+        const targetPoint = L.latLng(
+          Number(routeData.destinationBoundaryPoint.lat),
+          Number(routeData.destinationBoundaryPoint.lng)
+        );
+        let nearestDistance = Infinity;
+        let nearestIndex = -1;
+        for (let i = 1; i < route.length; i++) {
+          const distance = map.latLngToLayerPoint(route[i]).distanceTo(
+            map.latLngToLayerPoint(targetPoint)
+          );
+          if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestIndex = i;
+          }
+        }
+        if (nearestIndex >= 1) {
+          boundaryIndex = nearestIndex;
+          boundaryPoint = targetPoint;
+          approachPoint = routeData.destinationApproachPoint
+            ? L.latLng(Number(routeData.destinationApproachPoint.lat), Number(routeData.destinationApproachPoint.lng))
+            : route[nearestIndex - 1];
+        }
+      }
+
+      if (boundaryIndex < 1 || !boundaryPoint) {
+        console.warn('Анимация поселения: не найдена точка входа на маршруте', id);
+        return;
+      }
+
+      const distance = window.getRouteTravelLength(route.slice(0, boundaryIndex + 1));
+      const area = (window.settlementAreas || []).find(item => String(item.id) === id);
+      if (!area) {
+        console.warn('Анимация поселения: область пока не загружена', id);
+        return;
+      }
+      targets.push({ id, area, distance, boundaryPoint, approachPoint });
+    });
+
+    targets.sort((a, b) => a.distance - b.distance);
+    if (!targets.length) return;
+
+    // Темп росчерка кисти синхронизирован с последним интервалом пунктира.
+    const displayPoints = typeof window.createRouteDisplayPoints === 'function'
+      ? window.createRouteDisplayPoints(route, []) : route;
+    let screenLength = 0;
+    for (let i = 1; i < displayPoints.length; i++) {
+      screenLength += map.latLngToLayerPoint(displayPoints[i - 1]).distanceTo(
+        map.latLngToLayerPoint(displayPoints[i])
+      );
     }
     const dashStep = Number(window.routeLineDashStep) || 18;
     const minimumDashDelay = Number(window.routeLineMinimumDashDelay) || 95;
     const firstDashDelay = Number(window.routeLineFirstDashDelay) || 240;
     const dashAcceleration = Number(window.routeLineDashAcceleration) || 2;
-    const zoomSpeedMultiplier = typeof window.getRouteZoomSpeedMultiplier === "function"
-      ? window.getRouteZoomSpeedMultiplier()
-      : 1;
-    // Индекс последнего штриха считаем в длине, приведённой к среднему зуму,
-    // иначе короткий маршрут мог бы получать разную финальную скорость.
-    const referenceRouteScreenLength = routeScreenLength * zoomSpeedMultiplier;
-    const finalRouteDashIndex = Math.max(0, Math.floor((referenceRouteScreenLength - 2) / dashStep));
+    const zoomSpeedMultiplier = typeof window.getRouteZoomSpeedMultiplier === 'function'
+      ? window.getRouteZoomSpeedMultiplier() : 1;
+    const referenceLength = screenLength * zoomSpeedMultiplier;
+    const finalDashIndex = Math.max(0, Math.floor((referenceLength - 2) / dashStep));
     window.settlementTraceDashInterval = Math.max(
-      minimumDashDelay,
-      firstDashDelay - finalRouteDashIndex * dashAcceleration
+      minimumDashDelay, firstDashDelay - finalDashIndex * dashAcceleration
     );
-    let routeEndDistance = 0;
-    for (let i = 1; i < routePointsForTrace.length; i++) {
-      const previous = routePointsForTrace[i - 1];
-      const current = routePointsForTrace[i];
-      const dy = Number(current.lat) - Number(previous.lat);
-      const dx = Number(current.lng) - Number(previous.lng);
-      routeEndDistance += Math.sqrt(dx * dx + dy * dy);
-    }
-    if (!boundaryPoint || routePointsForTrace.length < 2) {
-      console.warn("Обводка поселения: нет конечной точки маршрута или границы", {
-        cityId,
-        boundaryPoint,
-        routePointCount: routePointsForTrace.length
-      });
-    }
 
-    console.log("Обводка поселения: ожидаем касания границы", {
-      cityId,
-      routeEndDistance,
-      boundaryPoint,
-      routeEnd: routePointsForTrace.length
-        ? routePointsForTrace[routePointsForTrace.length - 1]
-        : null
-    });
-
-    function check() {
-      if (waitToken !== settlementTraceWaitToken) return;
-      if (routePointsForTrace.length < 2) {
-        console.warn("Обводка поселения: в подтверждённом маршруте недостаточно точек", cityId);
-        settlementTraceWaitTimer = null;
-        return;
-      }
-
-      const areaNow = (window.settlementAreas || []).find(
-        item => String(item.id) === String(cityId)
-      );
-      const delay = typeof window.getRouteMarkerAnimationDelay === "function"
-        ? window.getRouteMarkerAnimationDelay(routeEndDistance)
-        : null;
-      const routeIsAnimating = typeof window.isRouteRevealRunning === "function"
-        ? window.isRouteRevealRunning()
-        : false;
-
-      if (!loggedStart) {
-        console.log("Обводка поселения: проверка синхронизации", {
-          cityId,
-          delayUntilBoundary: delay,
-          routeIsAnimating,
-          areaFound: Boolean(areaNow)
-        });
-        loggedStart = true;
-      }
-
-      // Положительное значение означает, что пунктир ещё не дошёл до
-      // позиции поселения. Проверяем часто, чтобы запуск был почти точным.
-      if (delay !== null && delay > 0) {
-        settlementTraceWaitTimer = setTimeout(check, Math.min(40, Math.max(12, delay)));
-        return;
-      }
-
-      if (!areaNow) {
-        if (Date.now() - startedAt < 15000) {
-          settlementTraceWaitTimer = setTimeout(check, 100);
+    targets.forEach(target => {
+      function check() {
+        if (waitToken !== settlementTraceWaitToken) return;
+        const delay = typeof window.getRouteMarkerAnimationDelay === 'function'
+          ? window.getRouteMarkerAnimationDelay(target.distance) : null;
+        if (delay !== null && delay > 0) {
+          const timer = setTimeout(check, Math.min(40, Math.max(12, delay)));
+          settlementTraceWaitTimers.push(timer);
           return;
         }
-        console.warn("Обводка поселения: не удалось найти область", cityId);
-        return;
+
+        // Точка входа передаётся непосредственно анимации этого города;
+        // глобальные координаты конечного поселения не подменяются.
+        console.log('Обводка поселения: маршрут дошёл до границы, запускаем анимацию', {
+          cityId: target.id,
+          distance: target.distance,
+          delayUntilBoundary: delay
+        });
+        animateSettlementTrace(target.area, target.boundaryPoint, target.approachPoint);
       }
 
-      settlementTraceWaitTimer = null;
-      console.log("Обводка поселения: пунктир достиг границы, запускаем анимацию", {
-        cityId,
-        delayUntilBoundary: delay,
-        routeIsAnimating
-      });
-      animateSettlementTrace(areaNow);
-    }
-
-    // Небольшая задержка нужна только для того, чтобы обработчик успел
-    // увидеть уже созданную общую анимацию маршрута.
-    settlementTraceWaitTimer = setTimeout(check, 20);
+      const timer = setTimeout(check, 20);
+      settlementTraceWaitTimers.push(timer);
+    });
   }
 
   // ============================================================
