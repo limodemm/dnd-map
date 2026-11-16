@@ -610,7 +610,6 @@ partyMarker.on("click", function() {
 
 window.routeMode = true;
 routeFinished = false;
-window.routeFinished = false;
 window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
 window.routeDestinationApproachPoint = null;
@@ -668,7 +667,6 @@ let routeEndMarker = null;
 
 // Состояние завершения маршрута
 let routeFinished = false;
-window.routeFinished = false;
 
 // Обработка одиночного и двойного клика
 let pendingRouteClickTimer = null;
@@ -804,10 +802,7 @@ window.getRouteZoomSpeedMultiplier = getRouteZoomSpeedMultiplier;
 
 // Задержка каждого штриха считается от начала линии. С каждым штрихом
 // интервал немного сокращается, пока не достигнет безопасного минимума.
-// Паузы у поселений останавливают линию, но НЕ сбрасывают и не пересчитывают
-// накопленное ускорение: после обводки линия продолжает тот же темповой ряд.
-window.routeSettlementRevealPauses = [];
-
+// Затем весь интервал нормализуется относительно среднего масштаба.
 function getRouteLineRevealDelay(dashIndex) {
   let delay = 0;
   const zoomSpeedMultiplier = getRouteZoomSpeedMultiplier();
@@ -816,11 +811,6 @@ function getRouteLineRevealDelay(dashIndex) {
       routeLineMinimumDashDelay,
       routeLineFirstDashDelay - i * routeLineDashAcceleration
     ) * zoomSpeedMultiplier;
-
-    const pausesHere = window.routeSettlementRevealPauses.filter(pause => pause.afterDashIndex === i);
-    if (pausesHere.length) {
-      pausesHere.forEach(pause => { delay += pause.duration; });
-    }
   }
   return delay;
 }
@@ -832,8 +822,6 @@ function getRouteLineRevealDuration(screenLength) {
 }
 
 function stopRouteMarkerAnimation() {
-  window.routeSettlementRevealPauses = [];
-  window.settlementTraceDashIntervalsById = {};
   routeMarkerAnimations.forEach(animation => {
     if (animation.timer) clearTimeout(animation.timer);
   });
@@ -859,8 +847,8 @@ function beginRouteMarkerAnimation(startDistance, endDistance, synchronizedStart
   const displayEnd = routeTotalLength > 0.001
     ? endDistance / routeTotalLength * displayTotalLength
     : displayTotalLength;
-  const lineStartScreen = window.getRouteScreenDistanceAtDistance(displayPoints, displayStart);
-  const lineEndScreen = window.getRouteScreenDistanceAtDistance(displayPoints, displayEnd);
+  const lineStartScreen = getRouteScreenDistanceAtDistance(displayPoints, displayStart);
+  const lineEndScreen = getRouteScreenDistanceAtDistance(displayPoints, displayEnd);
   const lineDuration = getRouteLineRevealDuration(lineEndScreen - lineStartScreen);
   // Держим анимацию активной и на время плавного появления последнего жетона.
   const duration = lineDuration + routeRevealFadeDuration;
@@ -906,11 +894,11 @@ function rebaseRouteMarkerAnimationsForZoom() {
     const elapsed = Math.max(0, now - animation.startedAt);
     const progress = Math.max(0, Math.min(1, elapsed / oldDuration));
 
-    const lineStartScreen = window.getRouteScreenDistanceAtDistance(
+    const lineStartScreen = getRouteScreenDistanceAtDistance(
       animation.displayPoints,
       animation.start / animation.routeTotalLength * animation.displayTotalLength
     );
-    const lineEndScreen = window.getRouteScreenDistanceAtDistance(
+    const lineEndScreen = getRouteScreenDistanceAtDistance(
       animation.displayPoints,
       animation.end / animation.routeTotalLength * animation.displayTotalLength
     );
@@ -957,40 +945,35 @@ function shouldAnimateRouteMarker(distance) {
   return Boolean(getRouteMarkerAnimation(distance));
 }
 
-// Единый расчёт штриха, который достигает заданной точки маршрута.
-// Его используют и жетоны, и паузы обводки поселений, чтобы обе анимации
-// никогда не расходились из-за разных округлений экранного расстояния.
-window.getRouteDashIndexAtDistance = function(points, routeTotalLength, displayTotalLength, distance, lineStartScreen = 0, lineEndScreen = null) {
-  const displayDistance = routeTotalLength > 0.001
-    ? distance / routeTotalLength * displayTotalLength
-    : 0;
-  const screenDistance = window.getRouteScreenDistanceAtDistance(points, displayDistance);
-  const relativeScreenDistance = Math.max(0, screenDistance - lineStartScreen);
-  const dashOffset = relativeScreenDistance % routeLineDashStep;
-  let dashIndex = Math.floor(relativeScreenDistance / routeLineDashStep);
-  if (dashOffset > routeLineDashLength) dashIndex++;
-  if (Number.isFinite(lineEndScreen)) {
-    const lastDashIndex = Math.max(0, Math.floor((lineEndScreen - lineStartScreen - 2) / routeLineDashStep));
-    dashIndex = Math.min(dashIndex, lastDashIndex);
-  }
-  return dashIndex;
-}
-
 // Возвращает задержку до появления жетона. Он начинает проявляться
 // только после того, как пунктир дошёл до соответствующей позиции.
 function getRouteMarkerAnimationDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
 
-  // Если точка находится внутри штриха, ждём его; если в промежутке — следующий.
-  const dashIndex = window.getRouteDashIndexAtDistance(
+  const displayDistance = animation.routeTotalLength > 0.001
+    ? distance / animation.routeTotalLength * animation.displayTotalLength
+    : 0;
+  const markerScreenDistance = getRouteScreenDistanceAtDistance(
     animation.displayPoints,
-    animation.routeTotalLength,
-    animation.displayTotalLength,
-    distance,
-    animation.lineStartScreen,
-    animation.lineEndScreen
+    displayDistance
   );
+  const relativeScreenDistance = Math.max(
+    0,
+    markerScreenDistance - animation.lineStartScreen
+  );
+
+  // Если жетон находится внутри штриха, ждём этот штрих;
+  // если в промежутке между штрихами — следующий за ним.
+  const dashOffset = relativeScreenDistance % routeLineDashStep;
+  let dashIndex = Math.floor(relativeScreenDistance / routeLineDashStep);
+  if (dashOffset > routeLineDashLength) dashIndex++;
+
+  const lastDashIndex = Math.max(
+    0,
+    Math.floor((animation.lineEndScreen - animation.lineStartScreen - 2) / routeLineDashStep)
+  );
+  dashIndex = Math.min(dashIndex, lastDashIndex);
 
   const markerRevealTime =
     getRouteLineRevealDelay(dashIndex) + routeLineRevealFadeDuration;
@@ -1474,7 +1457,7 @@ forcedMarchButton.addEventListener("click", function() {
   if (routeFinished || window.routePendingConfirmation) return;
 
   const fixedLength = getRouteTravelLength(routePoints);
-  const dailyLimit = window.routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
+  const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
   lastCursorPosition = null;
 
   if (!routeForcedMarch) {
@@ -1626,7 +1609,7 @@ window.routePendingConfirmation = false;
     }
 
     const totalLength = getRouteTravelLength(routePoints);
-    const dailyLimit = window.routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
+    const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
     let targetDistance = 0;
     let targetSettlementIndex = -1;
 
@@ -1720,6 +1703,7 @@ window.routePendingConfirmation = false;
         ));
       });
     window.routeIntermediateSettlementUndoSnapshots = [];
+    refreshRouteIntermediateCityOutlines();
 
     if (!routeForcedMarch) {
       routeForcedMarchPendingExit = false;
@@ -1747,17 +1731,10 @@ window.routePendingConfirmation = false;
 
     if (routeFinished) {
       routeFinished = false;
-      window.routeFinished = false;
       window.routePendingConfirmation = false;
       window.routeMode = true;
       map.doubleClickZoom.disable();
     }
-
-    // Синхронизируем публичное состояние и обновляем обводки уже после
-    // возврата в режим построения маршрута: иначе refresh увидит старое
-    // routeFinished=true, очистит слои и выйдет.
-    window.routeFinished = routeFinished;
-    refreshRouteIntermediateCityOutlines();
 
     lastCursorPosition = null;
     updateRouteLine();
@@ -1988,7 +1965,7 @@ function getTerrainTravelIntervals(points) {
 
 // Экранное расстояние вдоль визуальной линии. Используется только для
 // равномерного по пикселям проявления штрихов, а не для расчёта пути.
-window.getRouteScreenDistanceAtDistance = function(points, targetDistance) {
+function getRouteScreenDistanceAtDistance(points, targetDistance) {
   if (!points || points.length < 2) return 0;
   let travelPassed = 0;
   let screenPassed = 0;
@@ -2000,14 +1977,9 @@ window.getRouteScreenDistanceAtDistance = function(points, targetDistance) {
     const fullScreenLength = a.distanceTo(b);
     const parts = getRouteSegmentTerrainParts(previous, current);
     const fullRawLength = Math.hypot(current.lat - previous.lat, current.lng - previous.lng);
-    // Сегменты settlement-count-only физически скрыты под кистью поселения.
-    // Они продолжают учитываться в игровом расстоянии (дни/лимиты), но не
-    // расходуют экранное время анимации: после обводки линия появляется
-    // у внешней границы выхода, а не «проявляется» под городом.
-    const hiddenSettlementTransit = getRouteSegmentMode(current) === "settlement-count-only";
     for (const part of parts) {
       const partTravelLength = part.travelLength;
-      const partScreenLength = (part.zeroLength || hiddenSettlementTransit) ? 0 : (fullRawLength > 0
+      const partScreenLength = part.zeroLength ? 0 : (fullRawLength > 0
         ? fullScreenLength * (part.t1 - part.t0)
         : 0);
       if (partTravelLength <= 0.000001) continue;
@@ -2023,8 +1995,6 @@ window.getRouteScreenDistanceAtDistance = function(points, targetDistance) {
   }
   return screenPassed;
 }
-// Расчёт опубликован непосредственно в window, чтобы все части модуля
-// и обработчики маршрута использовали одну и ту же функцию.
 
 // =====================================
 // ВИЗУАЛЬНАЯ ОБРАБОТКА ЛИНИИ МАРШРУТА
@@ -2427,7 +2397,6 @@ function cancelPartyRoute() {
   pendingRouteClickPosition = null;
 
   routeFinished = false;
-window.routeFinished = false;
   window.routePendingConfirmation = false;
   window.routeMode = false;
   map.doubleClickZoom.enable();
@@ -2629,7 +2598,7 @@ window.getRouteSegmentMode = getRouteSegmentMode;
 window.getForcedSegmentDistances = getForcedSegmentDistances;
 
 function terminateForcedMarchAtSettlement(outerBoundaryDistance) {
-  const dailyLimit = window.routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
+  const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
   routeForcedSegments = routeForcedSegments.filter(segment => {
     const recalculated = getForcedSegmentDistances(segment, dailyLimit);
     return recalculated.end <= outerBoundaryDistance + 0.001;
@@ -2752,7 +2721,7 @@ function updateRouteLine(cursorPosition = null) {
 
   const totalLength = getRouteTravelLength(pointsToDraw);
   const dailyLimit =
-    window.routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
+    routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
 
   // Активный марш также привязан к текущей дневной норме.
   // Если новая точка начала пока дальше проложенного пути, она проявится
@@ -3083,7 +3052,7 @@ function updateRouteLine(cursorPosition = null) {
           return points.map(point => map.layerPointToLatLng(point));
         }
 
-        const globalScreenStart = window.getRouteScreenDistanceAtDistance(
+        const globalScreenStart = getRouteScreenDistanceAtDistance(
           displayRoutePoints,
           partDisplayStart
         );
@@ -3479,7 +3448,6 @@ window.applySynchronizedPartyRoute = function(data) {
   routeForcedMarchPendingExit = Boolean(data.forcedMarchPendingExit);
   routeForcedSegments = Array.isArray(data.forcedSegments) ? data.forcedSegments : [];
   routeFinished = true;
-window.routeFinished = true;
   window.routeMode = false;
   window.routePendingConfirmation = false;
   window.routeDestinationCityId = data.destinationSettlementId || null;
@@ -3490,8 +3458,7 @@ window.routeFinished = true;
   window.routeIntermediateCityIds = Array.isArray(data.intermediateSettlementIds)
     ? data.intermediateSettlementIds.map(id => String(id)) : [];
   clearRouteIntermediateCityOutlines();
-  // После подтверждения промежуточные города остаются без статичной кисти:
-  // каждый из них проявляется только своей маршрутной анимацией.
+  refreshRouteIntermediateCityOutlines();
   lastCursorPosition = null;
 
   if (routePanel) routePanel.style.display = "none";
@@ -3500,10 +3467,7 @@ window.routeFinished = true;
 
   const total = getRouteTravelLength(routePoints);
   if (total > 0.001) {
-    prepareSettlementRevealPauses(data);
     beginRouteMarkerAnimation(0, total, Number(data.startedAt) || Date.now());
-  } else {
-    window.routeSettlementRevealPauses = [];
   }
   updateRouteLine(null);
   console.log("Получен общий маршрут:", data);
@@ -3664,7 +3628,6 @@ function finishPartyRoute(latlng) {
 
   // До подтверждения маршрут остаётся статичным предпросмотром.
   routeFinished = true;
-window.routeFinished = true;
   window.routeMode = false;
   window.routePendingConfirmation = true;
 
@@ -3808,14 +3771,11 @@ map.on("zoomend", function() {
   // Сначала переводим активные анимации на новую экранную шкалу,
   // сохраняя их текущий прогресс, и только затем перерисовываем маршрут.
   rebaseRouteMarkerAnimationsForZoom();
+  if (routeIntermediateBrushLayers.length) {
+    refreshRouteIntermediateCityOutlines();
+  }
   if (routePoints.length >= 2 || window.routeMode) {
     updateRouteLine(lastCursorPosition);
-  }
-  // Перерисовываем внешние обводки после обновления линии и предпросмотра:
-  // updateRouteLine может пересобрать маски/слои при новом масштабе.
-  if (window.routeMode && Array.isArray(window.routeIntermediateCityIds) &&
-      window.routeIntermediateCityIds.length) {
-    refreshRouteIntermediateCityOutlines();
   }
 });
 
@@ -4618,9 +4578,6 @@ map.on("zoomend", function() {
 
   function refreshRouteIntermediateCityOutlines() {
     clearRouteIntermediateCityOutlines();
-    // Статичные обводки используются только при построении маршрута.
-    // После подтверждения города ждут своей очереди анимации без контура.
-    if (window.routeFinished && !window.routeMode) return;
     const ids = Array.isArray(window.routeIntermediateCityIds)
       ? window.routeIntermediateCityIds : [];
     const areas = Array.isArray(window.settlementAreas)
@@ -5251,18 +5208,16 @@ map.on("zoomend", function() {
     const screenLength = path.reduce((sum, point, index) => {
       return index ? sum + point.distanceTo(path[index - 1]) : sum;
     }, 0);
-    // Скорость соответствует темпу линии именно у этого поселения:
-    // один шаг пунктира (штрих + промежуток = 18 px) за его интервал.
+    // Скорость продолжает темп последнего участка маршрута:
+    // один шаг пунктира (штрих + промежуток = 18 px) за текущий интервал.
     // Обводка проходит половину периметра одновременно в двух направлениях.
     const halfContourLength = screenLength / 2;
     const dashStep = Number(window.routeLineDashStep) || 18;
     const revealFadeDuration = Number(window.routeLineRevealFadeDuration) || 220;
     const minimumDashDelay = Number(window.routeLineMinimumDashDelay) || 95;
-    const cityIntervals = window.settlementTraceDashIntervalsById || {};
-    const cityDashInterval = cityIntervals[String(area.id)];
     const routeDashInterval = Math.max(
       minimumDashDelay,
-      Number(cityDashInterval != null ? cityDashInterval : window.settlementTraceDashInterval) || minimumDashDelay
+      Number(window.settlementTraceDashInterval) || minimumDashDelay
     );
     // Обводка примерно на 22% быстрее последнего интервала маршрута.
     // Скорость нормализуется по той же средней точке зума, что и маршрут.
@@ -5496,116 +5451,6 @@ map.on("zoomend", function() {
   let settlementTraceWaitTimers = [];
   let settlementTraceWaitToken = 0;
 
-  // Рассчитываем остановки анимации линии заранее, до её запуска.
-  // Каждая остановка длится ровно столько, сколько занимает росчерк кисти
-  // соответствующего города. После неё темп линии снова начинает разгоняться.
-  function prepareSettlementRevealPauses(routeData) {
-    window.routeSettlementRevealPauses = [];
-    window.settlementTraceDashIntervalsById = {};
-    if (!routeData || !Array.isArray(routePoints) || routePoints.length < 2) return;
-
-    const intermediateIds = Array.isArray(routeData.intermediateSettlementIds)
-      ? routeData.intermediateSettlementIds.map(String) : [];
-    const destinationId = routeData.destinationSettlementId != null
-      ? String(routeData.destinationSettlementId) : null;
-    const ids = [...intermediateIds, ...(destinationId ? [destinationId] : [])];
-    const displayPoints = typeof window.createRouteDisplayPoints === 'function'
-      ? window.createRouteDisplayPoints(routePoints, []) : routePoints;
-    const totalRouteDistance = getRouteTravelLength(routePoints);
-    const displayTotalLength = getRouteTravelLength(displayPoints);
-    const screenLength = window.getRouteScreenDistanceAtDistance(displayPoints, displayTotalLength);
-    const dashStep = Number(window.routeLineDashStep) || 18;
-    const minimumDashDelay = Number(window.routeLineMinimumDashDelay) || 95;
-    const firstDashDelay = Number(window.routeLineFirstDashDelay) || 240;
-    const dashAcceleration = Number(window.routeLineDashAcceleration) || 2;
-    const fadeDuration = Number(window.routeLineRevealFadeDuration) || 220;
-    const zoomSpeedMultiplier = typeof window.getRouteZoomSpeedMultiplier === 'function'
-      ? window.getRouteZoomSpeedMultiplier() : 1;
-    const candidates = [];
-    const seen = new Set();
-
-    ids.forEach(id => {
-      if (!id || seen.has(id)) return;
-      seen.add(id);
-      let boundaryIndex = -1;
-      for (let i = 1; i < routePoints.length; i++) {
-        if (String(routePoints[i]._routeSettlementId || '') === id &&
-            routePoints[i]._routeSegmentMode === 'settlement-count-only') {
-          boundaryIndex = i;
-          break;
-        }
-      }
-      if (id === destinationId && routeData.destinationBoundaryPoint) {
-        const target = map.latLngToLayerPoint(L.latLng(
-          Number(routeData.destinationBoundaryPoint.lat),
-          Number(routeData.destinationBoundaryPoint.lng)
-        ));
-        let nearest = Infinity;
-        for (let i = 1; i < routePoints.length; i++) {
-          const distance = map.latLngToLayerPoint(routePoints[i]).distanceTo(target);
-          if (distance < nearest) { nearest = distance; boundaryIndex = i; }
-        }
-      }
-      if (boundaryIndex < 1) return;
-      const area = (window.settlementAreas || []).find(item => String(item.id) === id);
-      if (!area || !shouldUseSettlementDryBrush(area)) return;
-
-      // У промежуточного города видимая линия заканчивается на внешнем
-      // краю кисти: следующий сегмент до фактической границы скрыт маской.
-      // Поэтому паузу ставим перед скрытым сегментом. Для конечного города
-      // оставляем прежнюю точку прибытия — фактическую границу.
-      const arrivalIndex = id !== destinationId ? Math.max(0, boundaryIndex - 1) : boundaryIndex;
-      const routeDistance = getRouteTravelLength(routePoints.slice(0, arrivalIndex + 1));
-      const dashIndex = window.getRouteDashIndexAtDistance(
-        displayPoints,
-        totalRouteDistance,
-        displayTotalLength,
-        routeDistance,
-        0,
-        screenLength
-      );
-      const path = getSettlementDryBrushPath(area);
-      const contourLength = path.reduce((sum, point, index) => {
-        return index ? sum + point.distanceTo(path[index - 1]) : sum;
-      }, 0);
-      candidates.push({ id, dashIndex, halfContourLength: contourLength / 2 });
-    });
-
-    // Обрабатываем города по порядку прохождения. Ускорение не сбрасывается
-    // после промежуточных поселений: каждый город использует тот интервал,
-    // который соответствует его реальному месту в единой последовательности штрихов.
-    candidates.sort((a, b) => a.dashIndex - b.dashIndex);
-    let lastBaseDashInterval = minimumDashDelay;
-    candidates.forEach(candidate => {
-      const baseDashInterval = Math.max(
-        minimumDashDelay,
-        firstDashDelay - candidate.dashIndex * dashAcceleration
-      );
-      const brushDashInterval = baseDashInterval * 0.82;
-      const brushDuration = Math.max(
-        fadeDuration,
-        (candidate.halfContourLength / dashStep) * brushDashInterval * zoomSpeedMultiplier + fadeDuration
-      );
-      // Следующий штрих должен появиться ровно после завершения обводки.
-      // Время до следующего штриха уже содержит обычный интервал после
-      // граничного штриха, поэтому вычитаем его из требуемой паузы.
-      const nextDashInterval = baseDashInterval * zoomSpeedMultiplier;
-      const pauseDuration = Math.max(0, fadeDuration + brushDuration - nextDashInterval);
-      window.settlementTraceDashIntervalsById[candidate.id] = baseDashInterval;
-      lastBaseDashInterval = baseDashInterval;
-      window.routeSettlementRevealPauses.push({
-        afterDashIndex: candidate.dashIndex,
-        duration: pauseDuration,
-        brushDuration,
-        id: candidate.id
-      });
-    });
-
-    window.routeSettlementRevealPauses.sort((a, b) => a.afterDashIndex - b.afterDashIndex);
-    if (candidates.length) window.settlementTraceDashInterval = lastBaseDashInterval;
-    console.log('Паузы анимации маршрута для поселений:', window.routeSettlementRevealPauses);
-  }
-
   function waitForRouteRevealThenTraceSettlements(routeData) {
     settlementTraceWaitTimers.forEach(timer => clearTimeout(timer));
     settlementTraceWaitTimers = [];
@@ -5672,17 +5517,6 @@ map.on("zoomend", function() {
         return;
       }
 
-      // Для промежуточного поселения фактическая граница находится уже
-      // под маской кисти. Видимый пунктир приходит к предыдущей точке —
-      // внешнему краю кисти. Запускаем росчерк от неё, а направление входа
-      // берём по предыдущей точке маршрута. Конечное поселение не меняем.
-      if (id !== destinationId && boundaryIndex > 1) {
-        const visibleEntryIndex = boundaryIndex - 1;
-        approachPoint = route[Math.max(0, visibleEntryIndex - 1)];
-        boundaryPoint = route[visibleEntryIndex];
-        boundaryIndex = visibleEntryIndex;
-      }
-
       const distance = window.getRouteTravelLength(route.slice(0, boundaryIndex + 1));
       const area = (window.settlementAreas || []).find(item => String(item.id) === id);
       if (!area) {
@@ -5734,8 +5568,9 @@ map.on("zoomend", function() {
           distance: target.distance,
           delayUntilBoundary: delay
         });
-        // До прибытия линии город вообще не имеет обводки. Запускаем
-        // росчерк только сейчас, а линия продолжит движение после его завершения.
+        // До этого момента промежуточный город показывается статичной кистью.
+        // Убираем только его статичный слой, чтобы анимация была видна ровно
+        // тогда, когда маршрут дошёл до его границы.
         removeRouteIntermediateCityOutline(target.id);
         animateSettlementTrace(target.area, target.boundaryPoint, target.approachPoint);
       }
