@@ -1582,6 +1582,8 @@ window.routePendingConfirmation = false;
       routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
 
     let targetDistance = 0;
+    let settlementCheckpointPoint = null;
+    let settlementCheckpointDistance = null;
 
     if (routeForcedMarch) {
       // Во время форсированного марша возвращаемся к его началу.
@@ -1605,9 +1607,40 @@ window.routePendingConfirmation = false;
           break;
         }
       }
+
+      // Центр выбранного поселения — такая же контрольная точка, как привал.
+      // Первый возврат после продолжения маршрута из центра останавливается
+      // здесь, сохраняя подход к поселению и его выделение.
+      const settlementCheckpoint = getLastSettlementCenterCheckpointDistance(routePoints);
+      if (settlementCheckpoint !== null &&
+          settlementCheckpoint < totalLength - 0.01 &&
+          settlementCheckpoint > targetDistance) {
+        targetDistance = settlementCheckpoint;
+        settlementCheckpointDistance = settlementCheckpoint;
+        settlementCheckpointPoint = [...routePoints].reverse().find(point => {
+          if (getRouteSegmentMode(point) !== "settlement-zero" || !point._routeSettlementId) return false;
+          const area = (window.settlementAreas || []).find(item =>
+            String(item.id) === String(point._routeSettlementId)
+          );
+          return !!(area && isRouteAtSettlementCenter(point, area));
+        }) || null;
+      }
     }
 
     routePoints = getRoutePointsUpToDistance(routePoints, targetDistance);
+    // Расчёт длины не включает нулевое соединение фактической границы с
+    // центром. Поэтому общий обрезатель может остановиться на предыдущей
+    // точке границы; явно возвращаем центральную точку в конец маршрута.
+    if (settlementCheckpointPoint && settlementCheckpointDistance !== null &&
+        Math.abs(targetDistance - settlementCheckpointDistance) < 0.05) {
+      const last = routePoints[routePoints.length - 1];
+      if (!last || Math.hypot(
+        Number(last.lat) - Number(settlementCheckpointPoint.lat),
+        Number(last.lng) - Number(settlementCheckpointPoint.lng)
+      ) > 0.000001) {
+        routePoints.push(settlementCheckpointPoint);
+      }
+    }
 
     // Промежуточный город остаётся выбранным только если маршрут всё ещё
     // содержит его центральную точку. Иначе снимаем обводку и разрешаем вход заново.
@@ -1760,9 +1793,6 @@ function isRouteAtSettlementCenter(point, area) {
   if (!point || !area || !area.center) return false;
   return Math.hypot(Number(point.lat) - Number(area.center.lat), Number(point.lng) - Number(area.center.lng)) < 0.00002;
 }
-// Функция используется вложенными обработчиками маршрута и редактором поселений.
-// Публикуем её явно, чтобы область видимости не зависела от места объявления.
-window.isRouteAtSettlementCenter = isRouteAtSettlementCenter;
 
 function getRouteSegmentTerrainParts(start, end) {
   const dx = end.lng - start.lng;
@@ -2457,6 +2487,28 @@ function getLastPointAtSettlementCenter(points) {
   return null;
 }
 
+// Контрольная точка «Вернуть» в момент выбора промежуточного поселения.
+// Возвращает накопленную длину маршрута на центральной точке последнего
+// выбранного поселения, даже если после неё уже построены новые отрезки.
+function getLastSettlementCenterCheckpointDistance(points) {
+  if (!Array.isArray(points) || points.length < 2) return null;
+  let passed = 0;
+  let checkpoint = null;
+  for (let i = 1; i < points.length; i++) {
+    const end = points[i];
+    if (getRouteSegmentMode(end) === "settlement-zero" && end._routeSettlementId) {
+      const area = (window.settlementAreas || []).find(item =>
+        String(item.id) === String(end._routeSettlementId)
+      );
+      if (area && isRouteAtSettlementCenter(end, area)) checkpoint = passed;
+    }
+    getRouteSegmentTerrainParts(points[i - 1], end).forEach(part => {
+      passed += part.travelLength;
+    });
+  }
+  return checkpoint;
+}
+
 function terminateForcedMarchAtSettlement(outerBoundaryDistance) {
   const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
   routeForcedSegments = routeForcedSegments.filter(segment => {
@@ -2564,7 +2616,7 @@ function updateRouteLine(cursorPosition = null) {
     )) settlementMaskAreas.push(hoveredArea);
   }
 
-  const isMarkerInsideSettlementMask = (position, extraPixels = 9) =>
+  const isMarkerInsideSettlementMask = (position, extraPixels = 0) =>
     !!(window.isRouteMarkerMaskedBySettlement &&
       settlementMaskAreas.some(area =>
         window.isRouteMarkerMaskedBySettlement(position, area, extraPixels)
@@ -4325,26 +4377,60 @@ map.on("zoomend", function() {
       ? window.routeIntermediateCityIds : [];
     const areas = Array.isArray(window.settlementAreas) ? window.settlementAreas : [];
     const area = ids.map(id => areas.find(item => String(item.id) === String(id)))
-      .filter(Boolean).find(item => window.isRouteAtSettlementCenter(start, item));
+      .filter(Boolean).find(item => isRouteAtSettlementCenter(start, item));
     if (!area) return null;
 
-    // Пока курсор/клик остаётся внутри внешней визуальной кисти,
-    // маршрут не покидает центр и никакие механики не возобновляются.
     const visualPolygon = getSettlementBrushErasePolygon(area, 0);
+    // Пока курсор остаётся внутри визуальной кисти, не создаём маршрутных
+    // механик. При этом направление выхода определяется именно лучом от центра.
     if (pointInSettlement(end, visualPolygon)) return [start];
 
-    const actualBoundary = findNearestSettlementBoundaryPoint(end, area.points || []);
-    if (!actualBoundary || !actualBoundary.point) return null;
-    const outerBoundary = findNearestRoutePointOnSettlementBrush(actualBoundary.point, area);
-    if (!outerBoundary) return null;
+    // Ищем первое пересечение луча «центр -> курсор» с полигоном.
+    // Поиск ближайшей к курсору точки границы давал скачки на другую сторону
+    // поселения, особенно при вращении курсора вокруг центра.
+    function firstRayIntersection(polygon) {
+      if (!Array.isArray(polygon) || polygon.length < 3) return null;
+      const origin = map.latLngToLayerPoint(start);
+      const target = map.latLngToLayerPoint(end);
+      const rx = target.x - origin.x;
+      const ry = target.y - origin.y;
+      const rayLengthSquared = rx * rx + ry * ry;
+      if (rayLengthSquared < 0.0001) return null;
+      let bestT = Infinity;
+
+      for (let i = 0; i < polygon.length; i++) {
+        const a = map.latLngToLayerPoint(polygon[i]);
+        const b = map.latLngToLayerPoint(polygon[(i + 1) % polygon.length]);
+        const sx = b.x - a.x;
+        const sy = b.y - a.y;
+        const qpx = a.x - origin.x;
+        const qpy = a.y - origin.y;
+        const denominator = rx * sy - ry * sx;
+        if (Math.abs(denominator) < 0.000001) continue;
+        const t = (qpx * sy - qpy * sx) / denominator;
+        const u = (qpx * ry - qpy * rx) / denominator;
+        if (t > 0.000001 && t <= 1.000001 && u >= -0.000001 && u <= 1.000001 && t < bestT) {
+          bestT = t;
+        }
+      }
+      if (!Number.isFinite(bestT)) return null;
+      return map.layerPointToLatLng(L.point(
+        origin.x + rx * bestT,
+        origin.y + ry * bestT
+      ));
+    }
+
+    const actualPointRaw = firstRayIntersection(area.points || []);
+    const outerPointRaw = firstRayIntersection(visualPolygon);
+    if (!actualPointRaw || !outerPointRaw) return null;
 
     const actualPoint = setRouteSegmentMode(
-      L.latLng(actualBoundary.point.lat, actualBoundary.point.lng),
+      L.latLng(actualPointRaw.lat, actualPointRaw.lng),
       "settlement-zero",
       area.id
     );
     const outerPoint = setRouteSegmentMode(
-      L.latLng(outerBoundary.lat, outerBoundary.lng),
+      L.latLng(outerPointRaw.lat, outerPointRaw.lng),
       "settlement-count-only",
       area.id
     );
@@ -4507,11 +4593,28 @@ map.on("zoomend", function() {
     window.updateRouteLine(null, true);
     console.log("Поселение добавлено как промежуточное; маршрут продолжен из центра:", area.id);
   }
+  // Стабильная маска жетонов не должна зависеть от экранной толщины сухой
+  // кисти: та намеренно меняется при zoom. Для жетонов используем исходный
+  // контур brushPoints (или points, если отдельного контура нет).
+  function getSettlementMarkerMaskPolygon(area) {
+    if (!area) return [];
+    const source = Array.isArray(area.brushPoints) && area.brushPoints.length >= 3
+      ? area.brushPoints
+      : area.points;
+    if (!Array.isArray(source) || source.length < 3) return [];
+    return source.map(point => L.latLng(Number(point.lat), Number(point.lng)));
+  }
+
   // Используется updateRouteLine для проверки самих игровых жетонов.
-  // Проверка доступна только при активной маске выбранного/наведённого города.
-  window.isRouteMarkerMaskedBySettlement = function(position, area, extraPixels = 9) {
+  // Маска стабильна при любом масштабе: маркер не исчезает из-за изменения
+  // внешнего экранного отступа визуальной кисти.
+  window.isRouteMarkerMaskedBySettlement = function(position, area, extraPixels = 0) {
     if (!position || !area) return false;
-    const polygon = getSettlementBrushErasePolygon(area, extraPixels);
+    // Обычные жетоны проверяем по стабильной геометрии. Для специальных
+    // крупных отметок форсированного марша сохраняем прежний экранный запас.
+    const polygon = Number(extraPixels) > 0
+      ? getSettlementBrushErasePolygon(area, extraPixels)
+      : getSettlementMarkerMaskPolygon(area);
     return polygon.length >= 3 && pointInSettlement(position, polygon);
   };
 
@@ -4559,7 +4662,7 @@ map.on("zoomend", function() {
     // Линия обрезается по внешнему краю кисти. Для круглых жетонов
     // добавляем запас по радиусу, чтобы их края тоже не заходили внутрь.
     const lineErasePolygon = getSettlementBrushErasePolygon(area, 1.5);
-    const markerErasePolygon = getSettlementBrushErasePolygon(area, 9);
+    const markerErasePolygon = getSettlementMarkerMaskPolygon(area);
     if (lineErasePolygon.length < 3 || markerErasePolygon.length < 3) return;
 
     const routeLayers = Array.isArray(window.routeRestMarkers) ? window.routeRestMarkers : [];
