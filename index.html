@@ -1471,7 +1471,7 @@ forcedMarchButton.addEventListener("click", function() {
   if (routeFinished || window.routePendingConfirmation) return;
 
   const fixedLength = getRouteTravelLength(routePoints);
-  const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
+  const dailyLimit = window.routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
   lastCursorPosition = null;
 
   if (!routeForcedMarch) {
@@ -1623,7 +1623,7 @@ window.routePendingConfirmation = false;
     }
 
     const totalLength = getRouteTravelLength(routePoints);
-    const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
+    const dailyLimit = window.routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
     let targetDistance = 0;
     let targetSettlementIndex = -1;
 
@@ -2612,7 +2612,7 @@ window.getRouteSegmentMode = getRouteSegmentMode;
 window.getForcedSegmentDistances = getForcedSegmentDistances;
 
 function terminateForcedMarchAtSettlement(outerBoundaryDistance) {
-  const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
+  const dailyLimit = window.routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
   routeForcedSegments = routeForcedSegments.filter(segment => {
     const recalculated = getForcedSegmentDistances(segment, dailyLimit);
     return recalculated.end <= outerBoundaryDistance + 0.001;
@@ -2735,7 +2735,7 @@ function updateRouteLine(cursorPosition = null) {
 
   const totalLength = getRouteTravelLength(pointsToDraw);
   const dailyLimit =
-    routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
+    window.routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
 
   // Активный марш также привязан к текущей дневной норме.
   // Если новая точка начала пока дальше проложенного пути, она проявится
