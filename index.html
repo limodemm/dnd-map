@@ -1156,7 +1156,12 @@ function getRouteAnimationScreenProgress(animation, distance) {
 // Возвращает прогресс именно того экранного штриха, который должен
 // достичь жетона. Если жетон попал в промежуток между штрихами,
 // используем следующий штрих, а не предыдущий.
-function getRouteAnimationDashProgressAtDistance(animation, distance, nextAfterBoundary = false) {
+function getRouteAnimationDashProgressAtDistance(
+  animation,
+  distance,
+  nextAfterBoundary = false,
+  forBoundaryArrival = false
+) {
   if (!animation) return 0;
   const screenRange = Math.max(0.001, animation.lineEndScreen - animation.lineStartScreen);
   const relativeDistance = Math.max(0,
@@ -1169,8 +1174,10 @@ function getRouteAnimationDashProgressAtDistance(animation, distance, nextAfterB
     // Город завершает текущий штрих. Следующий участок начинается
     // с первого нового штриха строго после точки входа.
     dashIndex += 1;
-  } else if (offsetInStep > routeLineDashLength + 0.001) {
+  } else if (!forBoundaryArrival && offsetInStep > routeLineDashLength + 0.001) {
     // Жетон в промежутке: ждём ближайший штрих впереди него.
+    // Для границы города это правило не подходит: следующий штрих уже
+    // может находиться за городом и не входит в участок до обводки.
     dashIndex += 1;
   }
 
@@ -1193,7 +1200,7 @@ function getRouteBoundaryArrivalDelay(distance) {
   // Непрерывный progress мог запускать обводку раньше времени, если граница
   // попадала в промежуток между штрихами пунктира.
   const dashProgress = getRouteAnimationDashProgressAtDistance(
-    animation, distance, false
+    animation, distance, false, true
   );
   const arrivalTime = getRouteAnimationRevealTime(animation, dashProgress) +
     routeLineRevealFadeDuration;
