@@ -825,14 +825,12 @@ window.getRouteZoomSpeedMultiplier = getRouteZoomSpeedMultiplier;
 function getRouteLineRevealDelay(dashIndex) {
   let delay = 0;
   const zoomSpeedMultiplier = getRouteZoomSpeedMultiplier();
-
   for (let i = 0; i < dashIndex; i++) {
     delay += Math.max(
       routeLineMinimumDashDelay,
       routeLineFirstDashDelay - i * routeLineDashAcceleration
     ) * zoomSpeedMultiplier;
   }
-
   return delay;
 }
 
@@ -850,7 +848,7 @@ function stopRouteMarkerAnimation() {
   routeMarkerAnimations = [];
 }
 
-function beginRouteMarkerAnimation(startDistance, endDistance) {
+function beginRouteMarkerAnimation(startDistance, endDistance, synchronizedStartedAt) {
   const length = endDistance - startDistance;
   if (length < 0.001) return;
 
@@ -882,7 +880,7 @@ function beginRouteMarkerAnimation(startDistance, endDistance) {
     displayPoints,
     lineStartScreen,
     lineEndScreen,
-    startedAt: performance.now(),
+    startedAt: Number.isFinite(synchronizedStartedAt) ? synchronizedStartedAt : Date.now(),
     duration,
     timer: null
   };
@@ -908,7 +906,7 @@ window.isRouteRevealRunning = function() {
 // сохраняя уже пройденную долю времени. Благодаря этому новый зум не
 // заставляет штрихи перескакивать вперёд/назад и не запускает линию заново.
 function rebaseRouteMarkerAnimationsForZoom() {
-  const now = performance.now();
+  const now = Date.now();
 
   routeMarkerAnimations.forEach(animation => {
     const oldDuration = Math.max(1, animation.duration);
@@ -941,7 +939,7 @@ function rebaseRouteMarkerAnimationsForZoom() {
 }
 
 function getRouteMarkerAnimation(distance) {
-  const now = performance.now();
+  const now = Date.now();
   let matchingAnimation = null;
 
   routeMarkerAnimations.forEach(animation => {
@@ -998,7 +996,7 @@ function getRouteMarkerAnimationDelay(distance) {
 
   const markerRevealTime =
     getRouteLineRevealDelay(dashIndex) + routeLineRevealFadeDuration;
-  return markerRevealTime - (performance.now() - animation.startedAt);
+  return markerRevealTime - (Date.now() - animation.startedAt);
 }
 
 // Firebase-модуль находится в отдельном script type="module" и не видит
@@ -3158,7 +3156,7 @@ function updateRouteLine(cursorPosition = null) {
           displayRoutePoints,
           partDisplayStart
         );
-        const elapsed = performance.now() - activeAnimation.startedAt;
+        const elapsed = Date.now() - activeAnimation.startedAt;
 
         // Привязываем пунктир к единой экранной шкале всего отрезка, чтобы
         // при внутренних границах (например, у привалов) рисунок не сбивался.
@@ -3432,7 +3430,7 @@ function updateRouteLine(cursorPosition = null) {
       ? getRouteMarkerAnimationDelay(routeEndDistance)
       : null;
     const flagAnimationElapsed = flagAnimation
-      ? performance.now() - flagAnimation.startedAt
+      ? Date.now() - flagAnimation.startedAt
       : Infinity;
     const flagAnimationDuration = 520;
     const flagShouldAnimate = Boolean(
@@ -3569,7 +3567,7 @@ window.applySynchronizedPartyRoute = function(data) {
 
   const total = getRouteTravelLength(routePoints);
   if (total > 0.001) {
-    beginRouteMarkerAnimation(0, total);
+    beginRouteMarkerAnimation(0, total, Number(data.startedAt) || Date.now());
   }
   updateRouteLine(null);
   console.log("Получен общий маршрут:", data);
