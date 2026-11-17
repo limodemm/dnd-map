@@ -1116,9 +1116,12 @@ function getRouteBoundaryArrivalDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
   const progress = getRouteAnimationScreenProgress(animation, distance);
+  // Берём дробный индекс штриха в точке касания. Округление вверх
+  // заставляло ждать следующий штрих целиком, хотя предыдущий уже дошёл
+  // до границы города — отсюда небольшая пауза перед обводкой.
   const virtualDashIndex = Math.min(
     animation.referenceLastDashIndex,
-    Math.ceil(progress * animation.referenceLastDashIndex)
+    Math.max(0, progress * animation.referenceLastDashIndex)
   );
   const arrivalTime = getRouteLineRevealDelay(virtualDashIndex) + routeLineRevealFadeDuration;
   return arrivalTime + getRouteAnimationPauseOffset(animation, progress) -
@@ -1141,7 +1144,7 @@ function getRouteMarkerAnimationDelay(distance) {
   // Небольшое опережение нужно, чтобы жетон не возникал после штриха,
   // но прежнее опережение на всю разницу fade-in было слишком заметным,
   // особенно на максимальном масштабе. Оставляем только короткий запас.
-  const markerLead = Math.min(160, Math.max(0,
+  const markerLead = Math.min(105, Math.max(0,
     routeRevealFadeDuration - routeLineRevealFadeDuration
   ));
   const markerRevealTime = lineRevealTime - markerLead;
@@ -4426,6 +4429,58 @@ map.on("zoomend", function() {
     return { samples: sampled, total: travelled };
   }
 
+  // Возвращает долю временной шкалы, к которой последний мазок кисти
+  // уже полностью проявился. Это позволяет не заставлять маршрут ждать
+  // оставшуюся невидимую часть расчётного периметра.
+  function getSettlementDryBrushCompletionProgress(area, revealStartPoint = null, dashStep = 18) {
+    const path = getSettlementDryBrushPath(area);
+    if (path.length < 4) return 1;
+    const zoomScale = map.getZoomScale(map.getZoom(), 0);
+    const brushScale = Math.pow(zoomScale, 0.43);
+    const sampledData = sampleSettlementBrushPath(path, 2.4 * brushScale);
+    const samples = sampledData.samples;
+    const total = sampledData.total;
+    if (total < 12) return 1;
+
+    let revealStartDistance = 0;
+    if (revealStartPoint) {
+      const target = map.latLngToLayerPoint(revealStartPoint);
+      let nearestDistance = Infinity;
+      samples.forEach(sample => {
+        const distance = sample.point.distanceTo(target);
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          revealStartDistance = sample.distance;
+        }
+      });
+    }
+
+    let cursor = 0;
+    let strokeIndex = 0;
+    let maxRevealAt = 0;
+    while (cursor < total) {
+      const seed = strokeIndex + 1;
+      const strokeLength = (27 + (Math.sin(seed * 12.9898) * 0.5 + 0.5) * 25) * brushScale;
+      const gap = (1.5 + (Math.sin(seed * 7.233) * 0.5 + 0.5) * 4.5) * brushScale;
+      const end = Math.min(total, cursor + strokeLength);
+      const strokeCenter = (cursor + end) / 2;
+      const containsRevealStart = revealStartDistance >= cursor && revealStartDistance <= end;
+      const clockwiseDistance = (strokeCenter - revealStartDistance + total) % total;
+      const counterClockwiseDistance = (revealStartDistance - strokeCenter + total) % total;
+      const nearestDirectionDistance = Math.min(clockwiseDistance, counterClockwiseDistance);
+      const revealAt = containsRevealStart
+        ? 0
+        : Math.max(0, Math.min(1, nearestDirectionDistance / (total / 2)));
+      maxRevealAt = Math.max(maxRevealAt, revealAt);
+      cursor = end + gap;
+      strokeIndex++;
+    }
+
+    const halfContourLength = total / 2;
+    const revealWindow = Math.min(1, (dashStep * 1.5) / Math.max(1, halfContourLength));
+    return Math.max(0.05, Math.min(1, maxRevealAt + revealWindow));
+  }
+
   function createSettlementDryBrushLayers(area, opacity, revealStartPoint = null) {
     const path = getSettlementDryBrushPath(area);
     if (path.length < 4) return [];
@@ -4440,7 +4495,7 @@ map.on("zoomend", function() {
     // Толщина, длина мазков и промежутки плавно уменьшаются при отдалении.
     const zoomScale = map.getZoomScale(map.getZoom(), 0);
     const brushScale = Math.pow(zoomScale, 0.43);
-    const sampledData = sampleSettlementBrushPath(path, 3.2 * brushScale);
+    const sampledData = sampleSettlementBrushPath(path, 2.4 * brushScale);
     const samples = sampledData.samples;
     const total = sampledData.total;
     if (total < 12) return [];
@@ -5564,7 +5619,8 @@ map.on("zoomend", function() {
       startedAt: performance.now(),
       duration,
       progress: 0,
-      revealWindow: Math.min(1, dashStep / Math.max(1, halfContourLength))
+      revealWindow: Math.min(1, (dashStep * 1.5) / Math.max(1, halfContourLength)),
+      completionProgress: getSettlementDryBrushCompletionProgress(area, revealStartPoint, dashStep)
     };
 
     layers.forEach(layer => {
@@ -5582,12 +5638,13 @@ map.on("zoomend", function() {
       if (activeSettlementBrushTraces.get(String(area.id)) !== state) return;
       // Линейное раскрытие сохраняет постоянную скорость последнего штриха маршрута.
       const progress = Math.max(0, Math.min(1, (now - state.startedAt) / state.duration));
-      applySettlementBrushTraceProgress(state, progress);
+      const completed = progress >= state.completionProgress;
+      const visibleProgress = completed ? state.completionProgress : progress;
+      applySettlementBrushTraceProgress(state, visibleProgress);
 
-      if (progress < 1) {
+      if (!completed) {
         requestAnimationFrame(frame);
       } else {
-        applySettlementBrushTraceProgress(state, 1);
         activeSettlementBrushTraces.delete(String(area.id));
         console.log("Обводка поселения: анимация сухой кисти завершена", area.id);
       }
@@ -5966,10 +6023,14 @@ map.on("zoomend", function() {
         const zoomSpeedMultiplier = typeof window.getRouteZoomSpeedMultiplier === 'function'
           ? window.getRouteZoomSpeedMultiplier() : 1;
         const dashInterval = routeDashInterval * 0.65 * zoomSpeedMultiplier;
-        target.traceDuration = Math.max(
+        const baseTraceDuration = Math.max(
           revealFadeDuration,
           (halfContourLength / dashStep) * dashInterval + revealFadeDuration
         );
+        const completionProgress = getSettlementDryBrushCompletionProgress(
+          target.area, target.boundaryPoint, dashStep
+        );
+        target.traceDuration = baseTraceDuration * completionProgress;
       } else {
         const contour = getSettlementContourVariant(
           target.area, target.boundaryPoint, target.approachPoint, true
@@ -5991,7 +6052,7 @@ map.on("zoomend", function() {
         distance: target.distance,
         // Небольшой запас компенсирует polling-интервал запуска контура,
         // чтобы линия гарантированно не продолжилась раньше его завершения.
-        duration: target.traceDuration + 100
+        duration: target.traceDuration + 25
       })));
     }
 
