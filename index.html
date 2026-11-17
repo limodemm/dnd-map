@@ -3237,14 +3237,23 @@ function updateRouteLine(cursorPosition = null) {
             if (!map.hasLayer(line)) return;
             const path = line.getElement();
             if (!path) {
-              if (attempt < 3) {
+              // На только что загруженной карте Leaflet иногда добавляет
+              // SVG-путь не в тот же кадр, что и слой. Трёх кадров недостаточно
+              // на медленных устройствах: штрих тогда оставался прозрачным
+              // до завершения всей анимации маршрута.
+              if (attempt < 120) {
                 requestAnimationFrame(() => startDashReveal(attempt + 1));
+              } else if (map.hasLayer(line)) {
+                // Последняя страховка: лучше показать штрих, чем оставить
+                // его невидимым до финальной перерисовки маршрута.
+                line.setStyle({ opacity: opacity });
               }
               return;
             }
             path.style.setProperty("--route-line-opacity", String(opacity));
             path.style.animationDuration = `${routeLineRevealFadeDuration}ms`;
             path.style.animationDelay = `${delay}ms`;
+            path.style.animationFillMode = "both";
             // Запускаем CSS-анимацию последней, уже с правильной задержкой.
             path.classList.add("route-line-reveal");
           }
