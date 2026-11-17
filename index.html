@@ -1344,8 +1344,17 @@ function syncRouteAnimationGeometry(displayPoints, routeLength, displayLength) {
 window.setRouteSettlementAnimationPauses = function(checkpoints) {
   const animation = routeMarkerAnimations[routeMarkerAnimations.length - 1];
   if (!animation) return;
-  animation.settlementPauses = (Array.isArray(checkpoints) ? checkpoints : []).map(item => {
-    const distance = Number(item.distance);
+
+  // Сначала упорядочиваем поселения по маршруту. Важно считать скрытый
+  // транзит относительно начала ТЕКУЩЕГО участка, а не от начала всего
+  // маршрута: после каждого города шкала штрихов начинается заново.
+  const orderedCheckpoints = (Array.isArray(checkpoints) ? checkpoints : [])
+    .map(item => ({ ...item, distance: Number(item.distance) }))
+    .sort((a, b) => a.distance - b.distance);
+
+  let segmentStart = 0;
+  animation.settlementPauses = orderedCheckpoints.map(item => {
+    const distance = item.distance;
     const boundaryDashProgress = getRouteAnimationDashProgressAtDistance(
       animation, distance, false, true
     );
@@ -1354,34 +1363,43 @@ window.setRouteSettlementAnimationPauses = function(checkpoints) {
     let acceleratedStartProgress = null;
     const transitSpeedMultiplier = 2.5;
 
-    // У промежуточного поселения скрытый участок внутри контура проходит
-    // быстрее обычного маршрута. Ускорение ограничено только входом и
-    // выходом из поселения; сухая кисть и остальные участки не меняются.
+    // Ускоряем только скрытый участок от входа до выхода из текущего
+    // поселения. Индексы обязательно локальные: предыдущие города уже
+    // сбросили шкалу и не должны влиять на длительность этого транзита.
     if (Number.isFinite(startDistance) && distance > startDistance + 0.001) {
-      acceleratedStartProgress = getRouteAnimationDashProgressAtDistance(
-        animation, startDistance, false, true
+      acceleratedStartProgress = Math.max(
+        segmentStart,
+        getRouteAnimationDashProgressAtDistance(animation, startDistance, false, true)
       );
-      const startDashIndex = Math.max(0,
-        acceleratedStartProgress * animation.referenceLastDashIndex);
-      const endDashIndex = Math.max(0,
-        boundaryDashProgress * animation.referenceLastDashIndex);
+      const startDashIndex = Math.max(
+        0, (acceleratedStartProgress - segmentStart) * animation.referenceLastDashIndex
+      );
+      const endDashIndex = Math.max(
+        startDashIndex,
+        (boundaryDashProgress - segmentStart) * animation.referenceLastDashIndex
+      );
       const normalTransitDuration = Math.max(0,
         getRouteLineRevealDelay(endDashIndex) - getRouteLineRevealDelay(startDashIndex)
       );
       transitDuration = normalTransitDuration / transitSpeedMultiplier;
     }
 
-    return {
+    const resumeProgress = getRouteAnimationDashProgressAtDistance(
+      animation, distance, true
+    );
+    const pause = {
       distance,
       progress: getRouteAnimationScreenProgress(animation, distance),
       boundaryDashProgress,
       acceleratedStartProgress,
       transitSpeedMultiplier,
-      resumeProgress: getRouteAnimationDashProgressAtDistance(animation, distance, true),
+      resumeProgress,
       duration: Math.max(0, (Number(item.duration) || 0) - transitDuration),
       areaId: item.areaId
     };
-  }).sort((a, b) => a.progress - b.progress);
+    segmentStart = Math.max(segmentStart, resumeProgress);
+    return pause;
+  });
   refreshRouteAnimationTiming(animation);
 };
 
