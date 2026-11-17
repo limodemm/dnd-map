@@ -1106,7 +1106,7 @@ function getRouteAnimationRevealTime(animation, screenProgress) {
   let segmentStart = 0;
   let elapsedOffset = 0;
 
-  for (const pause of pauses) {
+  pauses.forEach(pause => {
     const boundaryProgress = Math.max(
       segmentStart,
       Math.min(1, Number(pause.progress) || 0)
@@ -1117,9 +1117,14 @@ function getRouteAnimationRevealTime(animation, screenProgress) {
     );
 
     // До самой границы действует предыдущий участок. После границы
-    // следующий участок ждёт фактического завершения сухой кисти.
-    if (progress <= boundaryProgress + 0.0001) break;
+    // добавляем время полного штриха, обводки и начинаем новый участок
+    // с первого штриха, который расположен уже за городом.
+    if (progress <= boundaryProgress + 0.0001) return;
 
+    // Время завершения участка должно опираться на тот же дискретный
+    // штрих, который использует getRouteBoundaryArrivalDelay. Непрерывная
+    // boundaryProgress могла дать дробный индекс и добавить лишнюю часть
+    // интервала перед первым штрихом после обводки.
     const boundaryDashProgress = Math.max(
       segmentStart,
       Math.min(boundaryProgress, Number(pause.boundaryDashProgress ?? boundaryProgress) || 0)
@@ -1127,16 +1132,10 @@ function getRouteAnimationRevealTime(animation, screenProgress) {
     const completedSegmentDashIndex = Math.max(
       0, (boundaryDashProgress - segmentStart) * animation.referenceLastDashIndex
     );
-    const segmentArrivalTime = elapsedOffset +
-      getRouteLineRevealDelay(completedSegmentDashIndex) + routeLineRevealFadeDuration;
-
-    // completedAt задаётся непосредственно из последнего кадра сухой кисти,
-    // а не из заранее рассчитанной traceDuration. Пока обводка не закончена,
-    // штрихи следующего участка не получают время появления.
-    if (pause.completedAt == null || !Number.isFinite(Number(pause.completedAt))) return Infinity;
-    elapsedOffset = Math.max(segmentArrivalTime, Number(pause.completedAt));
+    elapsedOffset += getRouteLineRevealDelay(completedSegmentDashIndex) +
+      routeLineRevealFadeDuration + Math.max(0, Number(pause.duration) || 0);
     segmentStart = resumeProgress;
-  }
+  });
 
   const localDashIndex = Math.max(
     0, (progress - segmentStart) * animation.referenceLastDashIndex
@@ -1231,8 +1230,8 @@ function getRouteMarkerAnimationDelay(distance) {
     (getSynchronizedRouteNow() - animation.startedAtEpoch);
 }
 
-// Добавляет остановки общей шкалы анимации в точках входа в города.
-// Линия после каждой такой точки ждёт, пока завершится обводка города.
+// Добавляет остановки общей шкалы анимации на выходах из поселений.
+// Внутренние скрытые участки успевают пройти параллельно сухой кисти.
 function refreshRouteAnimationTiming(animation) {
   if (!animation) return;
 
@@ -1270,10 +1269,8 @@ function refreshRouteAnimationTiming(animation) {
     const totalPause = pauses.reduce((sum, pause) =>
       sum + Math.max(0, Number(pause.duration) || 0), 0
     );
-    const segmentedRevealTime = getRouteAnimationRevealTime(animation, 1);
-    const segmentedDuration = Number.isFinite(segmentedRevealTime)
-      ? segmentedRevealTime + routeLineRevealFadeDuration * 2
-      : baseDuration + totalPause + routeLineRevealFadeDuration * 2;
+    const segmentedDuration = getRouteAnimationRevealTime(animation, 1) +
+      routeLineRevealFadeDuration * 2;
     animation.duration = Math.max(baseDuration + totalPause, segmentedDuration);
   }
 
@@ -1310,30 +1307,38 @@ function syncRouteAnimationGeometry(displayPoints, routeLength, displayLength) {
 window.setRouteSettlementAnimationPauses = function(checkpoints) {
   const animation = routeMarkerAnimations[routeMarkerAnimations.length - 1];
   if (!animation) return;
-  animation.settlementPauses = (Array.isArray(checkpoints) ? checkpoints : []).map(item => ({
-    distance: Number(item.distance),
-    progress: getRouteAnimationScreenProgress(animation, item.distance),
-    boundaryDashProgress: getRouteAnimationDashProgressAtDistance(
-      animation, item.distance, false, true
-    ),
-    resumeProgress: getRouteAnimationDashProgressAtDistance(animation, item.distance, true),
-    // Длительность оставлена только для безопасного срока жизни анимации;
-    // продолжение линии от неё не зависит.
-    duration: Math.max(0, Number(item.duration) || 0),
-    completedAt: null,
-    areaId: item.areaId
-  })).sort((a, b) => a.progress - b.progress);
-  refreshRouteAnimationTiming(animation);
-};
+  animation.settlementPauses = (Array.isArray(checkpoints) ? checkpoints : []).map(item => {
+    const distance = Number(item.distance);
+    const boundaryDashProgress = getRouteAnimationDashProgressAtDistance(
+      animation, distance, false, true
+    );
+    const startDistance = Number(item.startDistance);
+    let transitDuration = 0;
 
-// Вызывается сухой кистью в её последнем реально отрисованном кадре.
-// Записываем фактический момент завершения для соответствующего города.
-window.completeRouteSettlementTrace = function(areaId) {
-  const animation = routeMarkerAnimations[routeMarkerAnimations.length - 1];
-  if (!animation || !Array.isArray(animation.settlementPauses)) return;
-  const pause = animation.settlementPauses.find(item => String(item.areaId) === String(areaId));
-  if (!pause) return;
-  pause.completedAt = Math.max(0, getSynchronizedRouteNow() - animation.startedAtEpoch);
+    // У промежуточного поселения скрытая внутренняя часть маршрута
+    // проходит одновременно с сухой кистью. Пауза ставится на выходе,
+    // а из времени обводки вычитается время прохода от входа до выхода.
+    if (Number.isFinite(startDistance) && distance > startDistance + 0.001) {
+      const startDashProgress = getRouteAnimationDashProgressAtDistance(
+        animation, startDistance, false, true
+      );
+      const startDashIndex = Math.max(0, startDashProgress * animation.referenceLastDashIndex);
+      const endDashIndex = Math.max(0, boundaryDashProgress * animation.referenceLastDashIndex);
+      transitDuration = Math.max(0,
+        getRouteLineRevealDelay(endDashIndex) - getRouteLineRevealDelay(startDashIndex)
+      );
+    }
+
+    return {
+      distance,
+      progress: getRouteAnimationScreenProgress(animation, distance),
+      boundaryDashProgress,
+      resumeProgress: getRouteAnimationDashProgressAtDistance(animation, distance, true),
+      duration: Math.max(0, (Number(item.duration) || 0) - transitDuration),
+      areaId: item.areaId
+    };
+  }).sort((a, b) => a.progress - b.progress);
+  refreshRouteAnimationTiming(animation);
 };
 
 // Firebase-модуль находится в отдельном script type="module" и не видит
@@ -3524,6 +3529,7 @@ function updateRouteLine(cursorPosition = null) {
           ));
           // После каждого города время штрихов начинается заново,
           // но геометрия и глобальное положение линии остаются прежними.
+          const delay = getRouteAnimationRevealTime(activeAnimation, dashProgress) - elapsed;
           const dashPoints = getScreenLinePoints(dashStart, dashEnd);
           if (dashPoints.length < 2) continue;
 
@@ -3552,23 +3558,12 @@ function updateRouteLine(cursorPosition = null) {
             line.setStyle({ opacity: opacity });
           };
 
-          // Пересчитываем время до появления динамически. Для штрихов после
-          // города getRouteAnimationRevealTime возвращает Infinity, пока сухая
-          // кисть не сообщит о фактическом завершении. Поэтому заранее
-          // поставленный таймер не может раскрыть линию во время обводки.
-          const scheduleDashReveal = function() {
-            if (!map.hasLayer(line)) return;
-            const currentElapsed = getSynchronizedRouteNow() - activeAnimation.startedAtEpoch;
-            const currentDelay = getRouteAnimationRevealTime(activeAnimation, dashProgress) - currentElapsed;
-            if (!Number.isFinite(currentDelay)) {
-              line._routeDashRevealTimer = setTimeout(scheduleDashReveal, 24);
-            } else if (currentDelay <= 0) {
-              revealDash();
-            } else {
-              line._routeDashRevealTimer = setTimeout(scheduleDashReveal, Math.min(currentDelay, 40));
-            }
-          };
-          scheduleDashReveal();
+          if (delay <= 0) {
+            revealDash();
+          } else {
+            const revealTimer = setTimeout(revealDash, delay);
+            line._routeDashRevealTimer = revealTimer;
+          }
           window.routeRestMarkers.push(line);
         }
       }
@@ -5753,14 +5748,7 @@ map.on("zoomend", function() {
 
     revealStartPoint = revealStartPoint || null;
     const layers = createSettlementDryBrushLayers(area, 0.96, revealStartPoint);
-    if (!layers.length) {
-      // Если кисть не смогла создать видимые слои, не оставляем маршрут
-      // навсегда заблокированным в ожидании несуществующего кадра.
-      if (typeof window.completeRouteSettlementTrace === 'function') {
-        window.completeRouteSettlementTrace(area.id);
-      }
-      return;
-    }
+    if (!layers.length) return;
     layers._settlementBrushRevealStartPoint = revealStartPoint;
 
     const path = getSettlementDryBrushPath(area);
@@ -5821,9 +5809,6 @@ map.on("zoomend", function() {
         requestAnimationFrame(frame);
       } else {
         activeSettlementBrushTraces.delete(String(area.id));
-        if (typeof window.completeRouteSettlementTrace === 'function') {
-          window.completeRouteSettlementTrace(area.id);
-        }
         console.log("Обводка поселения: анимация сухой кисти завершена", area.id);
       }
     }
@@ -6155,7 +6140,20 @@ map.on("zoomend", function() {
           window.getRouteTravelLength([approachPoint, visualContact.routePoint]);
         boundaryPoint = visualContact.boundaryPoint;
       }
-      targets.push({ id, area, distance, boundaryPoint, approachPoint });
+      // Для промежуточного поселения находим выходную внешнюю границу.
+      // Внутренний путь между входом и выходом проходит по транзитным
+      // сегментам и должен анимироваться параллельно сухой кисти.
+      let pauseDistance = distance;
+      if (id !== destinationId) {
+        for (let i = boundaryIndex + 1; i < route.length; i++) {
+          if (String(route[i]._routeSettlementId || '') === id &&
+              route[i]._routeSegmentMode === 'settlement-count-only') {
+            pauseDistance = window.getRouteTravelLength(route.slice(0, i + 1));
+            break;
+          }
+        }
+      }
+      targets.push({ id, area, distance, pauseDistance, boundaryPoint, approachPoint });
     });
 
     targets.sort((a, b) => a.distance - b.distance);
@@ -6182,8 +6180,9 @@ map.on("zoomend", function() {
       minimumDashDelay, firstDashDelay - finalDashIndex * dashAcceleration
     );
 
-    // Рассчитываем длительность каждой городской обводки заранее,
-    // чтобы линия после точки входа получила паузу ещё до первой отрисовки.
+    // Рассчитываем длительность каждой городской обводки заранее.
+    // Для промежуточных поселений часть этого времени будет перекрыта
+    // прохождением скрытых транзитных сегментов внутри поселения.
     targets.forEach(target => {
       if (shouldUseSettlementDryBrush(target.area)) {
         const brushPath = getSettlementDryBrushPath(target.area);
@@ -6227,9 +6226,11 @@ map.on("zoomend", function() {
     if (typeof window.setRouteSettlementAnimationPauses === 'function') {
       window.setRouteSettlementAnimationPauses(targets.map(target => ({
         areaId: target.id,
-        distance: target.distance,
-        // Небольшой запас компенсирует polling-интервал запуска контура,
-        // чтобы линия гарантированно не продолжилась раньше его завершения.
+        // Для промежуточных городов точка паузы — выходная граница.
+        // Саму обводку запускаем по прежней входной точке.
+        distance: target.pauseDistance,
+        startDistance: target.distance,
+        // Небольшой запас компенсирует polling-интервал запуска контура.
         duration: target.traceDuration + 25
       })));
     }
