@@ -1139,9 +1139,11 @@ function getRouteBoundaryArrivalDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
   const timing = getRouteDashTimingAtDistance(animation, distance);
-  // Небольшое смещение сохраняет момент запуска, близкий к прежнему
-  // на среднем зуме, но теперь одинаково рассчитанный на любом масштабе.
-  const arrivalTime = getRouteLineRevealDelay(timing.virtualDashIndex) + 105;
+  // Штрих появляется целиком и только затем завершает fade-in. Поэтому
+  // город нельзя начинать обводить в середине проявления штриха: на малом
+  // масштабе это оставляло 1–2 последних штриха позади обводки.
+  const arrivalTime = getRouteLineRevealDelay(timing.virtualDashIndex) +
+    routeLineRevealFadeDuration;
   return arrivalTime + getRouteAnimationPauseOffset(animation, timing.progress) -
     (getSynchronizedRouteNow() - animation.startedAtEpoch);
 }
@@ -1151,14 +1153,12 @@ function getRouteMarkerAnimationDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
   const timing = getRouteDashTimingAtDistance(animation, distance);
+  // Жетон начинает проявляться одновременно со штрихом, до которого он
+  // привязан. Одинаковая длительность fade-in не даёт ему визуально
+  // опережать пунктир, особенно после паузы на городе и на малом зуме.
   const lineRevealTime = getRouteLineRevealDelay(timing.virtualDashIndex) +
     getRouteAnimationPauseOffset(animation, timing.progress);
-  // Сохраняем ранее принятую небольшую фору жетонов.
-  const markerLead = Math.min(25, Math.max(0,
-    routeRevealFadeDuration - routeLineRevealFadeDuration
-  ));
-  const markerRevealTime = lineRevealTime - markerLead;
-  return markerRevealTime - (getSynchronizedRouteNow() - animation.startedAtEpoch);
+  return lineRevealTime - (getSynchronizedRouteNow() - animation.startedAtEpoch);
 }
 
 // Добавляет остановки общей шкалы анимации в точках входа в города.
@@ -1195,7 +1195,7 @@ window.getRouteMarkerAnimationDelay = getRouteMarkerAnimationDelay;
 // на мобильных браузерах. Отрицательная задержка сохраняет общую синхронизацию.
 function animateRouteToken(marker, delay, innerSelector = null) {
   if (!marker || delay === null || !Number.isFinite(Number(delay))) return;
-  const duration = routeRevealFadeDuration;
+  const duration = routeLineRevealFadeDuration;
   const effectiveDelay = Number(delay);
   if (effectiveDelay <= -duration) return;
   const root = typeof marker.getElement === "function" ? marker.getElement() : null;
@@ -3644,7 +3644,7 @@ function updateRouteLine(cursorPosition = null) {
     const flagAnimationElapsed = flagAnimation
       ? getSynchronizedRouteNow() - flagAnimation.startedAtEpoch
       : Infinity;
-    const flagAnimationDuration = 520;
+    const flagAnimationDuration = routeLineRevealFadeDuration;
     const flagShouldAnimate = Boolean(
       flagAnimation &&
       flagAnimationDelay > -flagAnimationDuration
