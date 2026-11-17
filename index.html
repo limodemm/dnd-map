@@ -2035,6 +2035,9 @@ forcedMarchButton.addEventListener("click", function() {
 
   // Подтверждение маршрута
   routeConfirmButton.addEventListener("click", function() {
+if (!routeFinished && typeof window.finishRouteAtLastSelectedSettlement === "function") {
+  window.finishRouteAtLastSelectedSettlement();
+}
 if (!routeFinished) return;
 
 window.routeMode = false;
@@ -3903,7 +3906,9 @@ function updateRouteLine(cursorPosition = null) {
       : getNormalRestDistances(totalLength, dailyLimit, routePoints).length;
     document.getElementById("route-days").textContent = completedDays;
 
-    routeConfirmButton.disabled = !routeFinished;
+    routeConfirmButton.disabled = !routeFinished &&
+      !(typeof window.canConfirmRouteAtLastSettlement === "function" &&
+        window.canConfirmRouteAtLastSettlement());
 
     const forcedButton = document.getElementById("route-forced-march");
     if (forcedButton) {
@@ -5401,6 +5406,64 @@ map.on("zoomend", function() {
     return latestEntry;
   }
 
+  // Кнопка подтверждения может завершить маршрут прямо в последнем
+  // выбранном одиночным кликом городе. В этом случае превращаем его из
+  // промежуточного в конечный, не требуя отмены или двойного клика.
+  window.canConfirmRouteAtLastSettlement = function() {
+    if (routeFinished || !Array.isArray(window.routeIntermediateCityIds) ||
+        !window.routeIntermediateCityIds.length || !Array.isArray(routePoints) ||
+        routePoints.length < 3) return false;
+    const lastPoint = routePoints[routePoints.length - 1];
+    const id = lastPoint && lastPoint._routeSettlementId != null
+      ? String(lastPoint._routeSettlementId) : "";
+    return Boolean(id && getRouteSegmentMode(lastPoint) === "settlement-zero" &&
+      window.routeIntermediateCityIds.some(existingId => String(existingId) === id));
+  };
+
+  window.finishRouteAtLastSelectedSettlement = function() {
+    if (!window.canConfirmRouteAtLastSettlement()) return false;
+    const centerPoint = routePoints[routePoints.length - 1];
+    const id = String(centerPoint._routeSettlementId);
+    const area = (Array.isArray(window.settlementAreas) ? window.settlementAreas : [])
+      .find(item => String(item.id) === id);
+    if (!area) return false;
+
+    let boundaryIndex = -1;
+    for (let i = routePoints.length - 2; i >= 1; i--) {
+      if (String(routePoints[i]._routeSettlementId || "") === id &&
+          getRouteSegmentMode(routePoints[i]) === "settlement-count-only") {
+        boundaryIndex = i;
+        break;
+      }
+    }
+    if (boundaryIndex < 1) return false;
+
+    const approachPoint = routePoints[boundaryIndex - 1];
+    const boundaryPoint = L.latLng(
+      Number(routePoints[boundaryIndex].lat),
+      Number(routePoints[boundaryIndex].lng)
+    );
+
+    // Сохраняем именно ту границу, к которой уже был проложен маршрут
+    // при одиночном клике. Финальный участок будет построен заново до неё.
+    routePoints.splice(boundaryIndex);
+    window.routeIntermediateCityIds = window.routeIntermediateCityIds
+      .filter(existingId => String(existingId) !== id);
+    refreshRouteIntermediateCityOutlines();
+
+    window.routeDestinationCityId = id;
+    window.routeDestinationBoundaryPoint = boundaryPoint;
+    window.routeDestinationApproachPoint = approachPoint;
+    try {
+      if (window.showSettlementOutline) window.showSettlementOutline(area, 1);
+    } catch (outlineError) {
+      console.error("Ошибка отображения обводки поселения:", outlineError);
+    }
+
+    finishPartyRoute(boundaryPoint);
+    return routeFinished;
+  };
+
   function activateIntermediateRouteCity(area, clickedPoint = null) {
     if (!area || !area.id) return;
     if (!Array.isArray(window.routeIntermediateCityIds)) window.routeIntermediateCityIds = [];
@@ -6178,9 +6241,13 @@ map.on("zoomend", function() {
         if (nearestIndex >= 1) {
           boundaryIndex = nearestIndex;
           boundaryPoint = targetPoint;
-          approachPoint = routeData.destinationApproachPoint
+          // Для расчёта точки касания нужен именно предыдущий узел
+          // фактической геометрии маршрута. destinationApproachPoint — это
+          // начало последнего добавленного участка, а не обязательно его
+          // последний узел (между ними могут быть обходы других городов).
+          approachPoint = route[nearestIndex - 1] || (routeData.destinationApproachPoint
             ? L.latLng(Number(routeData.destinationApproachPoint.lat), Number(routeData.destinationApproachPoint.lng))
-            : route[nearestIndex - 1];
+            : null);
         }
       }
 
@@ -6287,18 +6354,21 @@ map.on("zoomend", function() {
     });
 
     if (typeof window.setRouteSettlementAnimationPauses === 'function') {
-      window.setRouteSettlementAnimationPauses(targets.map(target => ({
-        areaId: target.id,
-        // Для промежуточных городов точка паузы — выходная граница.
-        // Саму обводку запускаем по прежней входной точке.
-        distance: target.pauseDistance,
-        startDistance: target.distance,
-        // Следующий участок начинается только после полного завершения
-        // визуальной обводки. Временная шкала уже отдельно учитывает
-        // fade штриха границы, поэтому длительность самой обводки
-        // добавляем целиком, без вычитания fade и без раннего старта.
-        duration: Math.max(0, Number(target.traceDuration) || 0)
-      })));
+      window.setRouteSettlementAnimationPauses(targets
+        // Конечный город не создаёт паузу: после него нет следующего
+        // участка маршрута. Его контур только ожидает фактического прибытия
+        // линии, поэтому скорость последнего участка остаётся обычной.
+        .filter(target => target.id !== destinationId)
+        .map(target => ({
+          areaId: target.id,
+          // Для промежуточных городов точка паузы — выходная граница.
+          // Саму обводку запускаем по прежней входной точке.
+          distance: target.pauseDistance,
+          startDistance: target.distance,
+          // Следующий участок начинается только после полного завершения
+          // визуальной обводки, как и в уже исправленном сценарии.
+          duration: Math.max(0, Number(target.traceDuration) || 0)
+        })));
     }
 
     targets.forEach(target => {
