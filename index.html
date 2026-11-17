@@ -604,18 +604,18 @@ let partyIcon = createPartyIcon();
 
     let firstSharedRouteSnapshot = true;
     let lastSharedRouteEventId = null;
-    let pendingSharedRouteData = null;
+    // Firebase может вызвать обработчик несколько раз, пока часы ещё
+    // синхронизируются. Сериализуем обработку снимков, чтобы старый снимок
+    // не применился поверх более нового после завершения await.
+    let sharedRouteSnapshotQueue = Promise.resolve();
 
-    async function applySharedRouteData(data) {
-      // Дожидаемся первичной синхронизации часов с Firebase. Это особенно
-      // важно для первого маршрута после обновления страницы: без offset
-      // устройство может решить, что анимация уже закончилась.
-      await firebaseServerTimeOffsetPromise;
-
-      // Если Firebase прислал маршрут раньше, чем появился маркер отряда
-      // и функция применения маршрута, не теряем событие — применим позже.
+    function applySharedRouteData(data) {
+      // Синхронизация времени уже завершена обработчиком снимка ниже.
+      // Не делаем здесь второй await: он не нужен и усложняет порядок событий.
       if (typeof window.applySynchronizedPartyRoute !== "function") {
-        pendingSharedRouteData = data;
+        // Модуль Firebase и основной скрипт имеют разные области видимости.
+        // Поэтому ожидающие данные храним на window, а не в локальной let.
+        window.pendingSharedRouteData = data;
         return;
       }
 
@@ -625,7 +625,8 @@ let partyIcon = createPartyIcon();
       }
     }
 
-    onValue(sharedRouteRef, async function(snapshot) {
+    onValue(sharedRouteRef, function(snapshot) {
+      sharedRouteSnapshotQueue = sharedRouteSnapshotQueue.then(async function() {
       // Даже проверка первого снимка должна использовать уже полученную
       // поправку серверного времени, иначе можно ошибочно отбросить событие.
       await firebaseServerTimeOffsetPromise;
@@ -662,6 +663,9 @@ let partyIcon = createPartyIcon();
       lastSharedRouteEventId = eventId;
 
       applySharedRouteData(data);
+      }).catch(function(error) {
+        console.error("Ошибка обработки снимка маршрута:", error);
+      });
     }, function(error) {
       console.error("Ошибка синхронизации маршрута:", error);
     });
@@ -995,9 +999,14 @@ function beginRouteMarkerAnimation(startDistance, endDistance, sharedStartedAt, 
     0, Math.floor((referenceLength - 2) / routeLineDashStep)
   );
   const lineRevealDuration = getRouteLineRevealDelay(referenceLastDashIndex) + routeLineRevealFadeDuration;
+  // Общая длительность приходит от инициатора. На другом устройстве
+  // экранная геометрия может отличаться на доли пикселя (особенно после
+  // округления Leaflet), поэтому не позволяем локальному последнему штриху
+  // оказаться за пределами общего таймера завершения.
+  const locallyRequiredDuration = lineRevealDuration + routeRevealFadeDuration;
   const duration = Number(sharedDuration) > 0
-    ? Number(sharedDuration)
-    : lineRevealDuration + routeRevealFadeDuration;
+    ? Math.max(Number(sharedDuration), locallyRequiredDuration)
+    : locallyRequiredDuration;
   const startedAtEpoch = Number(sharedStartedAt) > 0
     ? Number(sharedStartedAt) : getSynchronizedRouteNow() + 500;
 
@@ -3698,12 +3707,16 @@ window.applySynchronizedPartyRoute = function(data) {
   console.log("Получен общий маршрут:", data);
 };
 
-// Если обновление Firebase пришло до создания маркера отряда, применяем
-// сохранённый маршрут сразу после готовности функции.
-if (pendingSharedRouteData) {
-  const pendingData = pendingSharedRouteData;
-  pendingSharedRouteData = null;
-  applySharedRouteData(pendingData);
+// Если Firebase успел прислать маршрут до объявления этой функции,
+// забираем его из общего window-хранилища. Локальные переменные ES-модуля
+// недоступны из этого обычного скрипта.
+if (window.pendingSharedRouteData) {
+  const pendingData = window.pendingSharedRouteData;
+  delete window.pendingSharedRouteData;
+  window.applySynchronizedPartyRoute(pendingData);
+  if ((Array.isArray(pendingData.intermediateSettlementIds) && pendingData.intermediateSettlementIds.length) || pendingData.destinationSettlementId) {
+    waitForRouteRevealThenTraceSettlements(pendingData);
+  }
 }
 
 // =====================================
