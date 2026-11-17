@@ -825,12 +825,15 @@ window.getRouteZoomSpeedMultiplier = getRouteZoomSpeedMultiplier;
 function getRouteLineRevealDelay(dashIndex) {
   let delay = 0;
   const zoomSpeedMultiplier = getRouteZoomSpeedMultiplier();
+
   for (let i = 0; i < dashIndex; i++) {
     delay += Math.max(
       routeLineMinimumDashDelay,
-      routeLineFirstDashDelay - i * routeLineDashAcceleration
+      routeLineFirstDashDelay -
+        i * routeLineDashAcceleration * zoomSpeedMultiplier
     ) * zoomSpeedMultiplier;
   }
+
   return delay;
 }
 
