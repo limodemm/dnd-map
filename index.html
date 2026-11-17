@@ -3507,9 +3507,14 @@ function updateRouteLine(cursorPosition = null) {
         let partScreenLength = 0;
         partDisplayPoints.forEach((point, index) => {
           const layerPoint = map.latLngToLayerPoint(point);
-          if (index > 0) {
+          if (index > 0 && getRouteSegmentMode(point) !== "settlement-zero") {
             partScreenLength += layerPoint.distanceTo(screenEntries[index - 1].layerPoint);
           }
+          // settlement-zero соединяет центр города с его границей и имеет
+          // нулевую длину в общей шкале маршрута. Не даём этому скрытому
+          // соединителю занимать экранное расстояние в сетке штрихов:
+          // иначе после каждого города реальная линия начинает отставать
+          // от рассчитанного времени всё сильнее.
           screenEntries.push({ point, layerPoint, distance: partScreenLength });
         });
 
