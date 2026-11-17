@@ -5410,10 +5410,13 @@ map.on("zoomend", function() {
   // выбранном одиночным кликом городе. В этом случае превращаем его из
   // промежуточного в конечный, не требуя отмены или двойного клика.
   window.canConfirmRouteAtLastSettlement = function() {
-    if (routeFinished || !Array.isArray(window.routeIntermediateCityIds) ||
-        !window.routeIntermediateCityIds.length || !Array.isArray(routePoints) ||
-        routePoints.length < 3) return false;
-    const lastPoint = routePoints[routePoints.length - 1];
+    // Этот обработчик вызывается из обновления предпросмотра. Состояние
+    // завершения читаем через window-флаг: локальная переменная routeFinished
+    // в этой функции недоступна из её области видимости.
+    if (window.routePendingConfirmation || !Array.isArray(window.routeIntermediateCityIds) ||
+        !window.routeIntermediateCityIds.length || !Array.isArray(window.routePoints) ||
+        window.routePoints.length < 3) return false;
+    const lastPoint = window.routePoints[window.routePoints.length - 1];
     const id = lastPoint && lastPoint._routeSettlementId != null
       ? String(lastPoint._routeSettlementId) : "";
     return Boolean(id && getRouteSegmentMode(lastPoint) === "settlement-zero" &&
@@ -5422,31 +5425,31 @@ map.on("zoomend", function() {
 
   window.finishRouteAtLastSelectedSettlement = function() {
     if (!window.canConfirmRouteAtLastSettlement()) return false;
-    const centerPoint = routePoints[routePoints.length - 1];
+    const centerPoint = window.routePoints[window.routePoints.length - 1];
     const id = String(centerPoint._routeSettlementId);
     const area = (Array.isArray(window.settlementAreas) ? window.settlementAreas : [])
       .find(item => String(item.id) === id);
     if (!area) return false;
 
     let boundaryIndex = -1;
-    for (let i = routePoints.length - 2; i >= 1; i--) {
-      if (String(routePoints[i]._routeSettlementId || "") === id &&
-          getRouteSegmentMode(routePoints[i]) === "settlement-count-only") {
+    for (let i = window.routePoints.length - 2; i >= 1; i--) {
+      if (String(window.routePoints[i]._routeSettlementId || "") === id &&
+          getRouteSegmentMode(window.routePoints[i]) === "settlement-count-only") {
         boundaryIndex = i;
         break;
       }
     }
     if (boundaryIndex < 1) return false;
 
-    const approachPoint = routePoints[boundaryIndex - 1];
+    const approachPoint = window.routePoints[boundaryIndex - 1];
     const boundaryPoint = L.latLng(
-      Number(routePoints[boundaryIndex].lat),
-      Number(routePoints[boundaryIndex].lng)
+      Number(window.routePoints[boundaryIndex].lat),
+      Number(window.routePoints[boundaryIndex].lng)
     );
 
     // Сохраняем именно ту границу, к которой уже был проложен маршрут
     // при одиночном клике. Финальный участок будет построен заново до неё.
-    routePoints.splice(boundaryIndex);
+    window.routePoints.splice(boundaryIndex);
     window.routeIntermediateCityIds = window.routeIntermediateCityIds
       .filter(existingId => String(existingId) !== id);
     refreshRouteIntermediateCityOutlines();
@@ -5461,7 +5464,7 @@ map.on("zoomend", function() {
     }
 
     finishPartyRoute(boundaryPoint);
-    return routeFinished;
+    return Boolean(window.routePendingConfirmation);
   };
 
   function activateIntermediateRouteCity(area, clickedPoint = null) {
