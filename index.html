@@ -465,7 +465,7 @@ document.addEventListener("keydown", function(e) {
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js";
   import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-auth.js";
-  import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-database.js";
+  import { getDatabase, ref, set, get, onValue, serverTimestamp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-database.js";
 
   // Настройки Firebase
   const firebaseConfig = {
@@ -487,10 +487,19 @@ document.addEventListener("keydown", function(e) {
   window.routeLineMinimumDashDelay = 95;
   window.settlementTraceDashInterval = 95;
 
+  // Единая шкала времени Firebase. Все клиенты сравнивают локальные часы
+  // с серверным временем, чтобы запуск маршрута не зависел от часов устройства.
+  let firebaseServerTimeOffset = 0;
+  window.getRouteSynchronizedNow = () => Date.now() + firebaseServerTimeOffset;
+
   // Подключение Firebase
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const database = getDatabase(app);
+  onValue(ref(database, ".info/serverTimeOffset"), snapshot => {
+    const offset = Number(snapshot.val());
+    firebaseServerTimeOffset = Number.isFinite(offset) ? offset : 0;
+  });
 
   // Глобальное состояние поселений. Оно хранится на window, чтобы все
   // обработчики и вложенные функции карты обращались к одному экземпляру.
@@ -627,7 +636,18 @@ let partyIcon = createPartyIcon();
       if (!window.dndFirebase || !window.dndFirebase.ready || !window.dndFirebase.uid) {
         throw new Error("Firebase ещё не готов");
       }
-      const payload = { ...routeData, eventId: Date.now() + "_" + window.dndFirebase.uid };
+      const durationMs = Number(routeData.durationMs) > 0
+        ? Number(routeData.durationMs)
+        : (typeof window.getRouteRevealDurationForCurrentRoute === "function"
+            ? window.getRouteRevealDurationForCurrentRoute() : 5000);
+      // serverTimestamp() разрешается Firebase в одно и то же серверное
+      // время для всех клиентов. Небольшой запас даёт всем время получить событие.
+      const payload = {
+        ...routeData,
+        durationMs,
+        startedAt: serverTimestamp(),
+        eventId: Date.now() + "_" + window.dndFirebase.uid
+      };
       await set(sharedRouteRef, payload);
     };
 
@@ -860,58 +880,74 @@ function getRouteZoomSpeedMultiplier() {
 }
 window.getRouteZoomSpeedMultiplier = getRouteZoomSpeedMultiplier;
 
+window.getRouteRevealDurationForCurrentRoute = function() {
+  if (!Array.isArray(routePoints) || routePoints.length < 2) return 5000;
+  const displayPoints = createRouteDisplayPoints(routePoints, []);
+  const displayLength = getRouteTravelLength(displayPoints);
+  const screenLength = getRouteScreenDistanceAtDistance(displayPoints, displayLength);
+  const lineDuration = getRouteLineRevealDuration(screenLength);
+  return lineDuration + routeRevealFadeDuration;
+};
+
 // Задержка каждого штриха считается от начала линии. С каждым штрихом
 // интервал немного сокращается, пока не достигнет безопасного минимума.
 // Затем весь интервал нормализуется относительно среднего масштаба.
 function getRouteLineRevealDelay(dashIndex) {
   let delay = 0;
-  const zoomSpeedMultiplier = getRouteZoomSpeedMultiplier();
   for (let i = 0; i < dashIndex; i++) {
     delay += Math.max(
       routeLineMinimumDashDelay,
       routeLineFirstDashDelay - i * routeLineDashAcceleration
-    ) * zoomSpeedMultiplier;
+    );
   }
   return delay;
 }
 
 function getRouteLineRevealDuration(screenLength) {
   if (screenLength <= 0) return routeLineRevealFadeDuration;
-  const lastDashIndex = Math.max(0, Math.floor((screenLength - 2) / routeLineDashStep));
+  // Приводим экранную длину к средней точке зума. Поэтому длительность
+  // одного и того же маршрута не меняется при приближении/отдалении.
+  const referenceLength = screenLength * getRouteZoomSpeedMultiplier();
+  const lastDashIndex = Math.max(0, Math.floor((referenceLength - 2) / routeLineDashStep));
   return getRouteLineRevealDelay(lastDashIndex) + routeLineRevealFadeDuration;
+}
+
+function getSynchronizedRouteNow() {
+  return typeof window.getRouteSynchronizedNow === "function"
+    ? window.getRouteSynchronizedNow() : Date.now();
 }
 
 function stopRouteMarkerAnimation() {
   routeMarkerAnimations.forEach(animation => {
     if (animation.timer) clearTimeout(animation.timer);
   });
-
   routeMarkerAnimations = [];
 }
 
-function beginRouteMarkerAnimation(startDistance, endDistance) {
+function beginRouteMarkerAnimation(startDistance, endDistance, sharedStartedAt, sharedDuration) {
   const length = endDistance - startDistance;
   if (length < 0.001) return;
 
-  // Линия и жетоны используют одну и ту же сглаженную геометрию.
-  // Это позволяет запускать каждый жетон только после того, как
-  // последовательность штрихов дошла до его позиции.
-  // Экранные координаты нужны, чтобы размер штрихов и их интервалы
-  // оставались одинаковыми при разных уровнях масштаба карты.
   const routeTotalLength = getRouteTravelLength(routePoints);
   const displayPoints = createRouteDisplayPoints(routePoints, []);
   const displayTotalLength = getRouteTravelLength(displayPoints);
   const displayStart = routeTotalLength > 0.001
-    ? startDistance / routeTotalLength * displayTotalLength
-    : 0;
+    ? startDistance / routeTotalLength * displayTotalLength : 0;
   const displayEnd = routeTotalLength > 0.001
-    ? endDistance / routeTotalLength * displayTotalLength
-    : displayTotalLength;
+    ? endDistance / routeTotalLength * displayTotalLength : displayTotalLength;
   const lineStartScreen = getRouteScreenDistanceAtDistance(displayPoints, displayStart);
   const lineEndScreen = getRouteScreenDistanceAtDistance(displayPoints, displayEnd);
-  const lineDuration = getRouteLineRevealDuration(lineEndScreen - lineStartScreen);
-  // Держим анимацию активной и на время плавного появления последнего жетона.
-  const duration = lineDuration + routeRevealFadeDuration;
+  const lineScreenLength = Math.max(0, lineEndScreen - lineStartScreen);
+  const referenceLength = lineScreenLength * getRouteZoomSpeedMultiplier();
+  const referenceLastDashIndex = Math.max(
+    0, Math.floor((referenceLength - 2) / routeLineDashStep)
+  );
+  const lineRevealDuration = getRouteLineRevealDelay(referenceLastDashIndex) + routeLineRevealFadeDuration;
+  const duration = Number(sharedDuration) > 0
+    ? Number(sharedDuration)
+    : lineRevealDuration + routeRevealFadeDuration;
+  const startedAtEpoch = Number(sharedStartedAt) > 0
+    ? Number(sharedStartedAt) : getSynchronizedRouteNow() + 500;
 
   const animation = {
     start: startDistance,
@@ -921,20 +957,22 @@ function beginRouteMarkerAnimation(startDistance, endDistance) {
     displayPoints,
     lineStartScreen,
     lineEndScreen,
-    startedAt: performance.now(),
+    referenceLastDashIndex,
+    startedAtEpoch,
     duration,
     timer: null
   };
 
+  const elapsed = getSynchronizedRouteNow() - startedAtEpoch;
+  // Если событие пришло уже после завершения, показываем готовый маршрут,
+  // а не запускаем устаревшую анимацию с нуля.
+  if (elapsed >= duration + 100) return;
+
   routeMarkerAnimations.push(animation);
-
   animation.timer = setTimeout(function() {
-    routeMarkerAnimations = routeMarkerAnimations.filter(
-      item => item !== animation
-    );
-
+    routeMarkerAnimations = routeMarkerAnimations.filter(item => item !== animation);
     updateRouteLine(lastCursorPosition);
-  }, duration + 100);
+  }, Math.max(0, duration + 100 - elapsed));
 }
 
 // Firebase-модуль использует этот метод, чтобы дождаться окончания
@@ -943,56 +981,37 @@ window.isRouteRevealRunning = function() {
   return routeMarkerAnimations.length > 0;
 };
 
-// При смене масштаба пересчитываем экранную длину активных анимаций,
-// сохраняя уже пройденную долю времени. Благодаря этому новый зум не
-// заставляет штрихи перескакивать вперёд/назад и не запускает линию заново.
+// При зуме меняется только экранная геометрия штрихов. Общие время старта,
+// длительность и текущий прогресс остаются неизменными для всех клиентов.
 function rebaseRouteMarkerAnimationsForZoom() {
-  const now = performance.now();
-
   routeMarkerAnimations.forEach(animation => {
-    const oldDuration = Math.max(1, animation.duration);
-    const elapsed = Math.max(0, now - animation.startedAt);
-    const progress = Math.max(0, Math.min(1, elapsed / oldDuration));
-
-    const lineStartScreen = getRouteScreenDistanceAtDistance(
-      animation.displayPoints,
-      animation.start / animation.routeTotalLength * animation.displayTotalLength
+    const displayStart = animation.routeTotalLength > 0.001
+      ? animation.start / animation.routeTotalLength * animation.displayTotalLength : 0;
+    const displayEnd = animation.routeTotalLength > 0.001
+      ? animation.end / animation.routeTotalLength * animation.displayTotalLength
+      : animation.displayTotalLength;
+    animation.lineStartScreen = getRouteScreenDistanceAtDistance(
+      animation.displayPoints, displayStart
     );
-    const lineEndScreen = getRouteScreenDistanceAtDistance(
-      animation.displayPoints,
-      animation.end / animation.routeTotalLength * animation.displayTotalLength
+    animation.lineEndScreen = getRouteScreenDistanceAtDistance(
+      animation.displayPoints, displayEnd
     );
-    const lineDuration = getRouteLineRevealDuration(lineEndScreen - lineStartScreen);
-    const newDuration = lineDuration + routeRevealFadeDuration;
-
-    animation.lineStartScreen = lineStartScreen;
-    animation.lineEndScreen = lineEndScreen;
-    animation.duration = newDuration;
-    animation.startedAt = now - progress * newDuration;
-
-    if (animation.timer) clearTimeout(animation.timer);
-    const remaining = Math.max(0, newDuration - progress * newDuration);
-    animation.timer = setTimeout(function() {
-      routeMarkerAnimations = routeMarkerAnimations.filter(item => item !== animation);
-      updateRouteLine(lastCursorPosition);
-    }, remaining + 100);
   });
 }
 
 function getRouteMarkerAnimation(distance) {
-  const now = performance.now();
+  const now = getSynchronizedRouteNow();
   let matchingAnimation = null;
 
   routeMarkerAnimations.forEach(animation => {
-    const elapsed = now - animation.startedAt;
+    const elapsed = now - animation.startedAtEpoch;
     const isInsideRange =
       distance > animation.start + 0.05 &&
       distance <= animation.end + 0.01;
 
     if (
-      isInsideRange &&
-      elapsed < animation.duration &&
-      (!matchingAnimation || animation.startedAt > matchingAnimation.startedAt)
+      isInsideRange && elapsed < animation.duration &&
+      (!matchingAnimation || animation.startedAtEpoch > matchingAnimation.startedAtEpoch)
     ) {
       matchingAnimation = animation;
     }
@@ -1011,33 +1030,18 @@ function getRouteMarkerAnimationDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
 
-  const displayDistance = animation.routeTotalLength > 0.001
-    ? distance / animation.routeTotalLength * animation.displayTotalLength
-    : 0;
-  const markerScreenDistance = getRouteScreenDistanceAtDistance(
-    animation.displayPoints,
-    displayDistance
+  const rangeLength = Math.max(0.001, animation.end - animation.start);
+  const routeProgress = Math.max(0, Math.min(1,
+    (distance - animation.start) / rangeLength
+  ));
+  const virtualDashIndex = Math.min(
+    animation.referenceLastDashIndex,
+    Math.ceil(routeProgress * animation.referenceLastDashIndex)
   );
-  const relativeScreenDistance = Math.max(
-    0,
-    markerScreenDistance - animation.lineStartScreen
-  );
-
-  // Если жетон находится внутри штриха, ждём этот штрих;
-  // если в промежутке между штрихами — следующий за ним.
-  const dashOffset = relativeScreenDistance % routeLineDashStep;
-  let dashIndex = Math.floor(relativeScreenDistance / routeLineDashStep);
-  if (dashOffset > routeLineDashLength) dashIndex++;
-
-  const lastDashIndex = Math.max(
-    0,
-    Math.floor((animation.lineEndScreen - animation.lineStartScreen - 2) / routeLineDashStep)
-  );
-  dashIndex = Math.min(dashIndex, lastDashIndex);
-
   const markerRevealTime =
-    getRouteLineRevealDelay(dashIndex) + routeLineRevealFadeDuration;
-  return markerRevealTime - (performance.now() - animation.startedAt);
+    getRouteLineRevealDelay(virtualDashIndex) + routeLineRevealFadeDuration;
+  const elapsed = getSynchronizedRouteNow() - animation.startedAtEpoch;
+  return markerRevealTime - elapsed;
 }
 
 // Firebase-модуль находится в отдельном script type="module" и не видит
@@ -3197,10 +3201,10 @@ function updateRouteLine(cursorPosition = null) {
           displayRoutePoints,
           partDisplayStart
         );
-        const elapsed = performance.now() - activeAnimation.startedAt;
+        const elapsed = getSynchronizedRouteNow() - activeAnimation.startedAtEpoch;
 
-        // Привязываем пунктир к единой экранной шкале всего отрезка, чтобы
-        // при внутренних границах (например, у привалов) рисунок не сбивался.
+        // Экранные штрихи могут отличаться числом при разном зуме, но время
+        // каждого штриха определяется его долей от всей длины маршрута.
         const firstDashIndex = Math.max(
           0,
           Math.floor((globalScreenStart - activeAnimation.lineStartScreen) / routeLineDashStep)
@@ -3216,9 +3220,17 @@ function updateRouteLine(cursorPosition = null) {
           const dashEnd = Math.min(partScreenLength, dashGlobalEnd - globalScreenStart);
           if (dashEnd - dashStart < 2) continue;
 
-          // Очередь каждого штриха идёт от начальной точки. Интервал
-          // постепенно уменьшается, поэтому линия плавно набирает скорость.
-          const delay = getRouteLineRevealDelay(dashIndex) - elapsed;
+          const dashProgress = Math.max(0, Math.min(1,
+            (dashGlobalStart - activeAnimation.lineStartScreen) /
+            Math.max(1, activeAnimation.lineEndScreen - activeAnimation.lineStartScreen)
+          ));
+          const virtualDashIndex = Math.min(
+            activeAnimation.referenceLastDashIndex,
+            Math.floor(dashProgress * activeAnimation.referenceLastDashIndex)
+          );
+          // Одинаковая позиция маршрута получает одинаковый момент появления
+          // на телефоне и ПК, даже если из-за зума штрихов разное количество.
+          const delay = getRouteLineRevealDelay(virtualDashIndex) - elapsed;
           const dashPoints = getScreenLinePoints(dashStart, dashEnd);
           if (dashPoints.length < 2) continue;
 
@@ -3237,24 +3249,17 @@ function updateRouteLine(cursorPosition = null) {
             if (!map.hasLayer(line)) return;
             const path = line.getElement();
             if (!path) {
-              // На только что загруженной карте Leaflet иногда добавляет
-              // SVG-путь не в тот же кадр, что и слой. Трёх кадров недостаточно
-              // на медленных устройствах: штрих тогда оставался прозрачным
-              // до завершения всей анимации маршрута.
               if (attempt < 120) {
                 requestAnimationFrame(() => startDashReveal(attempt + 1));
               } else if (map.hasLayer(line)) {
-                // Последняя страховка: лучше показать штрих, чем оставить
-                // его невидимым до финальной перерисовки маршрута.
-                line.setStyle({ opacity: opacity });
+                // Защита от SVG, который не успел появиться в мобильном браузере.
+                line.setStyle({ opacity });
               }
               return;
             }
             path.style.setProperty("--route-line-opacity", String(opacity));
             path.style.animationDuration = `${routeLineRevealFadeDuration}ms`;
             path.style.animationDelay = `${delay}ms`;
-            path.style.animationFillMode = "both";
-            // Запускаем CSS-анимацию последней, уже с правильной задержкой.
             path.classList.add("route-line-reveal");
           }
 
@@ -3630,7 +3635,12 @@ window.applySynchronizedPartyRoute = function(data) {
 
   const total = getRouteTravelLength(routePoints);
   if (total > 0.001) {
-    beginRouteMarkerAnimation(0, total);
+    beginRouteMarkerAnimation(
+      0,
+      total,
+      Number(data.startedAt) > 0 ? Number(data.startedAt) + 500 : null,
+      Number(data.durationMs) > 0 ? Number(data.durationMs) : null
+    );
   }
   updateRouteLine(null);
   console.log("Получен общий маршрут:", data);
