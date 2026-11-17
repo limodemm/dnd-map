@@ -4190,12 +4190,14 @@ function finishPartyRoute(latlng) {
 
   updateRouteLine(null, true);
 
-  // Завершение у города ещё раз применяет обрезку уже к финальным слоям
-  // маршрута, созданным выше; так линия и жетоны не проступают под обводкой.
+  // Завершение у города повторно обрезает только конечное поселение,
+  // сохраняя маски промежуточных городов, уже применённые updateRouteLine.
+  // Без preserveExisting=false функция восстанавливала исходную геометрию
+  // всех линий и тем самым показывала их внутри предыдущих поселений.
   if (window.routeDestinationCityId) {
     const destinationArea = (Array.isArray(window.settlementAreas) ? window.settlementAreas : [])
       .find(area => String(area.id) === String(window.routeDestinationCityId));
-    if (destinationArea) hideRouteDashesInsideSettlement(destinationArea);
+    if (destinationArea) hideRouteDashesInsideSettlement(destinationArea, true);
   }
 
   console.log("Маршрут завершён:", routePoints);
