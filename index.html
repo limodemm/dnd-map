@@ -1252,19 +1252,12 @@ function getRouteMarkerAnimationDelay(distance) {
   const dashProgress = getRouteAnimationDashProgressAtDistance(animation, distance, false);
   const lineRevealTime = getRouteAnimationRevealTime(animation, dashProgress);
   const elapsed = getSynchronizedRouteNow() - animation.startedAtEpoch;
-  const pauses = Array.isArray(animation.settlementPauses)
-    ? animation.settlementPauses : [];
-  const followsSettlement = pauses.some(pause =>
-    dashProgress > Math.max(0, Number(pause.resumeProgress) || 0) + 0.0001
-  );
 
-  // Возвращаем прежнее опережение жетона на 25 мс. Но после выхода
-  // из поселения жетон дополнительно ждёт завершения проявления штриха:
-  // так он не начинает появляться, пока линия визуально ещё не дошла
-  // до его позиции. До первого города поведение остаётся прежним.
-  const settlementLineCompletionWait = followsSettlement
-    ? routeLineRevealFadeDuration : 0;
-  return lineRevealTime + settlementLineCompletionWait - 25 - elapsed;
+  // Жетоны используют ту же временную шкалу штрихов, что и линия.
+  // Сохраняем прежнее небольшое опережение на 25 мс и не добавляем
+  // отдельную задержку после поселений: она заставляла жетоны отставать
+  // от уже проявившейся линии.
+  return lineRevealTime - 25 - elapsed;
 }
 
 // Добавляет остановки общей шкалы анимации на выходах из поселений.
@@ -6300,12 +6293,11 @@ map.on("zoomend", function() {
         // Саму обводку запускаем по прежней входной точке.
         distance: target.pauseDistance,
         startDistance: target.distance,
-        // Следующий участок маршрута начинает проявляться за 350 мс
-        // до завершения визуальной обводки поселения. Из длительности
-        // вычитаем fade штриха границы: он добавляется отдельно в общей
-        // временной шкале getRouteAnimationRevealTime.
-        duration: Math.max(0, target.traceDuration -
-          (Number(window.routeLineRevealFadeDuration) || 220) - 350)
+        // Следующий участок начинается только после полного завершения
+        // визуальной обводки. Временная шкала уже отдельно учитывает
+        // fade штриха границы, поэтому длительность самой обводки
+        // добавляем целиком, без вычитания fade и без раннего старта.
+        duration: Math.max(0, Number(target.traceDuration) || 0)
       })));
     }
 
