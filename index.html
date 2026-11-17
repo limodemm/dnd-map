@@ -483,22 +483,47 @@ document.addEventListener("keydown", function(e) {
   window.routeLineDashStep = 18;
   window.routeLineRevealFadeDuration = 220;
   window.routeLineFirstDashDelay = 240;
-  window.routeLineDashAcceleration = 2;
-  window.routeLineMinimumDashDelay = 95;
+  window.routeLineDashAcceleration = 1.5;
+  window.routeLineMinimumDashDelay = 120;
   window.settlementTraceDashInterval = 95;
 
   // Единая шкала времени Firebase. Все клиенты сравнивают локальные часы
   // с серверным временем, чтобы запуск маршрута не зависел от часов устройства.
   let firebaseServerTimeOffset = 0;
+  let firebaseServerTimeOffsetReady = false;
+  let firebaseServerConnected = false;
+  let firebaseServerOffsetReceived = false;
+  let resolveFirebaseServerTimeOffsetReady;
+  const firebaseServerTimeOffsetPromise = new Promise(resolve => {
+    resolveFirebaseServerTimeOffsetReady = resolve;
+  });
   window.getRouteSynchronizedNow = () => Date.now() + firebaseServerTimeOffset;
+
+  function tryResolveFirebaseServerTimeOffsetReady() {
+    // Начальный снимок .info/serverTimeOffset иногда содержит null/0 ещё до
+    // установления соединения. Не считаем его готовой синхронизацией часов:
+    // ждём одновременно подтверждённое соединение и числовой offset.
+    if (firebaseServerTimeOffsetReady || !firebaseServerConnected || !firebaseServerOffsetReceived) return;
+    firebaseServerTimeOffsetReady = true;
+    resolveFirebaseServerTimeOffsetReady();
+  }
 
   // Подключение Firebase
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const database = getDatabase(app);
+  onValue(ref(database, ".info/connected"), snapshot => {
+    firebaseServerConnected = snapshot.val() === true;
+    tryResolveFirebaseServerTimeOffsetReady();
+  });
   onValue(ref(database, ".info/serverTimeOffset"), snapshot => {
-    const offset = Number(snapshot.val());
-    firebaseServerTimeOffset = Number.isFinite(offset) ? offset : 0;
+    const rawOffset = snapshot.val();
+    if (rawOffset === null || rawOffset === undefined) return;
+    const offset = Number(rawOffset);
+    if (!Number.isFinite(offset)) return;
+    firebaseServerTimeOffset = offset;
+    firebaseServerOffsetReceived = true;
+    tryResolveFirebaseServerTimeOffsetReady();
   });
 
   // Глобальное состояние поселений. Оно хранится на window, чтобы все
@@ -581,7 +606,12 @@ let partyIcon = createPartyIcon();
     let lastSharedRouteEventId = null;
     let pendingSharedRouteData = null;
 
-    function applySharedRouteData(data) {
+    async function applySharedRouteData(data) {
+      // Дожидаемся первичной синхронизации часов с Firebase. Это особенно
+      // важно для первого маршрута после обновления страницы: без offset
+      // устройство может решить, что анимация уже закончилась.
+      await firebaseServerTimeOffsetPromise;
+
       // Если Firebase прислал маршрут раньше, чем появился маркер отряда
       // и функция применения маршрута, не теряем событие — применим позже.
       if (typeof window.applySynchronizedPartyRoute !== "function") {
@@ -595,7 +625,10 @@ let partyIcon = createPartyIcon();
       }
     }
 
-    onValue(sharedRouteRef, function(snapshot) {
+    onValue(sharedRouteRef, async function(snapshot) {
+      // Даже проверка первого снимка должна использовать уже полученную
+      // поправку серверного времени, иначе можно ошибочно отбросить событие.
+      await firebaseServerTimeOffsetPromise;
       const data = snapshot.val();
 
       if (firstSharedRouteSnapshot) {
@@ -609,11 +642,12 @@ let partyIcon = createPartyIcon();
         // Но если первый снимок уже содержит маршрут, созданный после
         // открытия этой страницы, это не старое состояние, а пропущенное
         // обновление во время подключения — его обязательно применяем.
-        const eventTimestamp = data.eventId
-          ? Number(String(data.eventId).split("_")[0])
-          : Number(data.startedAt) - 500;
+        const eventTimestamp = Number(data.startedAt) > 0
+          ? Number(data.startedAt)
+          : (data.eventId ? Number(String(data.eventId).split("_")[0]) : NaN);
+        const pageStartedAtServer = sharedRoutePageStartedAt + firebaseServerTimeOffset;
         const wasPublishedThisSession = Number.isFinite(eventTimestamp) &&
-          eventTimestamp >= sharedRoutePageStartedAt;
+          eventTimestamp >= pageStartedAtServer - 1000;
 
         if (!wasPublishedThisSession) {
           lastSharedRouteEventId = data.eventId || null;
@@ -636,6 +670,9 @@ let partyIcon = createPartyIcon();
       if (!window.dndFirebase || !window.dndFirebase.ready || !window.dndFirebase.uid) {
         throw new Error("Firebase ещё не готов");
       }
+      // Инициатор тоже ждёт готовности серверных часов, чтобы его локальное
+      // воспроизведение и воспроизведение остальных участников шли по одной шкале.
+      await firebaseServerTimeOffsetPromise;
       const durationMs = Number(routeData.durationMs) > 0
         ? Number(routeData.durationMs)
         : (typeof window.getRouteRevealDurationForCurrentRoute === "function"
@@ -845,8 +882,8 @@ const routeLineDashLength = 8;
 const routeLineDashGap = 10;
 const routeLineDashStep = routeLineDashLength + routeLineDashGap;
 const routeLineFirstDashDelay = 240; // пауза между первыми штрихами
-const routeLineDashAcceleration = 2; // каждый следующий интервал короче на 2 мс
-const routeLineMinimumDashDelay = 95; // предел ускорения, чтобы штрихи не сливались
+const routeLineDashAcceleration = 1.5; // ускорение плавнее, чтобы конец маршрута не сливался
+const routeLineMinimumDashDelay = 120; // более спокойная максимальная скорость штрихов
 let settlementTraceDashInterval = routeLineMinimumDashDelay;
 
 // Эти параметры также нужны обработчикам обводки поселений,
@@ -893,12 +930,25 @@ window.getRouteRevealDurationForCurrentRoute = function() {
 // интервал немного сокращается, пока не достигнет безопасного минимума.
 // Затем весь интервал нормализуется относительно среднего масштаба.
 function getRouteLineRevealDelay(dashIndex) {
+  const safeDashIndex = Math.max(0, Number(dashIndex) || 0);
+  const wholeDashCount = Math.floor(safeDashIndex);
+  const fractionalDash = safeDashIndex - wholeDashCount;
   let delay = 0;
-  for (let i = 0; i < dashIndex; i++) {
+  for (let i = 0; i < wholeDashCount; i++) {
     delay += Math.max(
       routeLineMinimumDashDelay,
       routeLineFirstDashDelay - i * routeLineDashAcceleration
     );
+  }
+  // На максимальном зуме экранных штрихов больше, чем опорных.
+  // Дробная часть не даёт нескольким соседним штрихам получить один
+  // и тот же момент появления.
+  if (fractionalDash > 0) {
+    const nextInterval = Math.max(
+      routeLineMinimumDashDelay,
+      routeLineFirstDashDelay - wholeDashCount * routeLineDashAcceleration
+    );
+    delay += nextInterval * fractionalDash;
   }
   return delay;
 }
@@ -3224,10 +3274,10 @@ function updateRouteLine(cursorPosition = null) {
             (dashGlobalStart - activeAnimation.lineStartScreen) /
             Math.max(1, activeAnimation.lineEndScreen - activeAnimation.lineStartScreen)
           ));
-          const virtualDashIndex = Math.min(
+          const virtualDashIndex = Math.max(0, Math.min(
             activeAnimation.referenceLastDashIndex,
-            Math.floor(dashProgress * activeAnimation.referenceLastDashIndex)
-          );
+            dashProgress * activeAnimation.referenceLastDashIndex
+          ));
           // Одинаковая позиция маршрута получает одинаковый момент появления
           // на телефоне и ПК, даже если из-за зума штрихов разное количество.
           const delay = getRouteLineRevealDelay(virtualDashIndex) - elapsed;
@@ -3638,7 +3688,7 @@ window.applySynchronizedPartyRoute = function(data) {
     beginRouteMarkerAnimation(
       0,
       total,
-      Number(data.startedAt) > 0 ? Number(data.startedAt) + 500 : null,
+      Number(data.startedAt) > 0 ? Number(data.startedAt) + 800 : null,
       Number(data.durationMs) > 0 ? Number(data.durationMs) : null
     );
   }
