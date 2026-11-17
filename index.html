@@ -6698,9 +6698,10 @@ map.on("zoomend", function() {
     closeSettlementContourEditor();
     settlementContourEditorAreaId = String(area.id);
     if (area.type === "terrain") {
-      settlementContourEditorPoints = (area.points || []).map(point => ({
-        lat: Number(point.lat), lng: Number(point.lng)
-      }));
+      // У зон местности храним только значимые вершины контура:
+      // частые точки, полученные при обводке мышью, не дают заметной
+      // визуальной точности, но сильно замедляют пересчёт маршрута.
+      settlementContourEditorPoints = simplifySettlementEditorPoints(area.points || [], 8);
     } else {
       settlementContourEditorPoints = Array.isArray(area.brushPoints) && area.brushPoints.length >= 3
         ? area.brushPoints.map(point => ({ lat: Number(point.lat), lng: Number(point.lng) }))
@@ -7004,7 +7005,9 @@ map.on("zoomend", function() {
     const area = {
       id: (type === "terrain" ? "terrain_" : "settlement_") + Date.now() + "_" + Math.floor(Math.random() * 100000),
       type: type,
-      points: window.settlementDraft.map(point => ({ lat: point.lat, lng: point.lng })),
+      points: type === "terrain"
+        ? simplifySettlementEditorPoints(window.settlementDraft, 8)
+        : window.settlementDraft.map(point => ({ lat: point.lat, lng: point.lng })),
       entrancePoints: [],
       exitPoints: [],
       createdAt: Date.now()
@@ -7142,9 +7145,15 @@ map.on("zoomend", function() {
     const terrainRef = ref(database, "terrain/areas");
     onValue(terrainRef, function(snapshot) {
       const value = snapshot.val() || {};
-      window.terrainAreas = Object.keys(value).map(key => ({
-        ...value[key], id: value[key].id || key
-      })).filter(area => area.type === "terrain" && Array.isArray(area.points) && area.points.length >= 3);
+      window.terrainAreas = Object.keys(value).map(key => {
+        const area = { ...value[key], id: value[key].id || key };
+        // Упрощаем и уже существующие зоны на стороне клиента, чтобы
+        // расчёт пересечений маршрута не обходил сотни лишних вершин.
+        if (area.type === "terrain" && Array.isArray(area.points) && area.points.length >= 3) {
+          area.points = simplifySettlementEditorPoints(area.points, 8);
+        }
+        return area;
+      }).filter(area => area.type === "terrain" && Array.isArray(area.points) && area.points.length >= 3);
       console.log("Зоны труднопроходимой местности загружены:", window.terrainAreas.length);
       refreshSettlementContourEditorOptions();
       if (window.updateRouteLine && Array.isArray(window.routePoints) && window.routePoints.length > 1) {
