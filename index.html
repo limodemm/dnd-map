@@ -1094,34 +1094,49 @@ function shouldAnimateRouteMarker(distance) {
 // Рассчитывает время внутри текущего участка маршрута. Каждая завершённая
 // городская обводка начинает новую временную шкалу: следующий участок снова
 // отсчитывает штрихи от нуля, не наследуя накопленный индекс предыдущего.
-function getRouteAnimationRevealTime(animation, screenProgress, markerMode = false) {
+function getRouteAnimationRevealTime(animation, screenProgress, markerMode = false, timingProgress = null) {
   if (!animation) return 0;
 
   const progress = Math.max(0, Math.min(1, Number(screenProgress) || 0));
+  const clockProgress = timingProgress == null
+    ? progress : Math.max(0, Math.min(1, Number(timingProgress) || 0));
   const pauses = Array.isArray(animation.settlementPauses)
     ? animation.settlementPauses : [];
   let segmentStart = 0;
   let elapsedOffset = 0;
 
   pauses.forEach(pause => {
-    const pauseProgress = Math.max(segmentStart, Math.min(1, Number(pause.progress) || 0));
-    if (progress <= pauseProgress + 0.0001) return;
+    const resumeProgress = Math.max(segmentStart, Math.min(1, Number(pause.progress) || 0));
+    const boundaryProgress = Math.max(0, Math.min(1,
+      Number.isFinite(Number(pause.boundaryProgress))
+        ? Number(pause.boundaryProgress) : resumeProgress
+    ));
+    const arrivalProgress = Math.max(segmentStart, Math.min(1,
+      Number.isFinite(Number(pause.arrivalProgress))
+        ? Number(pause.arrivalProgress) : resumeProgress
+    ));
+    // Линия переключается на новый участок с первого штриха после города.
+    // Жетоны учитывают саму границу города, даже если стоят между ней и
+    // следующим штрихом. Это не даёт им появляться во время обводки.
+    const shouldApplyPause = markerMode
+      ? (progress > boundaryProgress + 0.0001 || clockProgress >= resumeProgress - 0.0001)
+      : progress >= resumeProgress - 0.0001;
+    if (!shouldApplyPause) return;
 
     const completedSegmentDashIndex = Math.max(
-      0, (pauseProgress - segmentStart) * animation.referenceLastDashIndex
+      0, (arrivalProgress - segmentStart) * animation.referenceLastDashIndex
     );
     elapsedOffset += getRouteLineRevealDelay(completedSegmentDashIndex) +
       routeLineRevealFadeDuration + Math.max(0, Number(pause.duration) || 0);
-    segmentStart = pauseProgress;
+    segmentStart = resumeProgress;
   });
 
   const localDashIndex = Math.max(
-    0, (progress - segmentStart) * animation.referenceLastDashIndex
+    0, (clockProgress - segmentStart) * animation.referenceLastDashIndex
   );
-  const dashIndex = markerMode
-    ? Math.max(0, Math.ceil(localDashIndex) - 1)
-    : localDashIndex;
-  return elapsedOffset + getRouteLineRevealDelay(dashIndex);
+  // Не округляем жетоны к предыдущему штриху: для них используется
+  // та же непрерывная шкала, что и для линии.
+  return elapsedOffset + getRouteLineRevealDelay(localDashIndex);
 }
 
 function getRouteAnimationScreenProgress(animation, distance) {
@@ -1136,15 +1151,54 @@ function getRouteAnimationScreenProgress(animation, distance) {
   ));
 }
 
+// Граница города привязывается к началу последнего штриха, который
+// действительно может быть нарисован до точки входа. Это не позволяет
+// запустить обводку в ожидании следующего штриха, который геометрически
+// находится уже за границей города и поэтому появится только после неё.
+function getRouteAnimationBoundaryDashProgress(animation, screenProgress) {
+  const progress = Math.max(0, Math.min(1, Number(screenProgress) || 0));
+  const screenRange = Math.max(0.001, animation.lineEndScreen - animation.lineStartScreen);
+  const screenOffset = progress * screenRange;
+  const dashIndex = Math.floor((screenOffset + 0.0001) / routeLineDashStep);
+  return Math.max(0, Math.min(progress, dashIndex * routeLineDashStep / screenRange));
+}
+
+// Следующий штрих после города становится началом нового участка. Благодаря
+// этому он появляется сразу после завершения обводки, без старой задержки
+// между штрихами предыдущего участка.
+function getRouteAnimationNextDashProgress(animation, screenProgress) {
+  const progress = Math.max(0, Math.min(1, Number(screenProgress) || 0));
+  const screenRange = Math.max(0.001, animation.lineEndScreen - animation.lineStartScreen);
+  const screenOffset = progress * screenRange;
+  const dashIndex = Math.ceil((screenOffset - 0.0001) / routeLineDashStep);
+  return Math.max(progress, Math.min(1, dashIndex * routeLineDashStep / screenRange));
+}
+
+// Жетон привязывается к штриху, на котором находится его позиция.
+// Если он попадает в промежуток между штрихами, ждёт следующий штрих,
+// а не появляется по промежуточному времени между двумя штрихами.
+function getRouteAnimationMarkerDashProgress(animation, screenProgress) {
+  const progress = Math.max(0, Math.min(1, Number(screenProgress) || 0));
+  const screenRange = Math.max(0.001, animation.lineEndScreen - animation.lineStartScreen);
+  const screenOffset = progress * screenRange;
+  let dashIndex = Math.floor((screenOffset + 0.0001) / routeLineDashStep);
+  const offsetWithinDash = screenOffset - dashIndex * routeLineDashStep;
+  if (offsetWithinDash > routeLineDashLength) dashIndex += 1;
+  const lastDashIndex = Math.max(0, Math.floor((screenRange - 2) / routeLineDashStep));
+  dashIndex = Math.min(dashIndex, lastDashIndex);
+  return Math.max(0, Math.min(1, dashIndex * routeLineDashStep / screenRange));
+}
+
 // Момент, когда линия полностью дошла до точки: нужен для запуска
 // городской обводки. В отличие от жетонов, здесь нет опережающего появления.
 function getRouteBoundaryArrivalDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
   const progress = getRouteAnimationScreenProgress(animation, distance);
-  // Город начинает обводиться после завершения штриха на границе.
-  // Для каждого участка индекс штриха считается заново от предыдущего города.
-  const arrivalTime = getRouteAnimationRevealTime(animation, progress) +
+  const boundaryDashProgress = getRouteAnimationBoundaryDashProgress(animation, progress);
+  // Ждём проявления именно последнего штриха перед границей, а не
+  // следующего штриха, который может начинаться уже за городом.
+  const arrivalTime = getRouteAnimationRevealTime(animation, boundaryDashProgress) +
     routeLineRevealFadeDuration;
   return arrivalTime - (getSynchronizedRouteNow() - animation.startedAtEpoch);
 }
@@ -1154,9 +1208,13 @@ function getRouteMarkerAnimationDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
   const progress = getRouteAnimationScreenProgress(animation, distance);
-  // Жетон использует ту же локальную временную шкалу, что и линия,
-  // включая сброс индекса после завершения каждой городской обводки.
-  const lineRevealTime = getRouteAnimationRevealTime(animation, progress, true);
+  // Жетоны используют ту же непрерывную временную шкалу, что и линия.
+  // Не округляем индекс к предыдущему штриху: такое округление давало
+  // каждому жетону дополнительное опережение до целого интервала.
+  const markerDashProgress = getRouteAnimationMarkerDashProgress(animation, progress);
+  const lineRevealTime = getRouteAnimationRevealTime(
+    animation, progress, true, markerDashProgress
+  );
   // Небольшое опережение нужно, чтобы жетон не возникал после штриха,
   // но прежнее опережение на всю разницу fade-in было слишком заметным,
   // особенно на максимальном масштабе. Оставляем только короткий запас.
@@ -1172,11 +1230,20 @@ function getRouteMarkerAnimationDelay(distance) {
 window.setRouteSettlementAnimationPauses = function(checkpoints) {
   const animation = routeMarkerAnimations[routeMarkerAnimations.length - 1];
   if (!animation) return;
-  const pauses = (Array.isArray(checkpoints) ? checkpoints : []).map(item => ({
-    progress: getRouteAnimationScreenProgress(animation, item.distance),
-    duration: Math.max(0, Number(item.duration) || 0),
-    areaId: item.areaId
-  })).sort((a, b) => a.progress - b.progress);
+  const pauses = (Array.isArray(checkpoints) ? checkpoints : []).map(item => {
+    const boundaryProgress = getRouteAnimationScreenProgress(animation, item.distance);
+    return {
+      // Время начала обводки привязано к последнему штриху перед границей,
+      // а продолжение маршрута — к первому штриху после неё. Эти две точки
+      // разделены намеренно: так следующий участок начинается без лишней
+      // задержки, а штрих, пересекающий границу, не разрывается паузой.
+      arrivalProgress: getRouteAnimationBoundaryDashProgress(animation, boundaryProgress),
+      boundaryProgress,
+      progress: getRouteAnimationNextDashProgress(animation, boundaryProgress),
+      duration: Math.max(0, Number(item.duration) || 0),
+      areaId: item.areaId
+    };
+  }).sort((a, b) => a.progress - b.progress);
   animation.settlementPauses = pauses;
   const totalPause = pauses.reduce((sum, pause) => sum + pause.duration, 0);
   if (totalPause > 0) {
@@ -3373,7 +3440,19 @@ function updateRouteLine(cursorPosition = null) {
           const dashGlobalEnd = dashGlobalStart + routeLineDashLength;
           const dashStart = Math.max(0, dashGlobalStart - globalScreenStart);
           const dashEnd = Math.min(partScreenLength, dashGlobalEnd - globalScreenStart);
-          if (dashEnd - dashStart < 2) continue;
+          const screenRange = Math.max(1, activeAnimation.lineEndScreen - activeAnimation.lineStartScreen);
+          const crossesSettlementBoundary = Array.isArray(activeAnimation.settlementPauses) &&
+            activeAnimation.settlementPauses.some(pause => {
+              const boundaryScreen = activeAnimation.lineStartScreen +
+                Math.max(0, Math.min(1, Number(pause.boundaryProgress) || 0)) * screenRange;
+              return dashGlobalStart < boundaryScreen - 0.001 &&
+                dashGlobalEnd > boundaryScreen + 0.001;
+            });
+          // На границе города короткий фрагмент штриха раньше отбрасывался
+          // как слишком короткий (<2 px). Его продолжение за границей затем
+          // проявлялось отдельно после обводки. Сохраняем такой фрагмент,
+          // чтобы пересекающий границу штрих появлялся цельно до обводки.
+          if (dashEnd - dashStart < (crossesSettlementBoundary ? 0.5 : 2)) continue;
 
           const dashProgress = Math.max(0, Math.min(1,
             (dashGlobalStart - activeAnimation.lineStartScreen) /
