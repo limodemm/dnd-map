@@ -2035,9 +2035,6 @@ forcedMarchButton.addEventListener("click", function() {
 
   // Подтверждение маршрута
   routeConfirmButton.addEventListener("click", function() {
-if (!routeFinished && typeof window.finishRouteAtLastSelectedSettlement === "function") {
-  window.finishRouteAtLastSelectedSettlement();
-}
 if (!routeFinished) return;
 
 window.routeMode = false;
@@ -3906,9 +3903,9 @@ function updateRouteLine(cursorPosition = null) {
       : getNormalRestDistances(totalLength, dailyLimit, routePoints).length;
     document.getElementById("route-days").textContent = completedDays;
 
-    routeConfirmButton.disabled = !routeFinished &&
-      !(typeof window.canConfirmRouteAtLastSettlement === "function" &&
-        window.canConfirmRouteAtLastSettlement());
+    // Подтвердить можно только после явного завершения маршрута:
+    // одиночный клик по городу лишь добавляет промежуточное поселение.
+    routeConfirmButton.disabled = !routeFinished;
 
     const forcedButton = document.getElementById("route-forced-march");
     if (forcedButton) {
@@ -4187,8 +4184,9 @@ function finishPartyRoute(latlng) {
 
   lastCursorPosition = null;
 
-  // Возвращаем обычное приближение двойным кликом
-  map.doubleClickZoom.enable();
+  // Не включаем двойной клик для приближения до подтверждения или отмены.
+  // Иначе завершающий двойной клик сам же успевает приблизить карту.
+  map.doubleClickZoom.disable();
 
   updateRouteLine(null, true);
 
