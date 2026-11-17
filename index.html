@@ -1138,10 +1138,13 @@ function getRouteMarkerAnimationDelay(distance) {
   );
   const lineRevealTime = getRouteLineRevealDelay(virtualDashIndex) +
     getRouteAnimationPauseOffset(animation, progress);
-  // Жетон начинает проявляться заранее, чтобы его fade-in завершился
-  // примерно одновременно с полным проявлением соответствующего штриха.
-  const markerRevealTime = lineRevealTime -
-    Math.max(0, routeRevealFadeDuration - routeLineRevealFadeDuration);
+  // Небольшое опережение нужно, чтобы жетон не возникал после штриха,
+  // но прежнее опережение на всю разницу fade-in было слишком заметным,
+  // особенно на максимальном масштабе. Оставляем только короткий запас.
+  const markerLead = Math.min(160, Math.max(0,
+    routeRevealFadeDuration - routeLineRevealFadeDuration
+  ));
+  const markerRevealTime = lineRevealTime - markerLead;
   return markerRevealTime - (getSynchronizedRouteNow() - animation.startedAtEpoch);
 }
 
@@ -5772,10 +5775,68 @@ map.on("zoomend", function() {
     });
   });
 
+  // Находим ближайшую точку ВИДИМОГО контура сухой кисти к последнему
+  // участку подхода маршрута. Геометрическая граница area.points и
+  // визуальная brushPoints могут отличаться на несколько экранных пикселей.
+  function getVisualBrushContact(area, approachPoint, boundaryPoint) {
+    if (!area || !approachPoint || !boundaryPoint || !shouldUseSettlementDryBrush(area)) return null;
+    const path = getSettlementDryBrushPath(area);
+    if (path.length < 2) return null;
+    const a = map.latLngToLayerPoint(approachPoint);
+    const b = map.latLngToLayerPoint(boundaryPoint);
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const routeLengthSq = dx * dx + dy * dy;
+    if (routeLengthSq < 0.0001) return null;
+    let best = null;
+    const clamp01 = value => Math.max(0, Math.min(1, value));
+    const consider = (routeT, contourPoint) => {
+      const t = clamp01(routeT);
+      const routePoint = L.point(a.x + dx * t, a.y + dy * t);
+      const gap = routePoint.distanceTo(contourPoint);
+      if (!best || gap < best.gap) best = { gap, routeT: t, routePoint, contourPoint };
+    };
+    for (let i = 1; i < path.length; i++) {
+      const c = path[i - 1], d = path[i];
+      const ex = d.x - c.x, ey = d.y - c.y;
+      const denom = dx * ey - dy * ex;
+      const acx = c.x - a.x, acy = c.y - a.y;
+      if (Math.abs(denom) > 0.000001) {
+        const t = (acx * ey - acy * ex) / denom;
+        const u = (acx * dy - acy * dx) / denom;
+        if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+          const intersection = L.point(c.x + ex * u, c.y + ey * u);
+          consider(t, intersection);
+          continue;
+        }
+      }
+      // Проекции обоих концов сегмента контура на маршрут.
+      [c, d].forEach(point => {
+        const t = clamp01(((point.x - a.x) * dx + (point.y - a.y) * dy) / routeLengthSq);
+        consider(t, point);
+      });
+      // Проекции концов маршрута на сегмент контура.
+      const contourLengthSq = ex * ex + ey * ey;
+      if (contourLengthSq > 0.0001) {
+        [a, b].forEach((point, index) => {
+          const u = clamp01(((point.x - c.x) * ex + (point.y - c.y) * ey) / contourLengthSq);
+          const projected = L.point(c.x + ex * u, c.y + ey * u);
+          consider(index, projected);
+        });
+      }
+    }
+    // Если контур оказался далеко от подходящего отрезка, не подменяем
+    // исходную точку случайной ближайшей частью города.
+    if (!best || best.gap > 24) return null;
+    return {
+      boundaryPoint: map.layerPointToLatLng(best.contourPoint),
+      routePoint: map.layerPointToLatLng(best.routePoint),
+      gap: best.gap
+    };
+  }
+
   // Каждое поселение на подтверждённом маршруте начинает обводиться
-  // отдельно — в тот момент, когда анимированный пунктир доходит до его
-  // фактической границы. Расстояния берём из той же взвешенной геометрии,
-  // что и сама анимация маршрута (включая нулевые переходы через центры).
+  // отдельно — в момент касания видимой границы, а не условной точки
+  // исходного полигона поселения.
   let settlementTraceWaitTimers = [];
   let settlementTraceWaitToken = 0;
 
@@ -5845,11 +5906,19 @@ map.on("zoomend", function() {
         return;
       }
 
-      const distance = window.getRouteTravelLength(route.slice(0, boundaryIndex + 1));
+      let distance = window.getRouteTravelLength(route.slice(0, boundaryIndex + 1));
       const area = (window.settlementAreas || []).find(item => String(item.id) === id);
       if (!area) {
         console.warn('Анимация поселения: область пока не загружена', id);
         return;
+      }
+      const visualContact = getVisualBrushContact(area, approachPoint, boundaryPoint);
+      if (visualContact) {
+        // Время остановки линии рассчитывается по месту, где она касается
+        // видимого мазка; сама обводка также стартует именно с этой точки.
+        distance = window.getRouteTravelLength(route.slice(0, boundaryIndex)) +
+          window.getRouteTravelLength([approachPoint, visualContact.routePoint]);
+        boundaryPoint = visualContact.boundaryPoint;
       }
       targets.push({ id, area, distance, boundaryPoint, approachPoint });
     });
