@@ -754,6 +754,17 @@ let partyIcon = createPartyIcon();
 
 partyMarker.on("click", function() {
 
+  if (window.__routeDiagLog) window.__routeDiagLog("party-marker-click-before", {
+    routeMode: window.routeMode,
+    routeFinished,
+    routePointCount: Array.isArray(routePoints) ? routePoints.length : null,
+    panelExists: Boolean(document.getElementById("party-route-panel")),
+    mapLoaded: Boolean(map && map._loaded),
+    svgRendererExists: Boolean(map && map._renderer && map._renderer._container),
+    routeRestPaneExists: Boolean(map && map.getPane("route-rest-pane")),
+    routeFlagPaneExists: Boolean(map && map.getPane("route-flag-pane"))
+  });
+
   // Если маршрут уже прокладывается, повторный клик ничего не делает
   if (window.routeMode) return;
 
@@ -795,6 +806,16 @@ routePoints = [partyMarker.getLatLng()];
   // Отображаем начальные значения
   updateRouteLine();
 
+  if (window.__routeDiagLog) window.__routeDiagLog("party-marker-click-after", {
+    routeMode: window.routeMode,
+    routeFinished,
+    routePointCount: routePoints.length,
+    panelExists: Boolean(document.getElementById("party-route-panel")),
+    mapLoaded: Boolean(map && map._loaded),
+    svgRendererExists: Boolean(map && map._renderer && map._renderer._container),
+    routeRestPaneExists: Boolean(map && map.getPane("route-rest-pane")),
+    routeFlagPaneExists: Boolean(map && map.getPane("route-flag-pane"))
+  });
   console.log("Режим прокладки маршрута включён");
 });
 // =====================================
@@ -914,6 +935,7 @@ window.__routeDiag = {
   sessionId: Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7),
   markerSamples: 0,
   renderSamples: 0,
+  paneSamples: 0,
   firstDashCreated: false,
   firstDashStyle: false
 };
@@ -2684,6 +2706,15 @@ function clearRouteDrawing() {
 
 // Единая отмена маршрута: вызывается кнопкой и клавишей Escape.
 function cancelPartyRoute() {
+  if (window.__routeDiagLog) window.__routeDiagLog("cancel-party-route", {
+    routeMode: window.routeMode,
+    routeFinished,
+    routePointCount: Array.isArray(routePoints) ? routePoints.length : null,
+    activeAnimations: routeMarkerAnimations.length,
+    panelExists: Boolean(document.getElementById("party-route-panel")),
+    routeRestPaneExists: Boolean(map && map.getPane("route-rest-pane")),
+    routeFlagPaneExists: Boolean(map && map.getPane("route-flag-pane"))
+  });
   if (pendingRouteClickTimer) {
     clearTimeout(pendingRouteClickTimer);
   }
@@ -2738,6 +2769,23 @@ function cancelPartyRoute() {
 
 // Слои задают строгий порядок: линии < крестики < привалы < флажок.
 function ensureRouteMarkerPanes() {
+  if (window.__routeDiag && window.__routeDiag.paneSamples < 12) {
+    window.__routeDiag.paneSamples++;
+    window.__routeDiagLog("ensure-route-marker-panes", {
+      routeMode: window.routeMode,
+      routeFinished,
+      mapLoaded: Boolean(map && map._loaded),
+      svgRendererExists: Boolean(map && map._renderer && map._renderer._container),
+      svgRendererTag: map && map._renderer && map._renderer._container
+        ? map._renderer._container.tagName : null,
+      routeRestPaneExistsBefore: Boolean(map.getPane("route-rest-pane")),
+      routeFlagPaneExistsBefore: Boolean(map.getPane("route-flag-pane")),
+      routeRestPaneChildrenBefore: map.getPane("route-rest-pane")
+        ? map.getPane("route-rest-pane").childElementCount : null,
+      routeFlagPaneChildrenBefore: map.getPane("route-flag-pane")
+        ? map.getPane("route-flag-pane").childElementCount : null
+    });
+  }
   let restPane = map.getPane("route-rest-pane");
   if (!restPane) restPane = map.createPane("route-rest-pane");
   restPane.style.zIndex = "650";
