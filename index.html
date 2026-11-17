@@ -4031,12 +4031,13 @@ if (window.pendingSharedRouteData) {
 // Находит первое пересечение строящегося участка с фактической границей
 // ещё не выбранного поселения. Проверяем именно area.points, а не внешнюю
 // сухую кисть: она остаётся только визуальной обводкой.
-function findFirstAutomaticSettlementCrossing(path) {
+function findFirstAutomaticSettlementCrossing(path, excludedSettlementId = null) {
   if (!Array.isArray(path) || path.length < 2) return null;
   const selectedIds = new Set((Array.isArray(window.routeIntermediateCityIds)
     ? window.routeIntermediateCityIds : []).map(id => String(id)));
   const areas = (Array.isArray(window.settlementAreas) ? window.settlementAreas : [])
     .filter(area => area && area.id != null && !selectedIds.has(String(area.id)) &&
+      (excludedSettlementId == null || String(area.id) !== String(excludedSettlementId)) &&
       Array.isArray(area.points) && area.points.length >= 3);
 
   let best = null;
@@ -4203,6 +4204,25 @@ function finishPartyRoute(latlng) {
   console.log("Маршрут завершён:", routePoints);
 }
 
+// Перед выбором конечного поселения последовательно добавляем все
+// ещё не выбранные поселения, которые маршрут пересечёт по пути к нему.
+// Само целевое поселение исключаем: оно будет обработано отдельно как
+// промежуточное (одиночный клик) или конечное (двойной клик).
+function addInterveningSettlementsBeforeTarget(targetArea, targetPoint) {
+  if (!targetArea || !targetPoint) return;
+  for (let pass = 0; pass < 20; pass++) {
+    const lastPoint = routePoints[routePoints.length - 1];
+    if (!lastPoint) return;
+    const candidatePath = getRouteSegmentAroundIntermediateCities(lastPoint, targetPoint);
+    if (!candidatePath || candidatePath.length < 2) return;
+    const crossing = findFirstAutomaticSettlementCrossing(candidatePath, targetArea.id);
+    if (!crossing) return;
+    const beforeCount = routePoints.length;
+    activateIntermediateRouteCity(crossing.area, crossing.point);
+    if (routePoints.length <= beforeCount) return;
+  }
+}
+
 // Обработка одиночного и двойного клика
 window.handlePartyRouteClick = function(latlng) {
   if (!window.routeMode || routeFinished) return;
@@ -4222,6 +4242,7 @@ window.handlePartyRouteClick = function(latlng) {
 
       // Двойной клик по городу — прежний способ завершить маршрут у города.
       if (clickedArea && routePoints.length > 0) {
+        addInterveningSettlementsBeforeTarget(clickedArea, latlng);
         const approachPoint = routePoints[routePoints.length - 1];
         const boundary = findNearestSettlementBoundaryPoint(
           approachPoint,
@@ -4285,6 +4306,9 @@ window.handlePartyRouteClick = function(latlng) {
 
     const area = findSettlementAt(position);
     if (area) {
+      // Сначала обрабатываем другие поселения, которые маршрут пересечёт
+      // раньше выбранного города, затем добавляем сам выбранный город.
+      addInterveningSettlementsBeforeTarget(area, position);
       // Одиночный клик по городу делает его промежуточным препятствием,
       // но не завершает маршрут и не добавляет фиктивную точку внутрь города.
       activateIntermediateRouteCity(area, position);
