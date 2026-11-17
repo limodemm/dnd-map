@@ -1091,11 +1091,37 @@ function shouldAnimateRouteMarker(distance) {
 
 // Возвращает задержку до появления жетона. Он начинает проявляться
 // только после того, как пунктир дошёл до соответствующей позиции.
-function getRouteAnimationPauseOffset(animation, screenProgress) {
-  if (!animation || !Array.isArray(animation.settlementPauses)) return 0;
-  return animation.settlementPauses.reduce((sum, pause) => {
-    return screenProgress > pause.progress + 0.0001 ? sum + pause.duration : sum;
-  }, 0);
+// Рассчитывает время внутри текущего участка маршрута. Каждая завершённая
+// городская обводка начинает новую временную шкалу: следующий участок снова
+// отсчитывает штрихи от нуля, не наследуя накопленный индекс предыдущего.
+function getRouteAnimationRevealTime(animation, screenProgress, markerMode = false) {
+  if (!animation) return 0;
+
+  const progress = Math.max(0, Math.min(1, Number(screenProgress) || 0));
+  const pauses = Array.isArray(animation.settlementPauses)
+    ? animation.settlementPauses : [];
+  let segmentStart = 0;
+  let elapsedOffset = 0;
+
+  pauses.forEach(pause => {
+    const pauseProgress = Math.max(segmentStart, Math.min(1, Number(pause.progress) || 0));
+    if (progress <= pauseProgress + 0.0001) return;
+
+    const completedSegmentDashIndex = Math.max(
+      0, (pauseProgress - segmentStart) * animation.referenceLastDashIndex
+    );
+    elapsedOffset += getRouteLineRevealDelay(completedSegmentDashIndex) +
+      routeLineRevealFadeDuration + Math.max(0, Number(pause.duration) || 0);
+    segmentStart = pauseProgress;
+  });
+
+  const localDashIndex = Math.max(
+    0, (progress - segmentStart) * animation.referenceLastDashIndex
+  );
+  const dashIndex = markerMode
+    ? Math.max(0, Math.ceil(localDashIndex) - 1)
+    : localDashIndex;
+  return elapsedOffset + getRouteLineRevealDelay(dashIndex);
 }
 
 function getRouteAnimationScreenProgress(animation, distance) {
@@ -1116,16 +1142,11 @@ function getRouteBoundaryArrivalDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
   const progress = getRouteAnimationScreenProgress(animation, distance);
-  // Берём дробный индекс штриха в точке касания. Округление вверх
-  // заставляло ждать следующий штрих целиком, хотя предыдущий уже дошёл
-  // до границы города — отсюда небольшая пауза перед обводкой.
-  const virtualDashIndex = Math.min(
-    animation.referenceLastDashIndex,
-    Math.max(0, progress * animation.referenceLastDashIndex)
-  );
-  const arrivalTime = getRouteLineRevealDelay(virtualDashIndex) + routeLineRevealFadeDuration;
-  return arrivalTime + getRouteAnimationPauseOffset(animation, progress) -
-    (getSynchronizedRouteNow() - animation.startedAtEpoch);
+  // Город начинает обводиться после завершения штриха на границе.
+  // Для каждого участка индекс штриха считается заново от предыдущего города.
+  const arrivalTime = getRouteAnimationRevealTime(animation, progress) +
+    routeLineRevealFadeDuration;
+  return arrivalTime - (getSynchronizedRouteNow() - animation.startedAtEpoch);
 }
 window.getRouteBoundaryArrivalDelay = getRouteBoundaryArrivalDelay;
 
@@ -1133,18 +1154,13 @@ function getRouteMarkerAnimationDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
   const progress = getRouteAnimationScreenProgress(animation, distance);
-  // Используем ближайший штрих, который фактически доходит до позиции жетона.
-  // Старое округление вверх могло сдвигать жетон ещё на один полный интервал.
-  const virtualDashIndex = Math.min(
-    animation.referenceLastDashIndex,
-    Math.max(0, Math.ceil(progress * animation.referenceLastDashIndex) - 1)
-  );
-  const lineRevealTime = getRouteLineRevealDelay(virtualDashIndex) +
-    getRouteAnimationPauseOffset(animation, progress);
+  // Жетон использует ту же локальную временную шкалу, что и линия,
+  // включая сброс индекса после завершения каждой городской обводки.
+  const lineRevealTime = getRouteAnimationRevealTime(animation, progress, true);
   // Небольшое опережение нужно, чтобы жетон не возникал после штриха,
   // но прежнее опережение на всю разницу fade-in было слишком заметным,
   // особенно на максимальном масштабе. Оставляем только короткий запас.
-  const markerLead = Math.min(105, Math.max(0,
+  const markerLead = Math.min(25, Math.max(0,
     routeRevealFadeDuration - routeLineRevealFadeDuration
   ));
   const markerRevealTime = lineRevealTime - markerLead;
@@ -1164,7 +1180,11 @@ window.setRouteSettlementAnimationPauses = function(checkpoints) {
   animation.settlementPauses = pauses;
   const totalPause = pauses.reduce((sum, pause) => sum + pause.duration, 0);
   if (totalPause > 0) {
-    animation.duration += totalPause;
+    // Сегментные шкалы могут суммарно оказаться длиннее исходной общей
+    // шкалы, поэтому таймер завершения учитывает фактический новый график.
+    const segmentedDuration = getRouteAnimationRevealTime(animation, 1) +
+      routeLineRevealFadeDuration * 2;
+    animation.duration = Math.max(animation.duration + totalPause, segmentedDuration);
     if (animation.timer) clearTimeout(animation.timer);
     const elapsed = getSynchronizedRouteNow() - animation.startedAtEpoch;
     animation.timer = setTimeout(function() {
@@ -3359,14 +3379,9 @@ function updateRouteLine(cursorPosition = null) {
             (dashGlobalStart - activeAnimation.lineStartScreen) /
             Math.max(1, activeAnimation.lineEndScreen - activeAnimation.lineStartScreen)
           ));
-          const virtualDashIndex = Math.max(0, Math.min(
-            activeAnimation.referenceLastDashIndex,
-            dashProgress * activeAnimation.referenceLastDashIndex
-          ));
-          // Одинаковая позиция маршрута получает одинаковый момент появления
-          // на телефоне и ПК, даже если из-за зума штрихов разное количество.
-          const delay = getRouteLineRevealDelay(virtualDashIndex) +
-            getRouteAnimationPauseOffset(activeAnimation, dashProgress) - elapsed;
+          // После каждого города время штрихов начинается заново,
+          // но геометрия и глобальное положение линии остаются прежними.
+          const delay = getRouteAnimationRevealTime(activeAnimation, dashProgress) - elapsed;
           const dashPoints = getScreenLinePoints(dashStart, dashEnd);
           if (dashPoints.length < 2) continue;
 
