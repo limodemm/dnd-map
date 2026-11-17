@@ -678,11 +678,9 @@ let partyIcon = createPartyIcon();
         : (typeof window.getRouteRevealDurationForCurrentRoute === "function"
             ? window.getRouteRevealDurationForCurrentRoute() : 5000);
       // Назначаем общий момент старта заранее по синхронизированным часам.
-      // Запас в 3000 мс нужен, чтобы первое событие после перезагрузки
-      // успело дойти до клиентов, которые ещё завершают подключение Firebase.
-      // В отличие от serverTimestamp() на момент записи, это оставляет
-      // одинаковое будущее время старта даже при задержке доставки события.
-      const sharedStartedAt = window.getRouteSynchronizedNow() + 3000;
+      // Возвращаем прежний запас 800 мс: увеличение до 3000 мс не устранило
+      // сбой первого воспроизведения после обновления страницы.
+      const sharedStartedAt = window.getRouteSynchronizedNow() + 800;
       const payload = {
         ...routeData,
         durationMs,
