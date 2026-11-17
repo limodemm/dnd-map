@@ -1121,8 +1121,16 @@ function getRouteAnimationRevealTime(animation, screenProgress) {
     // с первого штриха, который расположен уже за городом.
     if (progress <= boundaryProgress + 0.0001) return;
 
+    // Время завершения участка должно опираться на тот же дискретный
+    // штрих, который использует getRouteBoundaryArrivalDelay. Непрерывная
+    // boundaryProgress могла дать дробный индекс и добавить лишнюю часть
+    // интервала перед первым штрихом после обводки.
+    const boundaryDashProgress = Math.max(
+      segmentStart,
+      Math.min(boundaryProgress, Number(pause.boundaryDashProgress ?? boundaryProgress) || 0)
+    );
     const completedSegmentDashIndex = Math.max(
-      0, (boundaryProgress - segmentStart) * animation.referenceLastDashIndex
+      0, (boundaryDashProgress - segmentStart) * animation.referenceLastDashIndex
     );
     elapsedOffset += getRouteLineRevealDelay(completedSegmentDashIndex) +
       routeLineRevealFadeDuration + Math.max(0, Number(pause.duration) || 0);
@@ -1238,6 +1246,12 @@ function refreshRouteAnimationTiming(animation) {
   pauses.forEach(pause => {
     if (Number.isFinite(Number(pause.distance))) {
       pause.progress = getRouteAnimationScreenProgress(animation, Number(pause.distance));
+      // Граница завершает последний штрих ДО поселения, а следующий
+      // участок начинается с первого штриха ПОСЛЕ него. Оба значения
+      // рассчитываются по той же экранной сетке, что и drawRoutePiece.
+      pause.boundaryDashProgress = getRouteAnimationDashProgressAtDistance(
+        animation, Number(pause.distance), false, true
+      );
       pause.resumeProgress = getRouteAnimationDashProgressAtDistance(
         animation, Number(pause.distance), true
       );
@@ -1296,6 +1310,9 @@ window.setRouteSettlementAnimationPauses = function(checkpoints) {
   animation.settlementPauses = (Array.isArray(checkpoints) ? checkpoints : []).map(item => ({
     distance: Number(item.distance),
     progress: getRouteAnimationScreenProgress(animation, item.distance),
+    boundaryDashProgress: getRouteAnimationDashProgressAtDistance(
+      animation, item.distance, false, true
+    ),
     resumeProgress: getRouteAnimationDashProgressAtDistance(animation, item.distance, true),
     duration: Math.max(0, Number(item.duration) || 0),
     areaId: item.areaId
