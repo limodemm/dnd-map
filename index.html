@@ -564,6 +564,7 @@ document.addEventListener("keydown", function(e) {
 let partyMarker = null;
 let partyListenerStarted = false;
 window.routeMode = false;
+window.routeAnimationPublished = false;
 
   // Внешний вид маркера отряда с адаптацией под масштаб карты
 function getPartyIconSize() {
@@ -732,6 +733,7 @@ partyMarker.on("click", function() {
   if (window.routeMode) return;
 
 window.routeMode = true;
+window.routeAnimationPublished = false;
 routeFinished = false;
 window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
@@ -1094,13 +1096,28 @@ function getRouteMarkerAnimationDelay(distance) {
     return null;
   }
 
-  const rangeLength = Math.max(0.001, animation.end - animation.start);
-  const routeProgress = Math.max(0, Math.min(1,
-    (distance - animation.start) / rangeLength
+  // Сопоставляем жетон с тем же экранным расстоянием, по которому
+  // фактически создаются штрихи линии. Раньше здесь использовалась доля
+  // пройденного расстояния маршрута; на максимальном зуме она расходилась
+  // с экранной геометрией, поэтому линия успевала уйти вперёд жетона.
+  const displayDistance = animation.routeTotalLength > 0.001
+    ? Math.max(0, Math.min(animation.displayTotalLength,
+        distance / animation.routeTotalLength * animation.displayTotalLength))
+    : 0;
+  const markerScreenDistance = getRouteScreenDistanceAtDistance(
+    animation.displayPoints, displayDistance
+  );
+  const screenRange = Math.max(0.001,
+    animation.lineEndScreen - animation.lineStartScreen
+  );
+  const screenProgress = Math.max(0, Math.min(1,
+    (markerScreenDistance - animation.lineStartScreen) / screenRange
   ));
+  // Округление вверх принципиально: жетон не должен проявиться раньше
+  // последнего штриха, который доходит до его экранной позиции.
   const virtualDashIndex = Math.min(
     animation.referenceLastDashIndex,
-    Math.ceil(routeProgress * animation.referenceLastDashIndex)
+    Math.ceil(screenProgress * animation.referenceLastDashIndex)
   );
   const markerRevealTime =
     getRouteLineRevealDelay(virtualDashIndex) + routeLineRevealFadeDuration;
@@ -2613,6 +2630,7 @@ function cancelPartyRoute() {
   routeFinished = false;
   window.routePendingConfirmation = false;
   window.routeMode = false;
+  window.routeAnimationPublished = false;
   map.doubleClickZoom.enable();
 
   routeForcedMarch = false;
@@ -3683,6 +3701,7 @@ window.applySynchronizedPartyRoute = function(data) {
   routeForcedSegments = Array.isArray(data.forcedSegments) ? data.forcedSegments : [];
   routeFinished = true;
   window.routeMode = false;
+  window.routeAnimationPublished = true;
   window.routePendingConfirmation = false;
   window.routeDestinationCityId = data.destinationSettlementId || null;
   window.routeDestinationBoundaryPoint = data.destinationBoundaryPoint
@@ -3691,8 +3710,10 @@ window.applySynchronizedPartyRoute = function(data) {
     ? L.latLng(data.destinationApproachPoint.lat, data.destinationApproachPoint.lng) : null;
   window.routeIntermediateCityIds = Array.isArray(data.intermediateSettlementIds)
     ? data.intermediateSettlementIds.map(id => String(id)) : [];
+  // Убираем статичные обводки выбранных промежуточных городов.
+  // Они должны появляться только как анимация, когда линия маршрута
+  // действительно доходит до соответствующей точки входа.
   clearRouteIntermediateCityOutlines();
-  refreshRouteIntermediateCityOutlines();
   lastCursorPosition = null;
 
   if (routePanel) routePanel.style.display = "none";
@@ -4834,6 +4855,10 @@ map.on("zoomend", function() {
 
   function refreshRouteIntermediateCityOutlines() {
     clearRouteIntermediateCityOutlines();
+    // После публикации маршрута промежуточные города больше не должны
+    // получать статичную обводку при поздней загрузке данных или зуме.
+    // Их контур появится только через animateSettlementTrace по прибытии.
+    if (window.routeAnimationPublished) return;
     const ids = Array.isArray(window.routeIntermediateCityIds)
       ? window.routeIntermediateCityIds : [];
     const areas = Array.isArray(window.settlementAreas)
