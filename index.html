@@ -1251,10 +1251,20 @@ function getRouteMarkerAnimationDelay(distance) {
   // рассчитывает drawRoutePiece. Не округляем долю всего маршрута.
   const dashProgress = getRouteAnimationDashProgressAtDistance(animation, distance, false);
   const lineRevealTime = getRouteAnimationRevealTime(animation, dashProgress);
-  // Жетон не должен опережать сам штрих: используем ровно тот же момент
-  // старта, что и линия, без прежнего искусственного опережения на 25 мс.
-  return lineRevealTime -
-    (getSynchronizedRouteNow() - animation.startedAtEpoch);
+  const elapsed = getSynchronizedRouteNow() - animation.startedAtEpoch;
+  const pauses = Array.isArray(animation.settlementPauses)
+    ? animation.settlementPauses : [];
+  const followsSettlement = pauses.some(pause =>
+    dashProgress > Math.max(0, Number(pause.resumeProgress) || 0) + 0.0001
+  );
+
+  // Возвращаем прежнее опережение жетона на 25 мс. Но после выхода
+  // из поселения жетон дополнительно ждёт завершения проявления штриха:
+  // так он не начинает появляться, пока линия визуально ещё не дошла
+  // до его позиции. До первого города поведение остаётся прежним.
+  const settlementLineCompletionWait = followsSettlement
+    ? routeLineRevealFadeDuration : 0;
+  return lineRevealTime + settlementLineCompletionWait - 25 - elapsed;
 }
 
 // Добавляет остановки общей шкалы анимации на выходах из поселений.
