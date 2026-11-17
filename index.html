@@ -3388,16 +3388,10 @@ function updateRouteLine(cursorPosition = null) {
         );
         if (sectionPoints.length < 2) continue;
 
-        const localProtectedDistances = protectedDistances
-          .filter(distance =>
-            distance >= partStart - 0.01 &&
-            distance <= partEnd + 0.01
-          )
-          .map(distance => distance - partStart);
-        const partDisplayPoints = createRouteDisplayPoints(
-          sectionPoints,
-          localProtectedDistances
-        );
+        // sectionPoints уже являются частью общей сглаженной геометрии маршрута.
+        // Не сглаживаем их повторно: иначе длина реально рисуемой линии начинает
+        // отличаться от геометрии, по которой рассчитываются штрихи и жетоны.
+        const partDisplayPoints = sectionPoints;
 
         const screenEntries = [];
         let partScreenLength = 0;
