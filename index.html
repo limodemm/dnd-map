@@ -829,8 +829,7 @@ function getRouteLineRevealDelay(dashIndex) {
   for (let i = 0; i < dashIndex; i++) {
     delay += Math.max(
       routeLineMinimumDashDelay,
-      routeLineFirstDashDelay -
-        i * routeLineDashAcceleration * zoomSpeedMultiplier
+      routeLineFirstDashDelay - i * routeLineDashAcceleration
     ) * zoomSpeedMultiplier;
   }
 
