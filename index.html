@@ -677,12 +677,16 @@ let partyIcon = createPartyIcon();
         ? Number(routeData.durationMs)
         : (typeof window.getRouteRevealDurationForCurrentRoute === "function"
             ? window.getRouteRevealDurationForCurrentRoute() : 5000);
-      // serverTimestamp() разрешается Firebase в одно и то же серверное
-      // время для всех клиентов. Небольшой запас даёт всем время получить событие.
+      // Назначаем общий момент старта заранее по синхронизированным часам.
+      // Запас в 3000 мс нужен, чтобы первое событие после перезагрузки
+      // успело дойти до клиентов, которые ещё завершают подключение Firebase.
+      // В отличие от serverTimestamp() на момент записи, это оставляет
+      // одинаковое будущее время старта даже при задержке доставки события.
+      const sharedStartedAt = window.getRouteSynchronizedNow() + 3000;
       const payload = {
         ...routeData,
         durationMs,
-        startedAt: serverTimestamp(),
+        startedAt: sharedStartedAt,
         eventId: Date.now() + "_" + window.dndFirebase.uid
       };
       await set(sharedRouteRef, payload);
@@ -3688,7 +3692,7 @@ window.applySynchronizedPartyRoute = function(data) {
     beginRouteMarkerAnimation(
       0,
       total,
-      Number(data.startedAt) > 0 ? Number(data.startedAt) + 800 : null,
+      Number(data.startedAt) > 0 ? Number(data.startedAt) : null,
       Number(data.durationMs) > 0 ? Number(data.durationMs) : null
     );
   }
