@@ -631,6 +631,22 @@ let partyIcon = createPartyIcon();
       // поправку серверного времени, иначе можно ошибочно отбросить событие.
       await firebaseServerTimeOffsetPromise;
       const data = snapshot.val();
+      if (window.__routeDiagLog) {
+        const eventTimestamp = data && Number(data.startedAt) > 0
+          ? Number(data.startedAt)
+          : (data && data.eventId ? Number(String(data.eventId).split("_")[0]) : null);
+        window.__routeDiagLog("firebase-route-snapshot", {
+          firstSnapshot: firstSharedRouteSnapshot,
+          hasData: Boolean(data),
+          points: data && Array.isArray(data.points) ? data.points.length : 0,
+          eventTimestamp,
+          startedAt: data && data.startedAt,
+          eventIdPrefix: data && data.eventId ? String(data.eventId).split("_")[0] : null,
+          durationMs: data && data.durationMs,
+          serverOffset: firebaseServerTimeOffset,
+          synchronizedNow: window.getRouteSynchronizedNow ? window.getRouteSynchronizedNow() : null
+        });
+      }
 
       if (firstSharedRouteSnapshot) {
         firstSharedRouteSnapshot = false;
@@ -691,7 +707,17 @@ let partyIcon = createPartyIcon();
         startedAt: sharedStartedAt,
         eventId: Date.now() + "_" + window.dndFirebase.uid
       };
+      if (window.__routeDiagLog) window.__routeDiagLog("publish-route", {
+        points: payload.points.length,
+        startedAt: payload.startedAt,
+        durationMs: payload.durationMs,
+        eventIdPrefix: String(payload.eventId).split("_")[0],
+        confirmedByPresent: Boolean(payload.confirmedBy)
+      });
       await set(sharedRouteRef, payload);
+      if (window.__routeDiagLog) window.__routeDiagLog("publish-route-write-complete", {
+        eventIdPrefix: String(payload.eventId).split("_")[0]
+      });
     };
 
     try {
@@ -882,6 +908,28 @@ Object.defineProperty(window, "lastCursorPosition", {
 // нового отрезка к его концу; жетоны синхронизированы с достижением
 // пунктиром их позиции. Перерисовка не сбрасывает анимацию.
 let routeMarkerAnimations = [];
+// Временная диагностика синхронизации маршрута. Не меняет поведение карты;
+// выводит в консоль ключевые этапы получения и воспроизведения маршрута.
+window.__routeDiag = {
+  sessionId: Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7),
+  markerSamples: 0,
+  renderSamples: 0,
+  firstDashCreated: false,
+  firstDashStyle: false
+};
+window.__routeDiagLog = function(stage, details) {
+  const diag = window.__routeDiag || {};
+  console.log("[ROUTE-DIAG " + (diag.sessionId || "?") + "] " + stage, {
+    localTime: new Date().toISOString(),
+    zoom: typeof map !== "undefined" && map && map.getZoom ? map.getZoom() : null,
+    ...details
+  });
+};
+window.__routeDiagLog("page-ready", {
+  userAgent: navigator.userAgent,
+  viewport: [window.innerWidth, window.innerHeight],
+  serverOffsetReady: Boolean(window.getRouteSynchronizedNow)
+});
 const routeRevealFadeDuration = 520; // прежняя длительность появления жетонов
 const routeLineRevealFadeDuration = 220; // плавное появление отдельного штриха
 const routeLineDashLength = 8;
@@ -1025,11 +1073,28 @@ function beginRouteMarkerAnimation(startDistance, endDistance, sharedStartedAt, 
   };
 
   const elapsed = getSynchronizedRouteNow() - startedAtEpoch;
+  if (window.__routeDiagLog) {
+    window.__routeDiagLog("begin-animation-calculated", {
+      routeTotalLength, displayTotalLength, lineScreenLength,
+      lineStartScreen, lineEndScreen, referenceLength,
+      referenceLastDashIndex, sharedDuration,
+      localRequiredDuration: locallyRequiredDuration,
+      finalDuration: duration, startedAtEpoch, elapsed,
+      startDistance, endDistance
+    });
+  }
   // Если событие пришло уже после завершения, показываем готовый маршрут,
   // а не запускаем устаревшую анимацию с нуля.
-  if (elapsed >= duration + 100) return;
+  if (elapsed >= duration + 100) {
+    if (window.__routeDiagLog) window.__routeDiagLog("animation-skipped-already-finished", { elapsed, duration });
+    return;
+  }
 
   routeMarkerAnimations.push(animation);
+  if (window.__routeDiagLog) window.__routeDiagLog("animation-registered", {
+    activeAnimations: routeMarkerAnimations.length,
+    remainingMs: Math.max(0, duration - elapsed)
+  });
   animation.timer = setTimeout(function() {
     routeMarkerAnimations = routeMarkerAnimations.filter(item => item !== animation);
     updateRouteLine(lastCursorPosition);
@@ -1089,7 +1154,21 @@ function shouldAnimateRouteMarker(distance) {
 // только после того, как пунктир дошёл до соответствующей позиции.
 function getRouteMarkerAnimationDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
-  if (!animation) return null;
+  if (!animation) {
+    if (window.__routeDiag && window.__routeDiag.markerSamples < 12) {
+      window.__routeDiag.markerSamples++;
+      window.__routeDiagLog("marker-timing-no-active-animation", {
+        distance,
+        activeAnimations: routeMarkerAnimations.length,
+        animationRanges: routeMarkerAnimations.map(item => ({
+          start: item.start, end: item.end,
+          elapsed: getSynchronizedRouteNow() - item.startedAtEpoch,
+          duration: item.duration
+        }))
+      });
+    }
+    return null;
+  }
 
   const rangeLength = Math.max(0.001, animation.end - animation.start);
   const routeProgress = Math.max(0, Math.min(1,
@@ -1102,7 +1181,16 @@ function getRouteMarkerAnimationDelay(distance) {
   const markerRevealTime =
     getRouteLineRevealDelay(virtualDashIndex) + routeLineRevealFadeDuration;
   const elapsed = getSynchronizedRouteNow() - animation.startedAtEpoch;
-  return markerRevealTime - elapsed;
+  const delay = markerRevealTime - elapsed;
+  if (window.__routeDiag && window.__routeDiag.markerSamples < 12) {
+    window.__routeDiag.markerSamples++;
+    window.__routeDiagLog("marker-timing-active-animation", {
+      distance, rangeStart: animation.start, rangeEnd: animation.end,
+      elapsed, duration: animation.duration, markerRevealTime, delay,
+      referenceLastDashIndex: animation.referenceLastDashIndex
+    });
+  }
+  return delay;
 }
 
 // Firebase-модуль находится в отдельном script type="module" и не видит
@@ -2899,6 +2987,19 @@ function clearRouteAutoPreviewBrushes() {
 }
 
 function updateRouteLine(cursorPosition = null) {
+  if (window.__routeDiag && window.__routeDiag.renderSamples < 10) {
+    window.__routeDiag.renderSamples++;
+    window.__routeDiagLog("render-route-line", {
+      routePoints: routePoints.length,
+      activeAnimations: routeMarkerAnimations.map(item => ({
+        start: item.start, end: item.end,
+        elapsed: getSynchronizedRouteNow() - item.startedAtEpoch,
+        duration: item.duration,
+        referenceLastDashIndex: item.referenceLastDashIndex
+      })),
+      routeFinished, routeMode: window.routeMode
+    });
+  }
   // Перерисовка карты не отменяет и не перезапускает анимацию жетонов.
   // Время анимации учитывается при создании каждого нового DOM-элемента.
   ensureRouteMarkerPanes();
@@ -3305,6 +3406,16 @@ function updateRouteLine(cursorPosition = null) {
             // назначен только после установки индивидуальной задержки.
             className: "route-line-raised"
           }).addTo(map);
+          if (window.__routeDiag && !window.__routeDiag.firstDashCreated) {
+            window.__routeDiag.firstDashCreated = true;
+            window.__routeDiagLog("first-animated-dash-created", {
+              delay, dashIndex, virtualDashIndex,
+              dashProgress, globalScreenStart, partScreenLength,
+              dashPoints: dashPoints.length,
+              layerClassName: line.options.className,
+              pane: line.options.pane || "overlayPane"
+            });
+          }
 
           // Не ждём появления SVG-элемента через requestAnimationFrame:
           // на некоторых устройствах Leaflet создаёт его позже, из-за чего
@@ -3316,6 +3427,22 @@ function updateRouteLine(cursorPosition = null) {
             const path = line.getElement();
             if (path) {
               path.style.transition = `stroke-opacity ${routeLineRevealFadeDuration}ms ease-out`;
+              if (window.__routeDiag && !window.__routeDiag.firstDashStyle) {
+                window.__routeDiag.firstDashStyle = true;
+                let computedFilter = null;
+                try { computedFilter = window.getComputedStyle(path).filter; } catch (error) {}
+                window.__routeDiagLog("first-animated-dash-revealed", {
+                  delay, opacity, pathClass: path.getAttribute("class"),
+                  inlineFilter: path.style.filter,
+                  computedFilter,
+                  transition: path.style.transition
+                });
+              }
+            } else if (window.__routeDiag && !window.__routeDiag.firstDashStyle) {
+              window.__routeDiag.firstDashStyle = true;
+              window.__routeDiagLog("first-animated-dash-revealed-without-svg", {
+                delay, opacity, layerExists: map.hasLayer(line)
+              });
             }
             line.setStyle({ opacity: opacity });
           };
@@ -3545,6 +3672,28 @@ function updateRouteLine(cursorPosition = null) {
         element.style.animationDelay = `${restAnimationDelay}ms`;
       }
     }
+    if (window.__routeDiag && !window.__routeDiag.firstRestToken) {
+      window.__routeDiag.firstRestToken = true;
+      const element = marker.getElement();
+      let computed = null;
+      try {
+        if (element) {
+          const style = window.getComputedStyle(element);
+          computed = {
+            animationName: style.animationName,
+            animationDelay: style.animationDelay,
+            opacity: style.opacity,
+            filter: style.filter
+          };
+        }
+      } catch (error) {}
+      window.__routeDiagLog("first-rest-token-rendered", {
+        distance, restAnimationDelay, restShouldAnimate,
+        elementClass: element ? element.getAttribute("class") : null,
+        inlineAnimationDelay: element ? element.style.animationDelay : null,
+        computed
+      });
+    }
 
     // Привал находится в отдельном слое выше крестиков.
     marker.bringToFront();
@@ -3661,6 +3810,20 @@ window.updateRouteLine = updateRouteLine;
 window.applySynchronizedPartyRoute = function(data) {
   if (!data || !Array.isArray(data.points) || data.points.length < 2) return;
 
+  if (window.__routeDiag) {
+    window.__routeDiag.markerSamples = 0;
+    window.__routeDiag.renderSamples = 0;
+    window.__routeDiag.firstDashCreated = false;
+    window.__routeDiag.firstDashStyle = false;
+    window.__routeDiag.firstRestToken = false;
+  }
+  if (window.__routeDiagLog) window.__routeDiagLog("apply-shared-route-start", {
+    points: data.points.length,
+    startedAt: data.startedAt,
+    durationMs: data.durationMs,
+    eventIdPrefix: data.eventId ? String(data.eventId).split("_")[0] : null,
+    synchronizedNow: window.getRouteSynchronizedNow ? window.getRouteSynchronizedNow() : null
+  });
   stopRouteMarkerAnimation();
   routePoints = data.points.map((point, index) => {
     const routePoint = L.latLng(Number(point.lat), Number(point.lng));
@@ -3705,6 +3868,12 @@ window.applySynchronizedPartyRoute = function(data) {
     );
   }
   updateRouteLine(null);
+  if (window.__routeDiagLog) window.__routeDiagLog("apply-shared-route-finished", {
+    activeAnimations: routeMarkerAnimations.length,
+    routeLength: total,
+    routeFinished,
+    routePointCount: routePoints.length
+  });
   console.log("Получен общий маршрут:", data);
 };
 
