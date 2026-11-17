@@ -1105,6 +1105,7 @@ function getRouteAnimationRevealTime(animation, screenProgress) {
     ? animation.settlementPauses : [];
   let segmentStart = 0;
   let elapsedOffset = 0;
+  let acceleratedRevealTime = null;
 
   pauses.forEach(pause => {
     const boundaryProgress = Math.max(
@@ -1115,16 +1116,32 @@ function getRouteAnimationRevealTime(animation, screenProgress) {
       boundaryProgress,
       Math.min(1, Number(pause.resumeProgress ?? boundaryProgress) || boundaryProgress)
     );
+    const acceleratedStartProgress = Number(pause.acceleratedStartProgress);
+    const transitSpeedMultiplier = Math.max(1, Number(pause.transitSpeedMultiplier) || 1);
+    const hasAcceleratedTransit = Number.isFinite(acceleratedStartProgress) &&
+      acceleratedStartProgress < boundaryProgress - 0.0001 && transitSpeedMultiplier > 1;
 
-    // До самой границы действует предыдущий участок. После границы
-    // добавляем время полного штриха, обводки и начинаем новый участок
-    // с первого штриха, который расположен уже за городом.
-    if (progress <= boundaryProgress + 0.0001) return;
+    // Внутри видимого контура ускоряем только скрытые транзитные штрихи.
+    // За пределами этого интервала используется обычный темп маршрута.
+    if (progress <= boundaryProgress + 0.0001) {
+      if (hasAcceleratedTransit && progress > acceleratedStartProgress) {
+        const startDashIndex = Math.max(
+          0, (acceleratedStartProgress - segmentStart) * animation.referenceLastDashIndex
+        );
+        const currentDashIndex = Math.max(
+          startDashIndex, (progress - segmentStart) * animation.referenceLastDashIndex
+        );
+        const startDelay = getRouteLineRevealDelay(startDashIndex);
+        const currentDelay = getRouteLineRevealDelay(currentDashIndex);
+        acceleratedRevealTime = elapsedOffset + startDelay +
+          (currentDelay - startDelay) / transitSpeedMultiplier;
+      }
+      return;
+    }
 
-    // Время завершения участка должно опираться на тот же дискретный
-    // штрих, который использует getRouteBoundaryArrivalDelay. Непрерывная
-    // boundaryProgress могла дать дробный индекс и добавить лишнюю часть
-    // интервала перед первым штрихом после обводки.
+    // Время завершения участка опирается на тот же дискретный штрих,
+    // который использует getRouteBoundaryArrivalDelay. Для скрытого
+    // прохода учитываем ускоренную, а не исходную длительность.
     const boundaryDashProgress = Math.max(
       segmentStart,
       Math.min(boundaryProgress, Number(pause.boundaryDashProgress ?? boundaryProgress) || 0)
@@ -1132,10 +1149,21 @@ function getRouteAnimationRevealTime(animation, screenProgress) {
     const completedSegmentDashIndex = Math.max(
       0, (boundaryDashProgress - segmentStart) * animation.referenceLastDashIndex
     );
-    elapsedOffset += getRouteLineRevealDelay(completedSegmentDashIndex) +
+    let completedSegmentDelay = getRouteLineRevealDelay(completedSegmentDashIndex);
+    if (hasAcceleratedTransit) {
+      const startDashIndex = Math.max(
+        0, (acceleratedStartProgress - segmentStart) * animation.referenceLastDashIndex
+      );
+      const startDelay = getRouteLineRevealDelay(startDashIndex);
+      completedSegmentDelay = startDelay +
+        (completedSegmentDelay - startDelay) / transitSpeedMultiplier;
+    }
+    elapsedOffset += completedSegmentDelay +
       routeLineRevealFadeDuration + Math.max(0, Number(pause.duration) || 0);
     segmentStart = resumeProgress;
   });
+
+  if (acceleratedRevealTime !== null) return acceleratedRevealTime;
 
   const localDashIndex = Math.max(
     0, (progress - segmentStart) * animation.referenceLastDashIndex
@@ -1314,25 +1342,32 @@ window.setRouteSettlementAnimationPauses = function(checkpoints) {
     );
     const startDistance = Number(item.startDistance);
     let transitDuration = 0;
+    let acceleratedStartProgress = null;
+    const transitSpeedMultiplier = 2.5;
 
-    // У промежуточного поселения скрытая внутренняя часть маршрута
-    // проходит одновременно с сухой кистью. Пауза ставится на выходе,
-    // а из времени обводки вычитается время прохода от входа до выхода.
+    // У промежуточного поселения скрытый участок внутри контура проходит
+    // быстрее обычного маршрута. Ускорение ограничено только входом и
+    // выходом из поселения; сухая кисть и остальные участки не меняются.
     if (Number.isFinite(startDistance) && distance > startDistance + 0.001) {
-      const startDashProgress = getRouteAnimationDashProgressAtDistance(
+      acceleratedStartProgress = getRouteAnimationDashProgressAtDistance(
         animation, startDistance, false, true
       );
-      const startDashIndex = Math.max(0, startDashProgress * animation.referenceLastDashIndex);
-      const endDashIndex = Math.max(0, boundaryDashProgress * animation.referenceLastDashIndex);
-      transitDuration = Math.max(0,
+      const startDashIndex = Math.max(0,
+        acceleratedStartProgress * animation.referenceLastDashIndex);
+      const endDashIndex = Math.max(0,
+        boundaryDashProgress * animation.referenceLastDashIndex);
+      const normalTransitDuration = Math.max(0,
         getRouteLineRevealDelay(endDashIndex) - getRouteLineRevealDelay(startDashIndex)
       );
+      transitDuration = normalTransitDuration / transitSpeedMultiplier;
     }
 
     return {
       distance,
       progress: getRouteAnimationScreenProgress(animation, distance),
       boundaryDashProgress,
+      acceleratedStartProgress,
+      transitSpeedMultiplier,
       resumeProgress: getRouteAnimationDashProgressAtDistance(animation, distance, true),
       duration: Math.max(0, (Number(item.duration) || 0) - transitDuration),
       areaId: item.areaId
