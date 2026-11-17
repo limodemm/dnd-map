@@ -6265,8 +6265,12 @@ map.on("zoomend", function() {
         // Саму обводку запускаем по прежней входной точке.
         distance: target.pauseDistance,
         startDistance: target.distance,
-        // Небольшой запас компенсирует polling-интервал запуска контура.
-        duration: target.traceDuration + 25
+        // Следующий участок маршрута начинает проявляться за 300 мс
+        // до завершения визуальной обводки поселения. Из длительности
+        // вычитаем fade штриха границы: он добавляется отдельно в общей
+        // временной шкале getRouteAnimationRevealTime.
+        duration: Math.max(0, target.traceDuration -
+          (Number(window.routeLineRevealFadeDuration) || 220) - 300)
       })));
     }
 
