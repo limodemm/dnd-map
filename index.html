@@ -1189,10 +1189,13 @@ function getRouteAnimationDashProgressAtDistance(animation, distance, nextAfterB
 function getRouteBoundaryArrivalDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
-  const progress = getRouteAnimationScreenProgress(animation, distance);
-  // Город начинает обводиться после завершения штриха на границе.
-  // Для каждого участка индекс штриха считается заново от предыдущего города.
-  const arrivalTime = getRouteAnimationRevealTime(animation, progress) +
+  // Город должен ждать тот же реальный экранный штрих, которого ждут жетоны.
+  // Непрерывный progress мог запускать обводку раньше времени, если граница
+  // попадала в промежуток между штрихами пунктира.
+  const dashProgress = getRouteAnimationDashProgressAtDistance(
+    animation, distance, false
+  );
+  const arrivalTime = getRouteAnimationRevealTime(animation, dashProgress) +
     routeLineRevealFadeDuration;
   return arrivalTime - (getSynchronizedRouteNow() - animation.startedAtEpoch);
 }
