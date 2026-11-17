@@ -3306,25 +3306,26 @@ function updateRouteLine(cursorPosition = null) {
             className: "route-line-raised"
           }).addTo(map);
 
-          function startDashReveal(attempt = 0) {
+          // Не ждём появления SVG-элемента через requestAnimationFrame:
+          // на некоторых устройствах Leaflet создаёт его позже, из-за чего
+          // прежний fallback раскрывал сразу все штрихи одним блоком.
+          // Таймер привязан к общей шкале маршрута, а setStyle обновит и
+          // уже созданный SVG, и параметры слоя, если SVG появится позже.
+          const revealDash = function() {
             if (!map.hasLayer(line)) return;
             const path = line.getElement();
-            if (!path) {
-              if (attempt < 120) {
-                requestAnimationFrame(() => startDashReveal(attempt + 1));
-              } else if (map.hasLayer(line)) {
-                // Защита от SVG, который не успел появиться в мобильном браузере.
-                line.setStyle({ opacity });
-              }
-              return;
+            if (path) {
+              path.style.transition = `stroke-opacity ${routeLineRevealFadeDuration}ms ease-out`;
             }
-            path.style.setProperty("--route-line-opacity", String(opacity));
-            path.style.animationDuration = `${routeLineRevealFadeDuration}ms`;
-            path.style.animationDelay = `${delay}ms`;
-            path.classList.add("route-line-reveal");
-          }
+            line.setStyle({ opacity: opacity });
+          };
 
-          startDashReveal();
+          if (delay <= 0) {
+            revealDash();
+          } else {
+            const revealTimer = setTimeout(revealDash, delay);
+            line._routeDashRevealTimer = revealTimer;
+          }
           window.routeRestMarkers.push(line);
         }
       }
