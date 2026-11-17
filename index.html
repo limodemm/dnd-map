@@ -556,6 +556,10 @@ function createPartyIcon() {
 
 let partyIcon = createPartyIcon();
 
+  // Время начала загрузки этой страницы. Нужно, чтобы не пропустить
+  // маршрут, который подтвердили во время подключения Firebase.
+  const sharedRoutePageStartedAt = Date.now();
+
   // Подключение общего положения отряда
   async function initializeParty() {
     if (partyListenerStarted) return;
@@ -565,19 +569,56 @@ let partyIcon = createPartyIcon();
     const sharedRouteRef = ref(database, "party/route");
 
     let firstSharedRouteSnapshot = true;
-    onValue(sharedRouteRef, function(snapshot) {
-      if (firstSharedRouteSnapshot) {
-        firstSharedRouteSnapshot = false;
+    let lastSharedRouteEventId = null;
+    let pendingSharedRouteData = null;
+
+    function applySharedRouteData(data) {
+      // Если Firebase прислал маршрут раньше, чем появился маркер отряда
+      // и функция применения маршрута, не теряем событие — применим позже.
+      if (typeof window.applySynchronizedPartyRoute !== "function") {
+        pendingSharedRouteData = data;
         return;
       }
-      const data = snapshot.val();
-      if (!data || !Array.isArray(data.points)) return;
-      if (typeof window.applySynchronizedPartyRoute === "function") {
-        window.applySynchronizedPartyRoute(data);
-      }
+
+      window.applySynchronizedPartyRoute(data);
       if ((Array.isArray(data.intermediateSettlementIds) && data.intermediateSettlementIds.length) || data.destinationSettlementId) {
         waitForRouteRevealThenTraceSettlements(data);
       }
+    }
+
+    onValue(sharedRouteRef, function(snapshot) {
+      const data = snapshot.val();
+
+      if (firstSharedRouteSnapshot) {
+        firstSharedRouteSnapshot = false;
+
+        // Пустой первый снимок — обычная ситуация: следующие обновления
+        // должны обрабатываться как новые маршруты.
+        if (!data || !Array.isArray(data.points)) return;
+
+        // Старый маршрут из базы не нужно проигрывать после перезагрузки.
+        // Но если первый снимок уже содержит маршрут, созданный после
+        // открытия этой страницы, это не старое состояние, а пропущенное
+        // обновление во время подключения — его обязательно применяем.
+        const eventTimestamp = data.eventId
+          ? Number(String(data.eventId).split("_")[0])
+          : Number(data.startedAt) - 500;
+        const wasPublishedThisSession = Number.isFinite(eventTimestamp) &&
+          eventTimestamp >= sharedRoutePageStartedAt;
+
+        if (!wasPublishedThisSession) {
+          lastSharedRouteEventId = data.eventId || null;
+          return;
+        }
+      }
+
+      if (!data || !Array.isArray(data.points)) return;
+
+      const eventId = data.eventId ? String(data.eventId) : null;
+      if (eventId && eventId === lastSharedRouteEventId) return;
+      lastSharedRouteEventId = eventId;
+
+      applySharedRouteData(data);
     }, function(error) {
       console.error("Ошибка синхронизации маршрута:", error);
     });
@@ -848,7 +889,7 @@ function stopRouteMarkerAnimation() {
   routeMarkerAnimations = [];
 }
 
-function beginRouteMarkerAnimation(startDistance, endDistance, synchronizedStartedAt) {
+function beginRouteMarkerAnimation(startDistance, endDistance) {
   const length = endDistance - startDistance;
   if (length < 0.001) return;
 
@@ -880,7 +921,7 @@ function beginRouteMarkerAnimation(startDistance, endDistance, synchronizedStart
     displayPoints,
     lineStartScreen,
     lineEndScreen,
-    startedAt: Number.isFinite(synchronizedStartedAt) ? synchronizedStartedAt : Date.now(),
+    startedAt: performance.now(),
     duration,
     timer: null
   };
@@ -906,7 +947,7 @@ window.isRouteRevealRunning = function() {
 // сохраняя уже пройденную долю времени. Благодаря этому новый зум не
 // заставляет штрихи перескакивать вперёд/назад и не запускает линию заново.
 function rebaseRouteMarkerAnimationsForZoom() {
-  const now = Date.now();
+  const now = performance.now();
 
   routeMarkerAnimations.forEach(animation => {
     const oldDuration = Math.max(1, animation.duration);
@@ -939,7 +980,7 @@ function rebaseRouteMarkerAnimationsForZoom() {
 }
 
 function getRouteMarkerAnimation(distance) {
-  const now = Date.now();
+  const now = performance.now();
   let matchingAnimation = null;
 
   routeMarkerAnimations.forEach(animation => {
@@ -996,7 +1037,7 @@ function getRouteMarkerAnimationDelay(distance) {
 
   const markerRevealTime =
     getRouteLineRevealDelay(dashIndex) + routeLineRevealFadeDuration;
-  return markerRevealTime - (Date.now() - animation.startedAt);
+  return markerRevealTime - (performance.now() - animation.startedAt);
 }
 
 // Firebase-модуль находится в отдельном script type="module" и не видит
@@ -3156,7 +3197,7 @@ function updateRouteLine(cursorPosition = null) {
           displayRoutePoints,
           partDisplayStart
         );
-        const elapsed = Date.now() - activeAnimation.startedAt;
+        const elapsed = performance.now() - activeAnimation.startedAt;
 
         // Привязываем пунктир к единой экранной шкале всего отрезка, чтобы
         // при внутренних границах (например, у привалов) рисунок не сбивался.
@@ -3187,15 +3228,28 @@ function updateRouteLine(cursorPosition = null) {
             opacity: 0,
             lineCap: "round",
             lineJoin: "round",
-            className: "route-line-raised route-line-reveal"
+            // Сначала добавляем путь без класса анимации. Класс будет
+            // назначен только после установки индивидуальной задержки.
+            className: "route-line-raised"
           }).addTo(map);
 
-          const path = line.getElement();
-          if (path) {
+          function startDashReveal(attempt = 0) {
+            if (!map.hasLayer(line)) return;
+            const path = line.getElement();
+            if (!path) {
+              if (attempt < 3) {
+                requestAnimationFrame(() => startDashReveal(attempt + 1));
+              }
+              return;
+            }
             path.style.setProperty("--route-line-opacity", String(opacity));
             path.style.animationDuration = `${routeLineRevealFadeDuration}ms`;
             path.style.animationDelay = `${delay}ms`;
+            // Запускаем CSS-анимацию последней, уже с правильной задержкой.
+            path.classList.add("route-line-reveal");
           }
+
+          startDashReveal();
           window.routeRestMarkers.push(line);
         }
       }
@@ -3430,7 +3484,7 @@ function updateRouteLine(cursorPosition = null) {
       ? getRouteMarkerAnimationDelay(routeEndDistance)
       : null;
     const flagAnimationElapsed = flagAnimation
-      ? Date.now() - flagAnimation.startedAt
+      ? performance.now() - flagAnimation.startedAt
       : Infinity;
     const flagAnimationDuration = 520;
     const flagShouldAnimate = Boolean(
@@ -3567,11 +3621,19 @@ window.applySynchronizedPartyRoute = function(data) {
 
   const total = getRouteTravelLength(routePoints);
   if (total > 0.001) {
-    beginRouteMarkerAnimation(0, total, Number(data.startedAt) || Date.now());
+    beginRouteMarkerAnimation(0, total);
   }
   updateRouteLine(null);
   console.log("Получен общий маршрут:", data);
 };
+
+// Если обновление Firebase пришло до создания маркера отряда, применяем
+// сохранённый маршрут сразу после готовности функции.
+if (pendingSharedRouteData) {
+  const pendingData = pendingSharedRouteData;
+  pendingSharedRouteData = null;
+  applySharedRouteData(pendingData);
+}
 
 // =====================================
 // ДОБАВЛЕНИЕ ТОЧКИ МАРШРУТА
