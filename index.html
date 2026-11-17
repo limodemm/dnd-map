@@ -1093,13 +1093,8 @@ function shouldAnimateRouteMarker(distance) {
 // только после того, как пунктир дошёл до соответствующей позиции.
 function getRouteAnimationPauseOffset(animation, screenProgress) {
   if (!animation || !Array.isArray(animation.settlementPauses)) return 0;
-  // Линия, жетоны, крестики и флажок используют одну и ту же экранную
-  // шкалу. Сравнение по географическому расстоянию давало расхождение
-  // после городов, особенно на минимальном и максимальном зуме.
   return animation.settlementPauses.reduce((sum, pause) => {
-    return screenProgress > pause.progress + 0.0001
-      ? sum + pause.duration
-      : sum;
+    return screenProgress > pause.progress + 0.0001 ? sum + pause.duration : sum;
   }, 0);
 }
 
@@ -1115,36 +1110,21 @@ function getRouteAnimationScreenProgress(animation, distance) {
   ));
 }
 
-// Возвращает тот самый штрих и его дробный временной индекс, которые
-// фактически доходят до заданной точки. Расчёт повторяет геометрию drawRoutePiece,
-// поэтому время не зависит от того, насколько карта приближена или отдалена.
-function getRouteDashTimingAtDistance(animation, distance) {
-  const progress = getRouteAnimationScreenProgress(animation, distance);
-  const screenRange = Math.max(0.001, animation.lineEndScreen - animation.lineStartScreen);
-  const contactScreenDistance = progress * screenRange;
-  let dashIndex = Math.floor(contactScreenDistance / routeLineDashStep);
-  const offsetInStep = contactScreenDistance - dashIndex * routeLineDashStep;
-  // Если точка попала в промежуток, её достигает следующий штрих.
-  if (offsetInStep > routeLineDashLength) dashIndex++;
-  dashIndex = Math.min(animation.referenceLastDashIndex, Math.max(0, dashIndex));
-  const dashProgress = Math.max(0, Math.min(1,
-    (dashIndex * routeLineDashStep) / screenRange
-  ));
-  const virtualDashIndex = dashProgress * animation.referenceLastDashIndex;
-  return { progress, dashIndex, dashProgress, virtualDashIndex };
-}
-
-// Момент, когда линия дошла до точки касания города.
+// Момент, когда линия полностью дошла до точки: нужен для запуска
+// городской обводки. В отличие от жетонов, здесь нет опережающего появления.
 function getRouteBoundaryArrivalDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
-  const timing = getRouteDashTimingAtDistance(animation, distance);
-  // Штрих появляется целиком и только затем завершает fade-in. Поэтому
-  // город нельзя начинать обводить в середине проявления штриха: на малом
-  // масштабе это оставляло 1–2 последних штриха позади обводки.
-  const arrivalTime = getRouteLineRevealDelay(timing.virtualDashIndex) +
-    routeLineRevealFadeDuration;
-  return arrivalTime + getRouteAnimationPauseOffset(animation, timing.progress) -
+  const progress = getRouteAnimationScreenProgress(animation, distance);
+  // Берём дробный индекс штриха в точке касания. Округление вверх
+  // заставляло ждать следующий штрих целиком, хотя предыдущий уже дошёл
+  // до границы города — отсюда небольшая пауза перед обводкой.
+  const virtualDashIndex = Math.min(
+    animation.referenceLastDashIndex,
+    Math.max(0, progress * animation.referenceLastDashIndex)
+  );
+  const arrivalTime = getRouteLineRevealDelay(virtualDashIndex) + routeLineRevealFadeDuration;
+  return arrivalTime + getRouteAnimationPauseOffset(animation, progress) -
     (getSynchronizedRouteNow() - animation.startedAtEpoch);
 }
 window.getRouteBoundaryArrivalDelay = getRouteBoundaryArrivalDelay;
@@ -1152,13 +1132,23 @@ window.getRouteBoundaryArrivalDelay = getRouteBoundaryArrivalDelay;
 function getRouteMarkerAnimationDelay(distance) {
   const animation = getRouteMarkerAnimation(distance);
   if (!animation) return null;
-  const timing = getRouteDashTimingAtDistance(animation, distance);
-  // Жетон начинает проявляться одновременно со штрихом, до которого он
-  // привязан. Одинаковая длительность fade-in не даёт ему визуально
-  // опережать пунктир, особенно после паузы на городе и на малом зуме.
-  const lineRevealTime = getRouteLineRevealDelay(timing.virtualDashIndex) +
-    getRouteAnimationPauseOffset(animation, timing.progress);
-  return lineRevealTime - (getSynchronizedRouteNow() - animation.startedAtEpoch);
+  const progress = getRouteAnimationScreenProgress(animation, distance);
+  // Используем ближайший штрих, который фактически доходит до позиции жетона.
+  // Старое округление вверх могло сдвигать жетон ещё на один полный интервал.
+  const virtualDashIndex = Math.min(
+    animation.referenceLastDashIndex,
+    Math.max(0, Math.ceil(progress * animation.referenceLastDashIndex) - 1)
+  );
+  const lineRevealTime = getRouteLineRevealDelay(virtualDashIndex) +
+    getRouteAnimationPauseOffset(animation, progress);
+  // Небольшое опережение нужно, чтобы жетон не возникал после штриха,
+  // но прежнее опережение на всю разницу fade-in было слишком заметным,
+  // особенно на максимальном масштабе. Оставляем только короткий запас.
+  const markerLead = Math.min(105, Math.max(0,
+    routeRevealFadeDuration - routeLineRevealFadeDuration
+  ));
+  const markerRevealTime = lineRevealTime - markerLead;
+  return markerRevealTime - (getSynchronizedRouteNow() - animation.startedAtEpoch);
 }
 
 // Добавляет остановки общей шкалы анимации в точках входа в города.
@@ -1167,7 +1157,6 @@ window.setRouteSettlementAnimationPauses = function(checkpoints) {
   const animation = routeMarkerAnimations[routeMarkerAnimations.length - 1];
   if (!animation) return;
   const pauses = (Array.isArray(checkpoints) ? checkpoints : []).map(item => ({
-    distance: Number(item.distance),
     progress: getRouteAnimationScreenProgress(animation, item.distance),
     duration: Math.max(0, Number(item.duration) || 0),
     areaId: item.areaId
@@ -1195,7 +1184,7 @@ window.getRouteMarkerAnimationDelay = getRouteMarkerAnimationDelay;
 // на мобильных браузерах. Отрицательная задержка сохраняет общую синхронизацию.
 function animateRouteToken(marker, delay, innerSelector = null) {
   if (!marker || delay === null || !Number.isFinite(Number(delay))) return;
-  const duration = routeLineRevealFadeDuration;
+  const duration = routeRevealFadeDuration;
   const effectiveDelay = Number(delay);
   if (effectiveDelay <= -duration) return;
   const root = typeof marker.getElement === "function" ? marker.getElement() : null;
@@ -3642,9 +3631,9 @@ function updateRouteLine(cursorPosition = null) {
       ? getRouteMarkerAnimationDelay(routeEndDistance)
       : null;
     const flagAnimationElapsed = flagAnimation
-      ? getSynchronizedRouteNow() - flagAnimation.startedAtEpoch
+      ? performance.now() - flagAnimation.startedAt
       : Infinity;
-    const flagAnimationDuration = routeLineRevealFadeDuration;
+    const flagAnimationDuration = 520;
     const flagShouldAnimate = Boolean(
       flagAnimation &&
       flagAnimationDelay > -flagAnimationDuration
@@ -4448,7 +4437,7 @@ map.on("zoomend", function() {
     if (path.length < 4) return 1;
     const zoomScale = map.getZoomScale(map.getZoom(), 0);
     const brushScale = Math.pow(zoomScale, 0.43);
-    const sampledData = sampleSettlementBrushPath(path, 2.3 * brushScale);
+    const sampledData = sampleSettlementBrushPath(path, 2.4 * brushScale);
     const samples = sampledData.samples;
     const total = sampledData.total;
     if (total < 12) return 1;
@@ -4506,7 +4495,7 @@ map.on("zoomend", function() {
     // Толщина, длина мазков и промежутки плавно уменьшаются при отдалении.
     const zoomScale = map.getZoomScale(map.getZoom(), 0);
     const brushScale = Math.pow(zoomScale, 0.43);
-    const sampledData = sampleSettlementBrushPath(path, 2.3 * brushScale);
+    const sampledData = sampleSettlementBrushPath(path, 2.4 * brushScale);
     const samples = sampledData.samples;
     const total = sampledData.total;
     if (total < 12) return [];
@@ -6061,9 +6050,9 @@ map.on("zoomend", function() {
       window.setRouteSettlementAnimationPauses(targets.map(target => ({
         areaId: target.id,
         distance: target.distance,
-        // Продолжение линии синхронизировано с фактическим временем
-        // завершения обводки; дополнительной паузы после неё нет.
-        duration: target.traceDuration
+        // Небольшой запас компенсирует polling-интервал запуска контура,
+        // чтобы линия гарантированно не продолжилась раньше его завершения.
+        duration: target.traceDuration + 25
       })));
     }
 
