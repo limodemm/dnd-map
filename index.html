@@ -1578,10 +1578,10 @@ function createRouteLaunchPanel() {
     pauseButton.setAttribute("aria-pressed", "false");
   });
   editButton.addEventListener("click", function() {
-    // Останавливаем раскрытие на текущем кадре. Уже появившиеся штрихи
-    // остаются на карте, а ещё не появившиеся больше не добавляются.
+    // Возвращаем именно полный предпросмотр, который был до подтверждения.
+    // Для этого отменяем все незавершённые таймеры раскрытия и обводок,
+    // затем заново рисуем весь маршрут без активных анимаций.
     freezeRouteRevealAtCurrentVisualState();
-    window.routeRevealFrozenAtEdit = true;
     stopRouteMarkerAnimation();
     if (typeof window.cancelPendingRouteSettlementTraces === "function") {
       window.cancelPendingRouteSettlementTraces();
@@ -1589,13 +1589,20 @@ function createRouteLaunchPanel() {
     if (typeof window.cancelActiveRouteSettlementAnimations === "function") {
       window.cancelActiveRouteSettlementAnimations();
     }
+
     window.routeAnimationPublished = false;
     window.routePendingConfirmation = false;
     window.routeMode = true;
     routeFinished = true;
     window.routeEditingConfirmedRoute = true;
+    window.routeRevealFrozenAtEdit = false;
     lastCursorPosition = null;
     map.doubleClickZoom.disable();
+
+    // Сначала убираем старую маску/обводку города, чтобы восстановить
+    // чистую геометрию маршрута, затем updateRouteLine нарисует её целиком.
+    if (window.clearSettlementOutline) window.clearSettlementOutline();
+    updateRouteLine(null);
 
     routeLaunchPanel.style.display = "none";
     createRoutePanel();
@@ -1615,9 +1622,10 @@ function createRouteLaunchPanel() {
       forcedButton.classList.toggle("active", routeForcedMarch);
       forcedButton.setAttribute("aria-pressed", routeForcedMarch ? "true" : "false");
     }
+
+    // Все промежуточные города и конечный город снова показываются
+    // статично, независимо от того, успела ли дойти до них анимация.
     refreshRouteIntermediateCityOutlines();
-    // Не вызываем updateRouteLine здесь: текущие видимые штрихи уже
-    // заморожены выше. Перерисовка уничтожила бы их и изменила прогресс.
     if (window.routeDestinationCityId && window.showSettlementOutline) {
       const destinationArea = (window.settlementAreas || []).find(area =>
         String(area.id) === String(window.routeDestinationCityId)
