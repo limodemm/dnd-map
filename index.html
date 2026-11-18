@@ -1637,7 +1637,10 @@ function createRouteLaunchPanel() {
     window.routePendingConfirmation = false;
     window.routeMode = true;
     routeFinished = true;
-    window.routeEditingConfirmedRoute = true;
+    // После возврата из панели подтверждения конечный флажок/город остаётся
+    // зафиксированной точкой. Карта не принимает новые точки маршрута, пока
+    // игрок явно не нажмёт «Вернуть» или «Отменить».
+    window.routeEditingConfirmedRoute = false;
     lastCursorPosition = null;
     map.doubleClickZoom.disable();
 
@@ -2291,11 +2294,14 @@ let animationStartDistance = animationStartIndex >= routePoints.length
   ? getRouteTravelLength(routePoints)
   : getRouteTravelLength(routePoints.slice(0, Math.min(routePoints.length, animationStartIndex + 1)));
 
-// Если ранее пройденный анимацией участок сохранился, продолжаем ровно
-// с прежнего прогресса. Если он был удалён/перестроен — начинаем заново.
+// Если редактор открыт во время незавершённой анимации, даже полностью
+// неизменённый маршрут должен продолжить раскрытие с сохранённого прогресса.
+// Только завершённая ранее анимация (без pendingRouteResumeState) пропускается.
 if (pendingRouteResumeState) {
   if (routePrefixMatchesResumeState(routePoints, pendingRouteResumeState)) {
-    animationStartDistance = Math.max(animationStartDistance, pendingRouteResumeState.distance);
+    animationStartDistance = routeIsUnchanged
+      ? pendingRouteResumeState.distance
+      : Math.max(animationStartDistance, pendingRouteResumeState.distance);
     // Городские обводки до точки продолжения тоже уже были пройдены:
     // исключаем их из повторной анимации вместе с линией.
     animationStartIndex = 0;
