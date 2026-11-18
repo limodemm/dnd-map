@@ -565,6 +565,7 @@ let partyMarker = null;
 let partyListenerStarted = false;
 window.routeMode = false;
 window.routeAnimationPublished = false;
+window.routeEditingConfirmedRoute = false;
 
   // Внешний вид маркера отряда с адаптацией под масштаб карты
 function getPartyIconSize() {
@@ -735,6 +736,9 @@ partyMarker.on("click", function() {
 
 window.routeMode = true;
 window.routeAnimationPublished = false;
+window.routeEditingConfirmedRoute = false;
+if (routeLaunchPanel) routeLaunchPanel.style.display = "none";
+lastConfirmedRoutePointSnapshot = [];
 routeFinished = false;
 window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
@@ -871,8 +875,12 @@ Object.defineProperties(window, {
 });
 const KM_PER_PIXEL = 38.6 / 300;
 let routePanel = null;
+let routeLaunchPanel = null;
 let routeStatus = null;
 let routeConfirmButton = null;
+// Последняя опубликованная геометрия нужна, чтобы при повторном подтверждении
+// проигрывать только новый/изменённый хвост маршрута.
+let lastConfirmedRoutePointSnapshot = [];
 let lastCursorPosition = null;
 Object.defineProperty(window, "lastCursorPosition", {
   configurable: true,
@@ -925,11 +933,17 @@ function getRouteZoomSpeedMultiplier() {
 }
 window.getRouteZoomSpeedMultiplier = getRouteZoomSpeedMultiplier;
 
-window.getRouteRevealDurationForCurrentRoute = function() {
+window.getRouteRevealDurationForCurrentRoute = function(startDistance = 0) {
   if (!Array.isArray(routePoints) || routePoints.length < 2) return 5000;
   const displayPoints = createRouteDisplayPoints(routePoints, []);
   const displayLength = getRouteTravelLength(displayPoints);
-  const screenLength = getRouteScreenDistanceAtDistance(displayPoints, displayLength);
+  const routeLength = getRouteTravelLength(routePoints);
+  const rawStart = Math.max(0, Math.min(routeLength, Number(startDistance) || 0));
+  const displayStart = routeLength > 0.001
+    ? rawStart / routeLength * displayLength : 0;
+  const screenStart = getRouteScreenDistanceAtDistance(displayPoints, displayStart);
+  const screenEnd = getRouteScreenDistanceAtDistance(displayPoints, displayLength);
+  const screenLength = Math.max(0, screenEnd - screenStart);
   const lineDuration = getRouteLineRevealDuration(screenLength);
   return lineDuration + routeRevealFadeDuration;
 };
@@ -1443,6 +1457,147 @@ window.addEventListener("resize", syncRoutePanelOrientation, { passive: true });
 window.addEventListener("orientationchange", syncRoutePanelOrientation, { passive: true });
 if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", syncRoutePanelOrientation, { passive: true });
+}
+
+function createRouteLaunchPanel() {
+  if (routeLaunchPanel) return;
+
+  const style = document.createElement("style");
+  style.textContent = `
+    #party-route-launch-panel {
+      display: none;
+      position: fixed;
+      bottom: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 3001;
+      width: 220px;
+      max-width: calc(100vw - 24px);
+      padding: 10px 12px;
+      box-sizing: border-box;
+      background: #211b16;
+      color: #eee2c8;
+      border: 2px solid #d6b46a;
+      border-radius: 10px;
+      box-shadow: 0 4px 18px #000b;
+      font-family: Georgia, serif;
+    }
+    #party-route-launch-panel .launch-heading {
+      text-align: center;
+      font-size: 15px;
+      margin: 0 0 9px;
+    }
+    #party-route-launch-panel .launch-actions {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+    }
+    #party-route-launch-panel button {
+      width: 48px;
+      height: 42px;
+      padding: 0;
+      border: 1px solid #756044;
+      border-radius: 6px;
+      color: #eee2c8;
+      background: #393027;
+      font-family: Georgia, serif;
+      font-size: 23px;
+      line-height: 1;
+      cursor: pointer;
+      box-shadow: inset 0 1px 0 #ffffff12;
+    }
+    #party-route-launch-panel button.active {
+      background: #6a512b;
+      border-color: #e0bd70;
+      box-shadow: inset 0 0 0 1px #e0bd7055, 0 0 7px #d6b46a55;
+    }
+    #party-route-launch-panel button:focus-visible {
+      outline: 2px solid #f0d28c;
+      outline-offset: 2px;
+    }
+    @media (max-width: 480px) {
+      #party-route-launch-panel { bottom: 12px; width: 196px; padding: 8px 10px; }
+      #party-route-launch-panel button { width: 44px; height: 39px; }
+    }
+  `;
+  document.head.appendChild(style);
+
+  routeLaunchPanel = document.createElement("div");
+  routeLaunchPanel.id = "party-route-launch-panel";
+  routeLaunchPanel.innerHTML = `
+    <div class="launch-heading">Отряд в пути</div>
+    <div class="launch-actions">
+      <button type="button" id="route-party-pause" class="active" aria-label="Пауза" aria-pressed="true" title="Пауза">Ⅱ</button>
+      <button type="button" id="route-party-play" aria-label="Воспроизвести движение отряда" aria-pressed="false" title="Плей">▶</button>
+      <button type="button" id="route-party-edit" aria-label="Редактировать маршрут" title="Редактировать маршрут">⚙</button>
+    </div>
+  `;
+  document.body.appendChild(routeLaunchPanel);
+
+  const pauseButton = routeLaunchPanel.querySelector("#route-party-pause");
+  const playButton = routeLaunchPanel.querySelector("#route-party-play");
+  const editButton = routeLaunchPanel.querySelector("#route-party-edit");
+
+  // Пока переключаем состояние управления. Движение самого маркера отряда
+  // подключается отдельно от анимации построения линии маршрута.
+  pauseButton.addEventListener("click", function() {
+    pauseButton.classList.add("active");
+    pauseButton.setAttribute("aria-pressed", "true");
+    playButton.classList.remove("active");
+    playButton.setAttribute("aria-pressed", "false");
+  });
+  playButton.addEventListener("click", function() {
+    playButton.classList.add("active");
+    playButton.setAttribute("aria-pressed", "true");
+    pauseButton.classList.remove("active");
+    pauseButton.setAttribute("aria-pressed", "false");
+  });
+  editButton.addEventListener("click", function() {
+    // Останавливаем раскрытие линии и удаляем её временные штрихи.
+    // Повторная отрисовка без активных анимаций вернёт полный маршрут
+    // в точности в статичном виде, пригодном для дальнейшего редактирования.
+    stopRouteMarkerAnimation();
+    if (typeof window.cancelPendingRouteSettlementTraces === "function") {
+      window.cancelPendingRouteSettlementTraces();
+    }
+    if (typeof window.cancelActiveRouteSettlementAnimations === "function") {
+      window.cancelActiveRouteSettlementAnimations();
+    }
+    window.routeAnimationPublished = false;
+    window.routePendingConfirmation = false;
+    window.routeMode = true;
+    routeFinished = true;
+    window.routeEditingConfirmedRoute = true;
+    lastCursorPosition = null;
+    map.doubleClickZoom.disable();
+
+    routeLaunchPanel.style.display = "none";
+    createRoutePanel();
+    routePanel.style.display = isCompactRoutePanelLandscape() ? "grid" : "block";
+    routePanel.querySelectorAll(".route-speed").forEach(button => {
+      button.classList.toggle("active", button.dataset.pace === routePace);
+    });
+    const reducedButton = document.getElementById("route-reduced-speed");
+    if (reducedButton) {
+      reducedButton.classList.toggle("active", routeSpeedReduced);
+      reducedButton.setAttribute("aria-pressed", routeSpeedReduced ? "true" : "false");
+    }
+
+    const forcedButton = document.getElementById("route-forced-march");
+    if (forcedButton) {
+      forcedButton.disabled = false;
+      forcedButton.classList.toggle("active", routeForcedMarch);
+      forcedButton.setAttribute("aria-pressed", routeForcedMarch ? "true" : "false");
+    }
+    refreshRouteIntermediateCityOutlines();
+    updateRouteLine();
+    if (window.routeDestinationCityId && window.showSettlementOutline) {
+      const destinationArea = (window.settlementAreas || []).find(area =>
+        String(area.id) === String(window.routeDestinationCityId)
+      );
+      if (destinationArea) window.showSettlementOutline(destinationArea, 1);
+    }
+  });
 }
 
 function createRoutePanel() {
@@ -2037,11 +2192,43 @@ forcedMarchButton.addEventListener("click", function() {
   routeConfirmButton.addEventListener("click", function() {
 if (!routeFinished) return;
 
+// Сравниваем маршрут с последней опубликованной версией. Общий префикс
+// остаётся статичным; анимация начнётся с первого изменённого сегмента.
+const currentSnapshot = routePoints.map((point, index) => ({
+  lat: Number(point.lat),
+  lng: Number(point.lng),
+  segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
+  settlementId: point._routeSettlementId || null
+}));
+let commonPrefixLength = 0;
+while (commonPrefixLength < currentSnapshot.length &&
+       commonPrefixLength < lastConfirmedRoutePointSnapshot.length) {
+  const current = currentSnapshot[commonPrefixLength];
+  const previous = lastConfirmedRoutePointSnapshot[commonPrefixLength];
+  const samePosition = Math.abs(current.lat - previous.lat) < 0.000001 &&
+    Math.abs(current.lng - previous.lng) < 0.000001;
+  const sameMode = current.segmentMode === previous.segmentMode &&
+    String(current.settlementId || "") === String(previous.settlementId || "");
+  if (!samePosition || !sameMode) break;
+  commonPrefixLength++;
+}
+const routeIsUnchanged = currentSnapshot.length === lastConfirmedRoutePointSnapshot.length &&
+  commonPrefixLength === currentSnapshot.length;
+const animationStartIndex = routeIsUnchanged
+  ? currentSnapshot.length
+  : (lastConfirmedRoutePointSnapshot.length === 0 ? 0 : Math.max(0, commonPrefixLength - 1));
+const animationStartDistance = animationStartIndex >= routePoints.length
+  ? getRouteTravelLength(routePoints)
+  : getRouteTravelLength(routePoints.slice(0, Math.min(routePoints.length, animationStartIndex + 1)));
+
 window.routeMode = false;
 map.doubleClickZoom.enable();
 window.routePendingConfirmation = false;
 
     const routePayload = {
+      animationStartIndex,
+      durationMs: typeof window.getRouteRevealDurationForCurrentRoute === "function"
+        ? window.getRouteRevealDurationForCurrentRoute(animationStartDistance) : undefined,
       points: routePoints.map((point, index) => ({
         lat: point.lat,
         lng: point.lng,
@@ -2071,13 +2258,24 @@ window.routePendingConfirmation = false;
     };
 
     lastCursorPosition = null;
+    createRouteLaunchPanel();
     routePanel.style.display = "none";
+    routeLaunchPanel.style.display = "block";
+    // После каждого подтверждения панель запуска начинается с паузы:
+    // раскрытие линии не должно автоматически двигать жетон отряда.
+    const pauseButton = routeLaunchPanel.querySelector("#route-party-pause");
+    const playButton = routeLaunchPanel.querySelector("#route-party-play");
+    pauseButton.classList.add("active");
+    pauseButton.setAttribute("aria-pressed", "true");
+    playButton.classList.remove("active");
+    playButton.setAttribute("aria-pressed", "false");
     window.confirmedPartyRoute = routePayload.points;
 
     if (!window.publishPartyRoute) {
       console.error("Синхронизация маршрута ещё не готова");
       alert("Не удалось подтвердить маршрут: нет соединения с Firebase.");
       window.routePendingConfirmation = true;
+      if (routeLaunchPanel) routeLaunchPanel.style.display = "none";
       routePanel.style.display = isCompactRoutePanelLandscape() ? "grid" : "block";
       return;
     }
@@ -2088,6 +2286,7 @@ window.routePendingConfirmation = false;
       console.error("Ошибка публикации маршрута:", error);
       alert("Не удалось опубликовать маршрут: " + error.message);
       window.routePendingConfirmation = true;
+      if (routeLaunchPanel) routeLaunchPanel.style.display = "none";
       routePanel.style.display = isCompactRoutePanelLandscape() ? "grid" : "block";
     });
   });
@@ -2232,6 +2431,7 @@ window.routePendingConfirmation = false;
 
     if (routeFinished) {
       routeFinished = false;
+      window.routeEditingConfirmedRoute = false;
       window.routePendingConfirmation = false;
       window.routeMode = true;
       map.doubleClickZoom.disable();
@@ -2898,6 +3098,7 @@ function cancelPartyRoute() {
   pendingRouteClickPosition = null;
 
   routeFinished = false;
+  window.routeEditingConfirmedRoute = false;
   window.routePendingConfirmation = false;
   window.routeMode = false;
   window.routeAnimationPublished = false;
@@ -2931,6 +3132,9 @@ function cancelPartyRoute() {
 
   if (routePanel) {
     routePanel.style.display = "none";
+  }
+  if (routeLaunchPanel) {
+    routeLaunchPanel.style.display = "none";
   }
 
   if (document.activeElement && document.activeElement.blur) {
@@ -3978,6 +4182,7 @@ window.applySynchronizedPartyRoute = function(data) {
   routeForcedSegments = Array.isArray(data.forcedSegments) ? data.forcedSegments : [];
   routeFinished = true;
   window.routeMode = false;
+  window.routeEditingConfirmedRoute = false;
   window.routeAnimationPublished = true;
   window.routePendingConfirmation = false;
   window.routeDestinationCityId = data.destinationSettlementId || null;
@@ -3994,18 +4199,32 @@ window.applySynchronizedPartyRoute = function(data) {
   lastCursorPosition = null;
 
   if (routePanel) routePanel.style.display = "none";
+  createRouteLaunchPanel();
+  routeLaunchPanel.style.display = "block";
   map.doubleClickZoom.enable();
   if (window.clearSettlementOutline) window.clearSettlementOutline();
 
   const total = getRouteTravelLength(routePoints);
-  if (total > 0.001) {
+  const rawAnimationStartIndex = Number(data.animationStartIndex);
+  const animationStartIndex = Number.isFinite(rawAnimationStartIndex)
+    ? Math.max(0, Math.min(routePoints.length, Math.floor(rawAnimationStartIndex))) : 0;
+  const animationStartDistance = animationStartIndex >= routePoints.length
+    ? total
+    : getRouteTravelLength(routePoints.slice(0, Math.max(1, animationStartIndex + 1)));
+  if (total - animationStartDistance > 0.001) {
     beginRouteMarkerAnimation(
-      0,
+      animationStartDistance,
       total,
       Number(data.startedAt) > 0 ? Number(data.startedAt) : null,
       Number(data.durationMs) > 0 ? Number(data.durationMs) : null
     );
   }
+  lastConfirmedRoutePointSnapshot = routePoints.map((point, index) => ({
+    lat: Number(point.lat),
+    lng: Number(point.lng),
+    segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
+    settlementId: point._routeSettlementId || null
+  }));
   // Перерисовка выполняется вызывающей стороной после подготовки
   // остановок на обводку промежуточных городов.
   console.log("Получен общий маршрут:", data);
@@ -4086,6 +4305,17 @@ function findFirstAutomaticSettlementCrossing(path, excludedSettlementId = null)
 }
 
 window.addPartyRoutePoint = function(latlng, automaticDepth = 0) {
+  if (window.routeEditingConfirmedRoute) {
+    routeFinished = false;
+    window.routeEditingConfirmedRoute = false;
+    window.routePendingConfirmation = false;
+    if (window.routeDestinationCityId) {
+      window.routeDestinationCityId = null;
+      window.routeDestinationBoundaryPoint = null;
+      window.routeDestinationApproachPoint = null;
+      if (window.clearSettlementOutline) window.clearSettlementOutline();
+    }
+  }
   if (automaticDepth > 20) {
     console.warn("Автоматическое добавление поселений остановлено: слишком много пересечений.");
     return false;
@@ -4180,6 +4410,7 @@ function finishPartyRoute(latlng) {
 
   // До подтверждения маршрут остаётся статичным предпросмотром.
   routeFinished = true;
+  window.routeEditingConfirmedRoute = false;
   window.routeMode = false;
   window.routePendingConfirmation = true;
 
@@ -4225,7 +4456,18 @@ function addInterveningSettlementsBeforeTarget(targetArea, targetPoint) {
 
 // Обработка одиночного и двойного клика
 window.handlePartyRouteClick = function(latlng) {
-  if (!window.routeMode || routeFinished) return;
+  if (!window.routeMode || (routeFinished && !window.routeEditingConfirmedRoute)) return;
+  if (window.routeEditingConfirmedRoute) {
+    routeFinished = false;
+    window.routeEditingConfirmedRoute = false;
+    window.routePendingConfirmation = false;
+    if (window.routeDestinationCityId) {
+      window.routeDestinationCityId = null;
+      window.routeDestinationBoundaryPoint = null;
+      window.routeDestinationApproachPoint = null;
+      if (window.clearSettlementOutline) window.clearSettlementOutline();
+    }
+  }
 
   const clickedArea = findSettlementAt(latlng);
 
@@ -6212,6 +6454,29 @@ map.on("zoomend", function() {
   // исходного полигона поселения.
   let settlementTraceWaitTimers = [];
   let settlementTraceWaitToken = 0;
+  window.cancelPendingRouteSettlementTraces = function() {
+    settlementTraceWaitTimers.forEach(timer => clearTimeout(timer));
+    settlementTraceWaitTimers = [];
+    settlementTraceWaitToken++;
+  };
+  window.cancelActiveRouteSettlementAnimations = function() {
+    // Прерываем только незавершённые обводки. Уже законченные контуры
+    // остаются на карте, а прерванные будут восстановлены редактором статично.
+    activeSettlementBrushTraces.forEach((state, id) => {
+      activeSettlementBrushTraces.delete(id);
+      const layers = state && state.layers
+        ? state.layers : settlementBrushTraceLayers.get(String(id));
+      if (layers) removeSettlementBrushLayers(layers);
+      settlementBrushTraceLayers.delete(String(id));
+    });
+    if (activeSettlementTrace) {
+      const id = activeSettlementTrace.areaId;
+      removeSettlementLayer(activeSettlementTrace.layer);
+      settlementTraceLayers.delete(id);
+      settlementTracePaths.delete(id);
+      activeSettlementTrace = null;
+    }
+  };
 
   function waitForRouteRevealThenTraceSettlements(routeData) {
     settlementTraceWaitTimers.forEach(timer => clearTimeout(timer));
@@ -6219,6 +6484,9 @@ map.on("zoomend", function() {
     const waitToken = ++settlementTraceWaitToken;
     const route = Array.isArray(window.routePoints) ? window.routePoints.slice() : [];
     if (route.length < 2) return;
+    const rawChangedFromIndex = Number(routeData.animationStartIndex);
+    const changedFromIndex = Number.isFinite(rawChangedFromIndex)
+      ? Math.max(0, Math.floor(rawChangedFromIndex)) : 0;
 
     const targets = [];
     const seenIds = new Set();
@@ -6282,6 +6550,9 @@ map.on("zoomend", function() {
         console.warn('Анимация поселения: не найдена точка входа на маршруте', id);
         return;
       }
+      // Поселения, уже пройденные до начала изменённого участка, остаются
+      // в статичном состоянии: повторно обводим только новые участки пути.
+      if (boundaryIndex <= changedFromIndex) return;
 
       let distance = window.getRouteTravelLength(route.slice(0, boundaryIndex + 1));
       const area = (window.settlementAreas || []).find(item => String(item.id) === id);
