@@ -738,18 +738,18 @@ window.routeMode = true;
 window.routeAnimationPublished = false;
 window.routeEditingConfirmedRoute = false;
 if (routeLaunchPanel) routeLaunchPanel.style.display = "none";
+pendingRouteResumeState = null;
 lastConfirmedRoutePointSnapshot = [];
 routeFinished = false;
 window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
 window.routeDestinationApproachPoint = null;
-// При начале нового маршрута снимаем также выбранную обводку конечного
-// города предыдущего маршрута, а не только промежуточные обводки.
-if (window.clearSettlementOutline) window.clearSettlementOutline();
-window.routeRevealFrozenAtEdit = false;
 window.routeIntermediateCityIds = [];
 window.routeIntermediateSettlementUndoSnapshots = [];
 clearRouteIntermediateCityOutlines();
+// Сбрасываем также обводку конечного города, если предыдущий маршрут
+// был завершён двойным кликом и пользователь начал новый с маркера отряда.
+if (window.clearSettlementOutline) window.clearSettlementOutline();
 // Сбрасываем состояние форсированного марша
 routeForcedMarch = false;
 routeForcedMarchStartDistance = 0;
@@ -885,6 +885,10 @@ let routeConfirmButton = null;
 // Последняя опубликованная геометрия нужна, чтобы при повторном подтверждении
 // проигрывать только новый/изменённый хвост маршрута.
 let lastConfirmedRoutePointSnapshot = [];
+// Прогресс уже начатой анимации сохраняется при возврате в редактор.
+// После редактирования продолжим с этой точки, только если весь пройденный
+// участок геометрически и семантически остался неизменным.
+let pendingRouteResumeState = null;
 let lastCursorPosition = null;
 Object.defineProperty(window, "lastCursorPosition", {
   configurable: true,
@@ -1000,24 +1004,62 @@ function stopRouteMarkerAnimation() {
   routeMarkerAnimations = [];
 }
 
-// Фиксируем уже проявившуюся часть линии на экране. Будущие штрихи
-// отменяются, а текущие CSS/Web Animations ставятся на паузу без удаления
-// слоёв: благодаря этому шестерёнка не сбрасывает раскрытие к началу.
-function freezeRouteRevealAtCurrentVisualState() {
-  const layers = Array.isArray(window.routeRestMarkers) ? window.routeRestMarkers : [];
-  layers.forEach(layer => {
-    if (!layer) return;
-    if (layer._routeDashRevealTimer) {
-      clearTimeout(layer._routeDashRevealTimer);
-      layer._routeDashRevealTimer = null;
-    }
-    const element = typeof layer.getElement === "function" ? layer.getElement() : null;
-    if (!element || typeof element.getAnimations !== "function") return;
-    try {
-      element.getAnimations({ subtree: true }).forEach(animation => animation.pause());
-    } catch (error) {
-      // На старых браузерах оставляем уже отрисованные Leaflet-слои как есть.
-    }
+// Фиксируем фактическую точку, до которой дошла линия на момент нажатия
+// шестерёнки. Возвращаем не обрезанный маршрут, а только контрольную копию
+// уже пройденной геометрии для сравнения после редактирования.
+function captureRouteRevealProgressForEditing() {
+  const animation = routeMarkerAnimations
+    .filter(item => item && item.end > item.start + 0.001)
+    .sort((a, b) => b.startedAtEpoch - a.startedAtEpoch)[0];
+  if (!animation) return null;
+
+  const elapsed = getSynchronizedRouteNow() - animation.startedAtEpoch;
+  if (elapsed <= 0) {
+    return {
+      distance: animation.start,
+      prefix: getRoutePointsUpToDistance(routePoints, animation.start).map((point, index) => ({
+        lat: Number(point.lat), lng: Number(point.lng),
+        segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
+        settlementId: point._routeSettlementId || null
+      }))
+    };
+  }
+
+  let low = animation.start;
+  let high = animation.end;
+  // Инвертируем временную шкалу штрихов: находим расстояние,
+  // до которого линия уже успела полностью проявиться.
+  for (let i = 0; i < 36; i++) {
+    const mid = (low + high) / 2;
+    const progress = getRouteAnimationScreenProgress(animation, mid);
+    const revealAt = getRouteAnimationRevealTime(animation, progress) + routeLineRevealFadeDuration;
+    if (revealAt <= elapsed) low = mid;
+    else high = mid;
+  }
+  const distance = Math.max(animation.start, Math.min(animation.end, low));
+  const prefix = getRoutePointsUpToDistance(routePoints, distance).map((point, index) => ({
+    lat: Number(point.lat), lng: Number(point.lng),
+    segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
+    settlementId: point._routeSettlementId || null
+  }));
+  return { distance, prefix };
+}
+
+function routePrefixMatchesResumeState(points, resumeState) {
+  if (!resumeState || !Array.isArray(resumeState.prefix) || !resumeState.prefix.length) return false;
+  if (getRouteTravelLength(points) + 0.001 < resumeState.distance) return false;
+  const currentPrefix = getRoutePointsUpToDistance(points, resumeState.distance).map((point, index) => ({
+    lat: Number(point.lat), lng: Number(point.lng),
+    segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
+    settlementId: point._routeSettlementId || null
+  }));
+  if (currentPrefix.length !== resumeState.prefix.length) return false;
+  return currentPrefix.every((point, index) => {
+    const previous = resumeState.prefix[index];
+    return Math.abs(point.lat - previous.lat) < 0.000001 &&
+      Math.abs(point.lng - previous.lng) < 0.000001 &&
+      point.segmentMode === previous.segmentMode &&
+      String(point.settlementId || "") === String(previous.settlementId || "");
   });
 }
 
@@ -1578,10 +1620,12 @@ function createRouteLaunchPanel() {
     pauseButton.setAttribute("aria-pressed", "false");
   });
   editButton.addEventListener("click", function() {
-    // Возвращаем именно полный предпросмотр, который был до подтверждения.
-    // Для этого отменяем все незавершённые таймеры раскрытия и обводок,
-    // затем заново рисуем весь маршрут без активных анимаций.
-    freezeRouteRevealAtCurrentVisualState();
+    // Запоминаем реальную точку завершённых штрихов до остановки таймера.
+    // Полный маршрут при возврате в редактор по-прежнему отрисуется статично.
+    pendingRouteResumeState = captureRouteRevealProgressForEditing();
+    // Останавливаем раскрытие линии и удаляем её временные штрихи.
+    // Повторная отрисовка без активных анимаций вернёт полный маршрут
+    // в точности в статичном виде, пригодном для дальнейшего редактирования.
     stopRouteMarkerAnimation();
     if (typeof window.cancelPendingRouteSettlementTraces === "function") {
       window.cancelPendingRouteSettlementTraces();
@@ -1589,20 +1633,13 @@ function createRouteLaunchPanel() {
     if (typeof window.cancelActiveRouteSettlementAnimations === "function") {
       window.cancelActiveRouteSettlementAnimations();
     }
-
     window.routeAnimationPublished = false;
     window.routePendingConfirmation = false;
     window.routeMode = true;
     routeFinished = true;
     window.routeEditingConfirmedRoute = true;
-    window.routeRevealFrozenAtEdit = false;
     lastCursorPosition = null;
     map.doubleClickZoom.disable();
-
-    // Сначала убираем старую маску/обводку города, чтобы восстановить
-    // чистую геометрию маршрута, затем updateRouteLine нарисует её целиком.
-    if (window.clearSettlementOutline) window.clearSettlementOutline();
-    updateRouteLine(null);
 
     routeLaunchPanel.style.display = "none";
     createRoutePanel();
@@ -1622,10 +1659,8 @@ function createRouteLaunchPanel() {
       forcedButton.classList.toggle("active", routeForcedMarch);
       forcedButton.setAttribute("aria-pressed", routeForcedMarch ? "true" : "false");
     }
-
-    // Все промежуточные города и конечный город снова показываются
-    // статично, независимо от того, успела ли дойти до них анимация.
     refreshRouteIntermediateCityOutlines();
+    updateRouteLine();
     if (window.routeDestinationCityId && window.showSettlementOutline) {
       const destinationArea = (window.settlementAreas || []).find(area =>
         String(area.id) === String(window.routeDestinationCityId)
@@ -2249,12 +2284,32 @@ while (commonPrefixLength < currentSnapshot.length &&
 }
 const routeIsUnchanged = currentSnapshot.length === lastConfirmedRoutePointSnapshot.length &&
   commonPrefixLength === currentSnapshot.length;
-const animationStartIndex = routeIsUnchanged
+let animationStartIndex = routeIsUnchanged
   ? currentSnapshot.length
   : (lastConfirmedRoutePointSnapshot.length === 0 ? 0 : Math.max(0, commonPrefixLength - 1));
-const animationStartDistance = animationStartIndex >= routePoints.length
+let animationStartDistance = animationStartIndex >= routePoints.length
   ? getRouteTravelLength(routePoints)
   : getRouteTravelLength(routePoints.slice(0, Math.min(routePoints.length, animationStartIndex + 1)));
+
+// Если ранее пройденный анимацией участок сохранился, продолжаем ровно
+// с прежнего прогресса. Если он был удалён/перестроен — начинаем заново.
+if (pendingRouteResumeState) {
+  if (routePrefixMatchesResumeState(routePoints, pendingRouteResumeState)) {
+    animationStartDistance = Math.max(animationStartDistance, pendingRouteResumeState.distance);
+    // Городские обводки до точки продолжения тоже уже были пройдены:
+    // исключаем их из повторной анимации вместе с линией.
+    animationStartIndex = 0;
+    for (let i = 1; i < routePoints.length; i++) {
+      if (getRouteTravelLength(routePoints.slice(0, i + 1)) <= animationStartDistance + 0.001) {
+        animationStartIndex = i;
+      } else break;
+    }
+  } else {
+    animationStartDistance = 0;
+    animationStartIndex = 0;
+  }
+  pendingRouteResumeState = null;
+}
 
 window.routeMode = false;
 map.doubleClickZoom.enable();
@@ -2262,6 +2317,7 @@ window.routePendingConfirmation = false;
 
     const routePayload = {
       animationStartIndex,
+      animationStartDistance,
       durationMs: typeof window.getRouteRevealDurationForCurrentRoute === "function"
         ? window.getRouteRevealDurationForCurrentRoute(animationStartDistance) : undefined,
       points: routePoints.map((point, index) => ({
@@ -3137,7 +3193,7 @@ function cancelPartyRoute() {
   window.routePendingConfirmation = false;
   window.routeMode = false;
   window.routeAnimationPublished = false;
-  window.routeRevealFrozenAtEdit = false;
+  pendingRouteResumeState = null;
   map.doubleClickZoom.enable();
 
   routeForcedMarch = false;
@@ -3435,14 +3491,6 @@ function clearRouteAutoPreviewBrushes() {
 }
 
 function updateRouteLine(cursorPosition = null) {
-  // Пока пользователь только вернулся в редактор через шестерёнку,
-  // сохраняем текущий кадр раскрытия. После первого реального изменения
-  // маршрута routeEditingConfirmedRoute сбрасывается и обычная отрисовка
-  // снова включается.
-  if (window.routeRevealFrozenAtEdit) {
-    if (window.routeEditingConfirmedRoute) return;
-    window.routeRevealFrozenAtEdit = false;
-  }
   // Перерисовка карты не отменяет и не перезапускает анимацию жетонов.
   // Время анимации учитывается при создании каждого нового DOM-элемента.
   ensureRouteMarkerPanes();
@@ -4252,9 +4300,13 @@ window.applySynchronizedPartyRoute = function(data) {
   const rawAnimationStartIndex = Number(data.animationStartIndex);
   const animationStartIndex = Number.isFinite(rawAnimationStartIndex)
     ? Math.max(0, Math.min(routePoints.length, Math.floor(rawAnimationStartIndex))) : 0;
-  const animationStartDistance = animationStartIndex >= routePoints.length
+  const fallbackAnimationStartDistance = animationStartIndex >= routePoints.length
     ? total
     : getRouteTravelLength(routePoints.slice(0, Math.max(1, animationStartIndex + 1)));
+  const suppliedAnimationStartDistance = Number(data.animationStartDistance);
+  const animationStartDistance = Number.isFinite(suppliedAnimationStartDistance)
+    ? Math.max(0, Math.min(total, suppliedAnimationStartDistance))
+    : fallbackAnimationStartDistance;
   if (total - animationStartDistance > 0.001) {
     beginRouteMarkerAnimation(
       animationStartDistance,
@@ -4352,7 +4404,6 @@ window.addPartyRoutePoint = function(latlng, automaticDepth = 0) {
   if (window.routeEditingConfirmedRoute) {
     routeFinished = false;
     window.routeEditingConfirmedRoute = false;
-    window.routeRevealFrozenAtEdit = false;
     window.routePendingConfirmation = false;
     if (window.routeDestinationCityId) {
       window.routeDestinationCityId = null;
