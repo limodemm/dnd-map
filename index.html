@@ -1045,22 +1045,45 @@ function captureRouteRevealProgressForEditing() {
   return { distance, prefix };
 }
 
-function routePrefixMatchesResumeState(points, resumeState) {
-  if (!resumeState || !Array.isArray(resumeState.prefix) || !resumeState.prefix.length) return false;
-  if (getRouteTravelLength(points) + 0.001 < resumeState.distance) return false;
-  const currentPrefix = getRoutePointsUpToDistance(points, resumeState.distance).map((point, index) => ({
+// Возвращает расстояние до последней точки пройденного участка, которая
+// сохранилась без изменений. Если совпал весь сохранённый префикс, возвращаем
+// исходную точку анимации; если маршрут изменён раньше — откатываемся только
+// до последней общей точки, а не к началу всего маршрута.
+function getRouteResumeDistanceAtLastCommonPoint(points, resumeState) {
+  if (!resumeState || !Array.isArray(resumeState.prefix) || !resumeState.prefix.length) return 0;
+
+  const totalLength = getRouteTravelLength(points);
+  const checkedDistance = Math.min(resumeState.distance, totalLength);
+  const savedPrefix = resumeState.prefix;
+  // В обоих массивах последняя точка может быть промежуточной точкой
+  // внутри сегмента. Сравниваем именно геометрию до сохранённого прогресса,
+  // а не только вершины исходного маршрута.
+  const currentPrefix = getRoutePointsUpToDistance(points, checkedDistance).map((point, index) => ({
     lat: Number(point.lat), lng: Number(point.lng),
     segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
     settlementId: point._routeSettlementId || null
   }));
-  if (currentPrefix.length !== resumeState.prefix.length) return false;
-  return currentPrefix.every((point, index) => {
-    const previous = resumeState.prefix[index];
-    return Math.abs(point.lat - previous.lat) < 0.000001 &&
-      Math.abs(point.lng - previous.lng) < 0.000001 &&
-      point.segmentMode === previous.segmentMode &&
-      String(point.settlementId || "") === String(previous.settlementId || "");
-  });
+
+  let commonCount = 0;
+  const count = Math.min(currentPrefix.length, savedPrefix.length);
+  for (let i = 0; i < count; i++) {
+    const point = currentPrefix[i];
+    const saved = savedPrefix[i];
+    const samePosition = Math.abs(point.lat - saved.lat) < 0.000001 &&
+      Math.abs(point.lng - saved.lng) < 0.000001;
+    const sameMode = point.segmentMode === saved.segmentMode;
+    const sameSettlement = String(point.settlementId || "") === String(saved.settlementId || "");
+    if (!samePosition || !sameMode || !sameSettlement) break;
+    commonCount++;
+  }
+
+  // Весь сохранённый участок совпадает — продолжаем с точной точки прогресса.
+  if (commonCount === savedPrefix.length) return checkedDistance;
+  if (commonCount === 0) return 0;
+
+  // Иначе возвращаемся только к последней общей точке. Если маршрут стал
+  // короче сохранённого прогресса, это будет его последняя оставшаяся точка.
+  return getRouteTravelLength(currentPrefix.slice(0, commonCount));
 }
 
 function beginRouteMarkerAnimation(startDistance, endDistance, sharedStartedAt, sharedDuration) {
@@ -2298,21 +2321,19 @@ let animationStartDistance = animationStartIndex >= routePoints.length
 // неизменённый маршрут должен продолжить раскрытие с сохранённого прогресса.
 // Только завершённая ранее анимация (без pendingRouteResumeState) пропускается.
 if (pendingRouteResumeState) {
-  if (routePrefixMatchesResumeState(routePoints, pendingRouteResumeState)) {
-    animationStartDistance = routeIsUnchanged
-      ? pendingRouteResumeState.distance
-      : Math.max(animationStartDistance, pendingRouteResumeState.distance);
-    // Городские обводки до точки продолжения тоже уже были пройдены:
-    // исключаем их из повторной анимации вместе с линией.
-    animationStartIndex = 0;
-    for (let i = 1; i < routePoints.length; i++) {
-      if (getRouteTravelLength(routePoints.slice(0, i + 1)) <= animationStartDistance + 0.001) {
-        animationStartIndex = i;
-      } else break;
-    }
-  } else {
-    animationStartDistance = 0;
-    animationStartIndex = 0;
+  // Неизменённый пройденный префикс сохраняем целиком. Если он изменён,
+  // находим последнюю совпадающую точку и повторяем анимацию только от неё.
+  // К началу возвращаемся лишь когда не осталось ни одной общей точки.
+  animationStartDistance = getRouteResumeDistanceAtLastCommonPoint(
+    routePoints, pendingRouteResumeState
+  );
+  // Городские обводки до точки продолжения тоже уже были пройдены:
+  // исключаем их из повторной анимации вместе с линией.
+  animationStartIndex = 0;
+  for (let i = 1; i < routePoints.length; i++) {
+    if (getRouteTravelLength(routePoints.slice(0, i + 1)) <= animationStartDistance + 0.001) {
+      animationStartIndex = i;
+    } else break;
   }
   pendingRouteResumeState = null;
 }
@@ -4668,7 +4689,9 @@ window.handlePartyRouteClick = function(latlng) {
 // раз за один кадр, иначе очередь обновлений начинает ощущаться как лаги.
 let routePreviewFramePending = false;
 map.on("mousemove", function(e) {
-  if (!window.routeMode || !hasMouse) return;
+  // После возврата из панели подтверждения конечная точка зафиксирована:
+  // до «Вернуть»/«Отменить» не показываем продолжение маршрута от флажка.
+  if (!window.routeMode || routeFinished || !hasMouse) return;
 
   lastCursorPosition = e.latlng;
   if (routePreviewFramePending) return;
@@ -4680,7 +4703,7 @@ map.on("mousemove", function(e) {
     // пользователь кликнул, отменил маршрут или переключил режим, null не
     // даст отрисовать устаревший предпросмотр поверх нового состояния.
     const position = lastCursorPosition;
-    if (!window.routeMode || !hasMouse || !position) return;
+    if (!window.routeMode || routeFinished || !hasMouse || !position) return;
     // updateRouteLine обновляет маршрут и в конце применяет маску
     // наведённого поселения вместе со всеми выбранными промежуточными.
     updateRouteLine(position);
@@ -7234,7 +7257,7 @@ map.on("zoomend", function() {
         setSettlementToolStatus("Тест сухой кисти А включён. Начни прокладку маршрута и наведи курсор на поселение.");
       } else {
         setSettlementToolStatus("Тест кисти выключен. Возвращён прежний способ отображения обводки.");
-        if (window.routeMode && lastCursorPosition && window.previewSettlementAt) {
+        if (window.routeMode && !routeFinished && lastCursorPosition && window.previewSettlementAt) {
           window.previewSettlementAt(lastCursorPosition);
         }
       }
