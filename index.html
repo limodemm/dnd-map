@@ -743,6 +743,10 @@ routeFinished = false;
 window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
 window.routeDestinationApproachPoint = null;
+// При начале нового маршрута снимаем также выбранную обводку конечного
+// города предыдущего маршрута, а не только промежуточные обводки.
+if (window.clearSettlementOutline) window.clearSettlementOutline();
+window.routeRevealFrozenAtEdit = false;
 window.routeIntermediateCityIds = [];
 window.routeIntermediateSettlementUndoSnapshots = [];
 clearRouteIntermediateCityOutlines();
@@ -994,6 +998,27 @@ function stopRouteMarkerAnimation() {
     if (animation.timer) clearTimeout(animation.timer);
   });
   routeMarkerAnimations = [];
+}
+
+// Фиксируем уже проявившуюся часть линии на экране. Будущие штрихи
+// отменяются, а текущие CSS/Web Animations ставятся на паузу без удаления
+// слоёв: благодаря этому шестерёнка не сбрасывает раскрытие к началу.
+function freezeRouteRevealAtCurrentVisualState() {
+  const layers = Array.isArray(window.routeRestMarkers) ? window.routeRestMarkers : [];
+  layers.forEach(layer => {
+    if (!layer) return;
+    if (layer._routeDashRevealTimer) {
+      clearTimeout(layer._routeDashRevealTimer);
+      layer._routeDashRevealTimer = null;
+    }
+    const element = typeof layer.getElement === "function" ? layer.getElement() : null;
+    if (!element || typeof element.getAnimations !== "function") return;
+    try {
+      element.getAnimations({ subtree: true }).forEach(animation => animation.pause());
+    } catch (error) {
+      // На старых браузерах оставляем уже отрисованные Leaflet-слои как есть.
+    }
+  });
 }
 
 function beginRouteMarkerAnimation(startDistance, endDistance, sharedStartedAt, sharedDuration) {
@@ -1553,9 +1578,10 @@ function createRouteLaunchPanel() {
     pauseButton.setAttribute("aria-pressed", "false");
   });
   editButton.addEventListener("click", function() {
-    // Останавливаем раскрытие линии и удаляем её временные штрихи.
-    // Повторная отрисовка без активных анимаций вернёт полный маршрут
-    // в точности в статичном виде, пригодном для дальнейшего редактирования.
+    // Останавливаем раскрытие на текущем кадре. Уже появившиеся штрихи
+    // остаются на карте, а ещё не появившиеся больше не добавляются.
+    freezeRouteRevealAtCurrentVisualState();
+    window.routeRevealFrozenAtEdit = true;
     stopRouteMarkerAnimation();
     if (typeof window.cancelPendingRouteSettlementTraces === "function") {
       window.cancelPendingRouteSettlementTraces();
@@ -1590,7 +1616,8 @@ function createRouteLaunchPanel() {
       forcedButton.setAttribute("aria-pressed", routeForcedMarch ? "true" : "false");
     }
     refreshRouteIntermediateCityOutlines();
-    updateRouteLine();
+    // Не вызываем updateRouteLine здесь: текущие видимые штрихи уже
+    // заморожены выше. Перерисовка уничтожила бы их и изменила прогресс.
     if (window.routeDestinationCityId && window.showSettlementOutline) {
       const destinationArea = (window.settlementAreas || []).find(area =>
         String(area.id) === String(window.routeDestinationCityId)
@@ -3102,6 +3129,7 @@ function cancelPartyRoute() {
   window.routePendingConfirmation = false;
   window.routeMode = false;
   window.routeAnimationPublished = false;
+  window.routeRevealFrozenAtEdit = false;
   map.doubleClickZoom.enable();
 
   routeForcedMarch = false;
@@ -3399,6 +3427,14 @@ function clearRouteAutoPreviewBrushes() {
 }
 
 function updateRouteLine(cursorPosition = null) {
+  // Пока пользователь только вернулся в редактор через шестерёнку,
+  // сохраняем текущий кадр раскрытия. После первого реального изменения
+  // маршрута routeEditingConfirmedRoute сбрасывается и обычная отрисовка
+  // снова включается.
+  if (window.routeRevealFrozenAtEdit) {
+    if (window.routeEditingConfirmedRoute) return;
+    window.routeRevealFrozenAtEdit = false;
+  }
   // Перерисовка карты не отменяет и не перезапускает анимацию жетонов.
   // Время анимации учитывается при создании каждого нового DOM-элемента.
   ensureRouteMarkerPanes();
@@ -4308,6 +4344,7 @@ window.addPartyRoutePoint = function(latlng, automaticDepth = 0) {
   if (window.routeEditingConfirmedRoute) {
     routeFinished = false;
     window.routeEditingConfirmedRoute = false;
+    window.routeRevealFrozenAtEdit = false;
     window.routePendingConfirmation = false;
     if (window.routeDestinationCityId) {
       window.routeDestinationCityId = null;
