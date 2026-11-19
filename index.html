@@ -540,11 +540,9 @@ document.addEventListener("keydown", function(e) {
   window.settlementContourEditorActive = false;
   window.handleSettlementContourEditorMapClick = null;
   window.routeDestinationCityId = null;
+  window.routeDestinationTraceNeedsReplay = false;
   window.routeDestinationBoundaryPoint = null;
   window.routeDestinationApproachPoint = null;
-  // После возврата в редактор финальный контур временно снимается.
-  // Если маршрут подтверждают без изменений, конечный город нужно обвести снова.
-  window.routeDestinationTraceNeedsReplay = false;
   window.routeIntermediateCityIds = [];
   // История точек возврата перед входом в каждое промежуточное поселение.
   // Нужна, чтобы возврат от второго поселения сохранял первое.
@@ -1667,15 +1665,14 @@ function createRouteLaunchPanel() {
     pauseButton.setAttribute("aria-pressed", "false");
   });
   editButton.addEventListener("click", function() {
-    // Конечная обводка относится только к текущей конечной точке маршрута.
-    // Снимаем её при входе в редактор, не затрагивая обводки пройденных городов.
-    // Если маршрут подтвердят без изменений, конечный город будет обведён повторно.
-    const destinationIdForEditing = window.routeDestinationCityId;
-    window.routeDestinationTraceNeedsReplay = Boolean(destinationIdForEditing);
-    if (destinationIdForEditing && typeof window.clearRouteDestinationSettlementTrace === "function") {
-      window.clearRouteDestinationSettlementTrace(destinationIdForEditing);
+    // Если обводка конечного города уже завершилась, при повторном подтверждении
+    // того же маршрута её всё равно нужно проиграть заново.
+    window.routeDestinationTraceNeedsReplay = Boolean(window.routeDestinationCityId);
+    // Конечный город перестаёт быть целью подтверждённого маршрута:
+    // убираем его завершённую/текущую анимированную обводку при входе в редактор.
+    if (typeof window.clearRouteDestinationSettlementTrace === "function") {
+      window.clearRouteDestinationSettlementTrace(window.routeDestinationCityId);
     }
-
     // Запоминаем реальную точку завершённых штрихов до остановки таймера.
     // Полный маршрут при возврате в редактор по-прежнему отрисуется статично.
     pendingRouteResumeState = captureRouteRevealProgressForEditing();
@@ -2387,15 +2384,13 @@ window.routePendingConfirmation = false;
         settlementId: point._routeSettlementId || null
       })),
       destinationSettlementId: window.routeDestinationCityId || null,
+      retraceDestinationSettlement: Boolean(window.routeDestinationTraceNeedsReplay),
       destinationBoundaryPoint: window.routeDestinationBoundaryPoint
         ? { lat: window.routeDestinationBoundaryPoint.lat, lng: window.routeDestinationBoundaryPoint.lng }
         : null,
       destinationApproachPoint: window.routeDestinationApproachPoint
         ? { lat: window.routeDestinationApproachPoint.lat, lng: window.routeDestinationApproachPoint.lng }
         : null,
-      // Если редактор был открыт после подтверждения с конечным городом,
-      // его обводку нужно повторить даже при неизменившейся геометрии маршрута.
-      retraceDestinationSettlement: Boolean(window.routeDestinationTraceNeedsReplay),
       pace: routePace,
       speedReduced: routeSpeedReduced,
       forcedMarch: routeForcedMarch,
@@ -2449,14 +2444,16 @@ window.routePendingConfirmation = false;
   // «Вернуть» работает только с двумя типами контрольных точек:
   // обычный привал и центр уже пройденного промежуточного поселения.
   document.getElementById("route-undo").addEventListener("click", function() {
+    const intermediateIdsBeforeUndo = Array.isArray(window.routeIntermediateCityIds)
+      ? window.routeIntermediateCityIds.slice() : [];
+    if (window.routeDestinationCityId && typeof window.clearRouteDestinationSettlementTrace === "function") {
+      window.clearRouteDestinationSettlementTrace(window.routeDestinationCityId);
+    }
+    window.routeDestinationTraceNeedsReplay = false;
     if (window.routeDestinationCityId) {
-      if (window.clearRouteDestinationSettlementTrace) {
-        window.clearRouteDestinationSettlementTrace(window.routeDestinationCityId);
-      }
       window.routeDestinationCityId = null;
       window.routeDestinationBoundaryPoint = null;
       window.routeDestinationApproachPoint = null;
-      window.routeDestinationTraceNeedsReplay = false;
       if (window.clearSettlementOutline) window.clearSettlementOutline();
     }
 
@@ -2561,6 +2558,22 @@ window.routePendingConfirmation = false;
           window.isRouteAtSettlementCenter(point, area)
         ));
       });
+    const retainedIntermediateIds = new Set(window.routeIntermediateCityIds.map(id => String(id)));
+    const idsToClear = intermediateIdsBeforeUndo.filter(id => !retainedIntermediateIds.has(String(id)));
+    // Если возврат выполнен непосредственно к центру города, он становится
+    // конечной точкой текущего маршрута, а не промежуточным поселением.
+    if (targetSettlementIndex >= 0 && routePoints[targetSettlementIndex]) {
+      const returnedToCityId = String(routePoints[targetSettlementIndex]._routeSettlementId || "");
+      if (returnedToCityId) {
+        window.routeIntermediateCityIds = window.routeIntermediateCityIds.filter(
+          id => String(id) !== returnedToCityId
+        );
+        idsToClear.push(returnedToCityId);
+      }
+    }
+    if (window.clearRouteIntermediateSettlementTraces) {
+      window.clearRouteIntermediateSettlementTraces(idsToClear);
+    }
     window.routeIntermediateSettlementUndoSnapshots = [];
     refreshRouteIntermediateCityOutlines();
 
@@ -3250,6 +3263,15 @@ function clearRouteDrawing() {
 
 // Единая отмена маршрута: вызывается кнопкой и клавишей Escape.
 function cancelPartyRoute() {
+  const intermediateIdsToClear = Array.isArray(window.routeIntermediateCityIds)
+    ? window.routeIntermediateCityIds.slice() : [];
+  if (window.clearRouteIntermediateSettlementTraces) {
+    window.clearRouteIntermediateSettlementTraces(intermediateIdsToClear);
+  }
+  window.routeDestinationTraceNeedsReplay = false;
+  if (window.routeDestinationCityId && typeof window.clearRouteDestinationSettlementTrace === "function") {
+    window.clearRouteDestinationSettlementTrace(window.routeDestinationCityId);
+  }
   if (pendingRouteClickTimer) {
     clearTimeout(pendingRouteClickTimer);
   }
@@ -3272,13 +3294,9 @@ function cancelPartyRoute() {
   routeForcedSegments = [];
   routePoints = [];
   lastCursorPosition = null;
-  if (window.routeDestinationCityId && window.clearRouteDestinationSettlementTrace) {
-    window.clearRouteDestinationSettlementTrace(window.routeDestinationCityId);
-  }
   window.routeDestinationCityId = null;
   window.routeDestinationBoundaryPoint = null;
   window.routeDestinationApproachPoint = null;
-  window.routeDestinationTraceNeedsReplay = false;
   window.routeIntermediateCityIds = [];
   window.routeIntermediateSettlementUndoSnapshots = [];
   clearRouteIntermediateCityOutlines();
@@ -6193,37 +6211,6 @@ map.on("zoomend", function() {
   }
   window.clearSettlementOutline = clearSettlementOutline;
 
-  // Удаляет только уже нарисованную/анимируемую трассу указанного города.
-  // В отличие от clearSettlementOutline, не трогает выбранные и промежуточные города.
-  window.clearRouteDestinationSettlementTrace = function(id) {
-    if (id == null) return;
-    const key = String(id);
-
-    const brushState = activeSettlementBrushTraces.get(key);
-    if (brushState) {
-      activeSettlementBrushTraces.delete(key);
-      if (brushState.layers) removeSettlementBrushLayers(brushState.layers);
-    }
-    const brushLayers = settlementBrushTraceLayers.get(key);
-    if (brushLayers) removeSettlementBrushLayers(brushLayers);
-    settlementBrushTraceLayers.delete(key);
-
-    const traceLayer = settlementTraceLayers.get(id) || settlementTraceLayers.get(key);
-    removeSettlementLayer(traceLayer);
-    settlementTraceLayers.delete(id);
-    settlementTraceLayers.delete(key);
-    settlementTracePaths.delete(id);
-    settlementTracePaths.delete(key);
-    if (activeSettlementTrace && String(activeSettlementTrace.areaId) === key) {
-      removeSettlementLayer(activeSettlementTrace.layer);
-      activeSettlementTrace = null;
-    }
-
-    // Маски маршрута восстанавливаются общим clearSettlementOutline()
-    // при подтверждении, возврате или отмене редактора. Здесь не трогаем
-    // остальные города, чтобы не раскрыть их маршрутные участки преждевременно.
-  };
-
   window.previewSettlementAt = function(point) {
     try {
       if (!window.routeMode) {
@@ -6660,6 +6647,39 @@ map.on("zoomend", function() {
     settlementTraceWaitTimers = [];
     settlementTraceWaitToken++;
   };
+  // Удаляет визуальную трассу конкретного поселения независимо от того,
+  // было ли оно конечным или промежуточным.
+  window.clearRouteSettlementTrace = function(settlementId) {
+    if (settlementId === null || settlementId === undefined) return;
+    const id = String(settlementId);
+
+    const brushLayers = settlementBrushTraceLayers.get(id);
+    if (brushLayers) removeSettlementBrushLayers(brushLayers);
+    settlementBrushTraceLayers.delete(id);
+    const activeBrush = activeSettlementBrushTraces.get(id);
+    if (activeBrush) activeSettlementBrushTraces.delete(id);
+
+    const traceLayer = settlementTraceLayers.get(settlementId) || settlementTraceLayers.get(id);
+    if (traceLayer) removeSettlementLayer(traceLayer);
+    settlementTraceLayers.delete(settlementId);
+    settlementTraceLayers.delete(id);
+    settlementTracePaths.delete(settlementId);
+    settlementTracePaths.delete(id);
+
+    if (activeSettlementTrace && String(activeSettlementTrace.areaId) === id) {
+      removeSettlementLayer(activeSettlementTrace.layer);
+      activeSettlementTrace = null;
+    }
+  };
+  window.clearRouteDestinationSettlementTrace = window.clearRouteSettlementTrace;
+
+  window.clearRouteIntermediateSettlementTraces = function(ids) {
+    (Array.isArray(ids) ? ids : []).forEach(id => {
+      window.clearRouteSettlementTrace(id);
+      removeRouteIntermediateCityOutline(id);
+    });
+  };
+
   window.cancelActiveRouteSettlementAnimations = function() {
     // Прерываем только незавершённые обводки. Уже законченные контуры
     // остаются на карте, а прерванные будут восстановлены редактором статично.
@@ -6752,8 +6772,8 @@ map.on("zoomend", function() {
         return;
       }
       // Поселения, уже пройденные до начала изменённого участка, остаются
-      // в статичном состоянии. Исключение — конечный город, обводку которого
-      // редактор специально снял: её нужно восстановить даже при неизменённом пути.
+      // в статичном состоянии. Исключение — конечный город, для которого
+      // редактор явно запросил повторную анимацию после полного завершения.
       const mustRetraceDestination = id === destinationId &&
         Boolean(routeData.retraceDestinationSettlement);
       if (boundaryIndex <= changedFromIndex && !mustRetraceDestination) return;
