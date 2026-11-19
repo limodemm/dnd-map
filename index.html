@@ -1031,9 +1031,6 @@ function captureRouteRevealProgressForEditing() {
       segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
       settlementId: point._routeSettlementId || null
     }));
-    console.log("[RouteResume] capture before animation start", {
-      elapsed, animationStart: animation.start, routeSnapshotLength: routeSnapshot.length
-    });
     return { distance: animation.start, prefix, routeSnapshot };
   }
 
@@ -1054,11 +1051,6 @@ function captureRouteRevealProgressForEditing() {
     segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
     settlementId: point._routeSettlementId || null
   }));
-  console.log("[RouteResume] captured animation progress", {
-    elapsed, animationStart: animation.start, animationEnd: animation.end,
-    capturedDistance: distance, routeSnapshotLength: routeSnapshot.length,
-    routeSnapshot: routeSnapshot.map((point, index) => ({ index, ...point }))
-  });
   return { distance, prefix, routeSnapshot };
 }
 
@@ -1110,13 +1102,6 @@ function getRouteResumeDistanceAtLastCommonPoint(points, resumeState) {
 
   // Первая точка нового маршрута должна совпадать с началом старого.
   if (!samePoint(points[0], savedRoute[0]) || !samePointMetadata(points[0], savedRoute[0], 0)) {
-    console.log("[RouteResume] route point comparison", [{
-      index: 0,
-      old: savedRoute[0],
-      current: { lat: Number(points[0].lat), lng: Number(points[0].lng) },
-      samePosition: samePoint(points[0], savedRoute[0]),
-      sameMetadata: samePointMetadata(points[0], savedRoute[0], 0)
-    }]);
     return 0;
   }
 
@@ -1201,16 +1186,7 @@ function getRouteResumeDistanceAtLastCommonPoint(points, resumeState) {
     });
   }
 
-  console.log("[RouteResume] route point comparison", comparisons);
   const resumeDistance = Math.min(progressDistance, commonDistance);
-  console.log("[RouteResume] resolved continuation", {
-    savedProgressDistance: progressDistance,
-    commonPointCount,
-    commonDistance,
-    resumeDistance,
-    oldRoutePointCount: savedRoute.length,
-    newRoutePointCount: points.length
-  });
   return resumeDistance;
 }
 
@@ -1777,15 +1753,6 @@ function createRouteLaunchPanel() {
     // Запоминаем реальную точку завершённых штрихов до остановки таймера.
     // Полный маршрут при возврате в редактор по-прежнему отрисуется статично.
     pendingRouteResumeState = captureRouteRevealProgressForEditing();
-    console.log("[RouteResume] entered editor", {
-      activeAnimationCount: routeMarkerAnimations.length,
-      capturedResumeState: pendingRouteResumeState ? {
-        distance: pendingRouteResumeState.distance,
-        routeSnapshotLength: Array.isArray(pendingRouteResumeState.routeSnapshot)
-          ? pendingRouteResumeState.routeSnapshot.length : 0
-      } : null,
-      confirmedSnapshotLength: lastConfirmedRoutePointSnapshot.length
-    });
     // Останавливаем раскрытие линии и удаляем её временные штрихи.
     // Повторная отрисовка без активных анимаций вернёт полный маршрут
     // в точности в статичном виде, пригодном для дальнейшего редактирования.
@@ -2478,12 +2445,6 @@ if (pendingRouteResumeState) {
   }
   pendingRouteResumeState = null;
 }
-console.log("[RouteResume] confirmation animation start", {
-  animationStartDistance,
-  animationStartIndex,
-  routeLength: getRouteTravelLength(routePoints),
-  hadPendingResumeState: hadPendingRouteResumeState
-});
 
 window.routeMode = false;
 map.doubleClickZoom.enable();
