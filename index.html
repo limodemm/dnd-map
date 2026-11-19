@@ -1036,8 +1036,11 @@ function captureRouteRevealProgressForEditing() {
   // до которого линия уже успела полностью проявиться.
   for (let i = 0; i < 36; i++) {
     const mid = (low + high) / 2;
-    const progress = getRouteAnimationScreenProgress(animation, mid);
-    const revealAt = getRouteAnimationRevealTime(animation, progress) + routeLineRevealFadeDuration;
+    // Сохраняем фактически проявившийся штрих, а не непрерывную позицию
+    // временной шкалы. Иначе расчёт может перескочить через ещё не раскрытые
+    // участки и выбрать более дальнюю общую точку старого и нового маршрута.
+    const dashProgress = getRouteAnimationDashProgressAtDistance(animation, mid, false);
+    const revealAt = getRouteAnimationRevealTime(animation, dashProgress) + routeLineRevealFadeDuration;
     if (revealAt <= elapsed) low = mid;
     else high = mid;
   }
