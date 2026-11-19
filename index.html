@@ -2101,6 +2101,13 @@ function createRoutePanel() {
   filter: drop-shadow(0px 1px 0px rgba(0, 0, 0, 0.65));
 }
 
+/* Поперечные засечки сниженной скорости — прозрачные маркеры без рамки. */
+.leaflet-marker-icon.route-speed-tick {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
 /* Объём обычным привалам */
 .leaflet-route-rest-pane-pane .route-rest-raised {
   filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8));
@@ -4087,6 +4094,15 @@ function updateRouteLine(cursorPosition = null) {
 
   const committedLength = getRouteTravelLength(routePoints);
 
+  // Цвет линии зависит от темпа конкретного зафиксированного участка.
+  // Быстрый темп остаётся в золотисто-охристой гамме, чтобы не сливаться
+  // с зелёными областями карты.
+  function getRoutePaceLineColor(pace) {
+    if (pace === "slow") return "#c98f68";
+    if (pace === "fast") return "#c3b879";
+    return "#e2b95f";
+  }
+
   // Универсальное создание отрезка маршрута.
   function drawRoutePiece(
     startDistance,
@@ -4100,9 +4116,21 @@ function updateRouteLine(cursorPosition = null) {
     function addPiece(from, to, opacity) {
       if (to - from < 0.001) return;
 
-      // Делим участок только по границам анимаций. Сами штрихи линии
-      // проявляются последовательно от начала нового отрезка к его концу.
+      // Делим участок по границам темпа и анимаций. Сами штрихи линии
+      // проявляются последовательно от начала каждого отрезка к его концу.
       const boundaries = [from, to];
+      // Границы участков с разными темпами обязательны для визуального
+      // разделения линии: смена темпа не должна перекрашивать соседние отрезки.
+      let paceBoundaryDistance = 0;
+      for (let pointIndex = 1; pointIndex < pointsToDraw.length; pointIndex++) {
+        paceBoundaryDistance += getRouteTravelLength([
+          pointsToDraw[pointIndex - 1], pointsToDraw[pointIndex]
+        ]);
+        if (paceBoundaryDistance > from + 0.001 &&
+            paceBoundaryDistance < to - 0.001) {
+          boundaries.push(paceBoundaryDistance);
+        }
+      }
       routeMarkerAnimations.forEach(animation => {
         if (animation.start > from && animation.start < to) boundaries.push(animation.start);
         if (animation.end > from && animation.end < to) boundaries.push(animation.end);
@@ -4116,6 +4144,12 @@ function updateRouteLine(cursorPosition = null) {
 
         const midpoint = (partStart + partEnd) / 2;
         const activeAnimation = getRouteMarkerAnimation(midpoint);
+        const segmentSettingsPoint = getRoutePointAtDistance(pointsToDraw, midpoint);
+        const segmentPace = getRouteSegmentPace(segmentSettingsPoint);
+        const segmentSpeedReduced = getRouteSegmentSpeedReduced(segmentSettingsPoint);
+        const segmentColor = color === "#e2b95f"
+          ? getRoutePaceLineColor(segmentPace)
+          : color;
 
         // Отдельно рассчитываем экранную геометрию участка. Активная линия
         // будет рисоваться не крупными отрывками, а короткими штрихами.
@@ -4152,9 +4186,52 @@ function updateRouteLine(cursorPosition = null) {
           screenEntries.push({ point, layerPoint, distance: partScreenLength });
         });
 
+        // Сниженная скорость отмечается небольшими поперечными засечками.
+        // Они используют ту же шкалу появления, что и сама линия маршрута.
+        if (segmentSpeedReduced && partScreenLength > 18) {
+          const tickSpacing = 24;
+          const tickSize = 4.5;
+          for (let tickDistance = tickSpacing / 2;
+               tickDistance < partScreenLength - 2;
+               tickDistance += tickSpacing) {
+            const routeDistance = partStart + (partEnd - partStart) *
+              (tickDistance / Math.max(0.001, partScreenLength));
+            const tickPosition = getRoutePointAtDistance(pointsToDraw, routeDistance);
+            if (!tickPosition || isMarkerInsideSettlementMask(tickPosition, 1)) continue;
+
+            const tickAngle = getPerpendicularRouteAngle(pointsToDraw, routeDistance);
+            const tickIcon = L.divIcon({
+              className: "route-speed-tick",
+              html: `<div style="width:2px;height:${tickSize * 2}px;background:#604a35;border:1px solid rgba(238,211,158,.75);border-radius:1px;transform:rotate(${tickAngle}deg);transform-origin:center center;"></div>`,
+              iconSize: [2, tickSize * 2],
+              iconAnchor: [1, tickSize]
+            });
+            const tickMarker = L.marker(tickPosition, {
+              icon: tickIcon,
+              interactive: false,
+              keyboard: false,
+              zIndexOffset: 1150,
+              opacity: activeAnimation ? 0 : opacity
+            }).addTo(map);
+            window.routeRestMarkers.push(tickMarker);
+
+            if (activeAnimation) {
+              const tickDelay = getRouteBoundaryArrivalDelay(routeDistance);
+              const revealTick = function() {
+                if (map.hasLayer(tickMarker)) tickMarker.setOpacity(opacity);
+              };
+              if (tickDelay === null || tickDelay <= 0) {
+                revealTick();
+              } else {
+                setTimeout(revealTick, tickDelay);
+              }
+            }
+          }
+        }
+
         if (!activeAnimation) {
           const line = L.polyline(partDisplayPoints, {
-            color: color,
+            color: segmentColor,
             weight: 4.5,
             dashArray: "8, 10",
             opacity: opacity,
@@ -4235,7 +4312,7 @@ function updateRouteLine(cursorPosition = null) {
           if (dashPoints.length < 2) continue;
 
           const line = L.polyline(dashPoints, {
-            color: color,
+            color: segmentColor,
             weight: 4.5,
             opacity: 0,
             lineCap: "round",
