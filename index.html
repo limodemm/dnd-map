@@ -6793,7 +6793,12 @@ map.on("zoomend", function() {
       trace.addTo(map);
       settlementTraceLayers.set(area.id, trace);
       settlementTracePaths.set(area.id, [contour[0], contour[0], contour[1]]);
-      activeSettlementTrace = { areaId: area.id, layer: trace };
+      activeSettlementTrace = {
+        areaId: area.id,
+        layer: trace,
+        area,
+        contour: contour.slice()
+      };
 
       let layerPoints = contour.map(point => map.latLngToLayerPoint(point));
       const lengths = [];
@@ -7003,25 +7008,40 @@ map.on("zoomend", function() {
   // исходного полигона поселения.
   let settlementTraceWaitTimers = [];
   let settlementTraceWaitToken = 0;
+  // Поселения, чья обводка была прервана открытием редактора.
+  // При следующем подтверждении их анимация запускается заново,
+  // даже если маршрутная линия уже прошла соответствующую границу.
+  const interruptedSettlementTraceIds = new Set();
   window.cancelPendingRouteSettlementTraces = function() {
     settlementTraceWaitTimers.forEach(timer => clearTimeout(timer));
     settlementTraceWaitTimers = [];
     settlementTraceWaitToken++;
   };
   window.cancelActiveRouteSettlementAnimations = function() {
-    // При открытии редактора останавливаем незавершённые RAF-анимации,
-    // но сохраняем уже нарисованную часть контура на карте. После возврата
-    // к маршруту эти частичные обводки остаются видимыми, а не исчезают.
-    // Завершённые контуры также не затрагиваются.
+    // При открытии редактора завершаем только ВИЗУАЛЬНО текущие обводки:
+    // на время редактирования город должен оставаться полностью обведённым.
+    // ID сохраняем, чтобы после повторного подтверждения обводка заново
+    // стартовала с начала, если этот город всё ещё присутствует в маршруте.
     activeSettlementBrushTraces.forEach((state, id) => {
+      interruptedSettlementTraceIds.add(String(id));
+      applySettlementBrushTraceProgress(state, state.completionProgress || 1);
       activeSettlementBrushTraces.delete(id);
-      pausedSettlementBrushTraces.set(String(id), state);
-      // Слои и запись в settlementBrushTraceLayers намеренно сохраняем:
-      // они представляют текущий видимый прогресс сухой кисти.
+      pausedSettlementBrushTraces.delete(String(id));
     });
     if (activeSettlementTrace) {
-      // Следующий кадр старой анимации завершится по проверке
-      // activeSettlementTrace; сам частичный слой и его путь сохраняем.
+      const interrupted = activeSettlementTrace;
+      interruptedSettlementTraceIds.add(String(interrupted.areaId));
+      if (interrupted.area && Array.isArray(interrupted.contour) && interrupted.contour.length >= 2) {
+        const completeLayer = makeTaperedSettlementPolygon(
+          interrupted.contour, SETTLEMENT_TRACE_BASE_WIDTH, 1
+        );
+        if (completeLayer) {
+          removeSettlementLayer(interrupted.layer);
+          completeLayer.addTo(map);
+          settlementTraceLayers.set(interrupted.areaId, completeLayer);
+          settlementTracePaths.set(interrupted.areaId, interrupted.contour.slice());
+        }
+      }
       activeSettlementTrace = null;
     }
   };
@@ -7098,9 +7118,11 @@ map.on("zoomend", function() {
         console.warn('Анимация поселения: не найдена точка входа на маршруте', id);
         return;
       }
-      // Поселения, уже пройденные до начала изменённого участка, остаются
-      // в статичном состоянии: завершённые контуры не проигрываются повторно.
-      if (boundaryIndex <= changedFromIndex) return;
+      // Обычно поселения до начала изменённого участка остаются статичными.
+      // Исключение — обводка, прерванная открытием редактора: если город
+      // сохранился в маршруте, после подтверждения её нужно проиграть заново.
+      if (boundaryIndex <= changedFromIndex &&
+          !interruptedSettlementTraceIds.has(String(id))) return;
 
       let distance = window.getRouteTravelLength(route.slice(0, boundaryIndex + 1));
       const area = (window.settlementAreas || []).find(item => String(item.id) === id);
@@ -7220,8 +7242,11 @@ map.on("zoomend", function() {
     targets.forEach(target => {
       function check() {
         if (waitToken !== settlementTraceWaitToken) return;
-        const delay = typeof window.getRouteBoundaryArrivalDelay === 'function'
-          ? window.getRouteBoundaryArrivalDelay(target.distance) : null;
+        const restartInterruptedTrace = interruptedSettlementTraceIds.has(String(target.id));
+        const delay = restartInterruptedTrace
+          ? null
+          : (typeof window.getRouteBoundaryArrivalDelay === 'function'
+            ? window.getRouteBoundaryArrivalDelay(target.distance) : null);
         if (delay !== null && delay > 0) {
           const timer = setTimeout(check, Math.min(40, Math.max(12, delay)));
           settlementTraceWaitTimers.push(timer);
@@ -7239,6 +7264,8 @@ map.on("zoomend", function() {
         // Убираем только его статичный слой, чтобы анимация была видна ровно
         // тогда, когда маршрут дошёл до его границы.
         removeRouteIntermediateCityOutline(target.id);
+        // Убираем отметку до запуска: новая анимация уже отвечает за город.
+        interruptedSettlementTraceIds.delete(String(target.id));
         animateSettlementTrace(target.area, target.boundaryPoint, target.approachPoint);
       }
 
