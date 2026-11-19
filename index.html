@@ -1664,6 +1664,11 @@ function createRouteLaunchPanel() {
     pauseButton.setAttribute("aria-pressed", "false");
   });
   editButton.addEventListener("click", function() {
+    // Конечный город перестаёт быть целью подтверждённого маршрута:
+    // убираем его завершённую/текущую анимированную обводку при входе в редактор.
+    if (typeof window.clearRouteDestinationSettlementTrace === "function") {
+      window.clearRouteDestinationSettlementTrace(window.routeDestinationCityId);
+    }
     // Запоминаем реальную точку завершённых штрихов до остановки таймера.
     // Полный маршрут при возврате в редактор по-прежнему отрисуется статично.
     pendingRouteResumeState = captureRouteRevealProgressForEditing();
@@ -2433,7 +2438,13 @@ window.routePendingConfirmation = false;
   // «Вернуть» работает только с двумя типами контрольных точек:
   // обычный привал и центр уже пройденного промежуточного поселения.
   document.getElementById("route-undo").addEventListener("click", function() {
+    if (window.routeDestinationCityId && typeof window.clearRouteDestinationSettlementTrace === "function") {
+      window.clearRouteDestinationSettlementTrace(window.routeDestinationCityId);
+    }
     if (window.routeDestinationCityId) {
+      const removedDestinationId = String(window.routeDestinationCityId);
+      window.routeIntermediateCityIds = (Array.isArray(window.routeIntermediateCityIds)
+        ? window.routeIntermediateCityIds : []).filter(id => String(id) !== removedDestinationId);
       window.routeDestinationCityId = null;
       window.routeDestinationBoundaryPoint = null;
       window.routeDestinationApproachPoint = null;
@@ -3230,6 +3241,14 @@ function clearRouteDrawing() {
 
 // Единая отмена маршрута: вызывается кнопкой и клавишей Escape.
 function cancelPartyRoute() {
+  if (window.routeDestinationCityId && typeof window.clearRouteDestinationSettlementTrace === "function") {
+    window.clearRouteDestinationSettlementTrace(window.routeDestinationCityId);
+  }
+  if (window.routeDestinationCityId) {
+    const removedDestinationId = String(window.routeDestinationCityId);
+    window.routeIntermediateCityIds = (Array.isArray(window.routeIntermediateCityIds)
+      ? window.routeIntermediateCityIds : []).filter(id => String(id) !== removedDestinationId);
+  }
   if (pendingRouteClickTimer) {
     clearTimeout(pendingRouteClickTimer);
   }
@@ -6605,6 +6624,57 @@ map.on("zoomend", function() {
     settlementTraceWaitTimers = [];
     settlementTraceWaitToken++;
   };
+  // Удаляет только обводку конечного поселения текущего маршрута.
+  // Завершённые трассы тоже хранятся в этих Map, поэтому одной остановки
+  // активной анимации недостаточно: их слои нужно снять явно.
+  window.clearRouteDestinationSettlementTrace = function(settlementId) {
+    if (settlementId === null || settlementId === undefined) return;
+    const id = String(settlementId);
+
+    // Ключи в старых/синхронизированных маршрутах могли попасть в Map
+    // как числа, а в новых — как строки. Удаляем все совпадающие варианты,
+    // а не только один конкретный ключ.
+    Array.from(settlementBrushTraceLayers.entries()).forEach(([key, layers]) => {
+      if (String(key) !== id) return;
+      removeSettlementBrushLayers(layers);
+      settlementBrushTraceLayers.delete(key);
+    });
+    Array.from(activeSettlementBrushTraces.keys()).forEach(key => {
+      if (String(key) === id) activeSettlementBrushTraces.delete(key);
+    });
+    Array.from(settlementTraceLayers.entries()).forEach(([key, layer]) => {
+      if (String(key) !== id) return;
+      removeSettlementLayer(layer);
+      settlementTraceLayers.delete(key);
+    });
+    Array.from(settlementTracePaths.keys()).forEach(key => {
+      if (String(key) === id) settlementTracePaths.delete(key);
+    });
+
+    if (activeSettlementTrace && String(activeSettlementTrace.areaId) === id) {
+      removeSettlementLayer(activeSettlementTrace.layer);
+      activeSettlementTrace = null;
+    }
+    // Если конечный город уже успел перейти в состояние выбранной обводки,
+    // снимаем и его, иначе он переживёт очистку трассы.
+    if (settlementSelectedArea && String(settlementSelectedArea.id) === id) {
+      settlementSelectedLayers = removeSettlementBrushLayers(settlementBrushSelectedLayers);
+      settlementBrushSelectedArea = null;
+      settlementBrushSelectedAreaId = null;
+      removeSettlementLayer(settlementSelectedOutline);
+      settlementSelectedOutline = null;
+      settlementSelectedPath = null;
+      settlementSelectedArea = null;
+    }
+    if (settlementHoverArea && String(settlementHoverArea.id) === id) {
+      removeSettlementLayer(settlementHoverOutline);
+      settlementHoverOutline = null;
+      settlementHoverPath = null;
+      settlementHoverAreaId = null;
+      settlementHoverArea = null;
+    }
+  };
+
   window.cancelActiveRouteSettlementAnimations = function() {
     // Прерываем только незавершённые обводки. Уже законченные контуры
     // остаются на карте, а прерванные будут восстановлены редактором статично.
