@@ -1056,7 +1056,8 @@ function captureRouteRevealProgressForEditing() {
   }));
   console.log("[RouteResume] captured animation progress", {
     elapsed, animationStart: animation.start, animationEnd: animation.end,
-    capturedDistance: distance, routeSnapshotLength: routeSnapshot.length
+    capturedDistance: distance, routeSnapshotLength: routeSnapshot.length,
+    routeSnapshot: routeSnapshot.map((point, index) => ({ index, ...point }))
   });
   return { distance, prefix, routeSnapshot };
 }
@@ -1076,17 +1077,27 @@ function getRouteResumeDistanceAtLastCommonPoint(points, resumeState) {
   if (!Array.isArray(savedRoute) || !savedRoute.length) return 0;
 
   let commonCount = 0;
+  const comparisons = [];
   const count = Math.min(points.length, savedRoute.length);
   for (let i = 0; i < count; i++) {
     const current = points[i];
     const saved = savedRoute[i];
     const samePosition = Math.abs(Number(current.lat) - Number(saved.lat)) < 0.000001 &&
       Math.abs(Number(current.lng) - Number(saved.lng)) < 0.000001;
-    const sameMode = (i > 0 ? getRouteSegmentMode(current) : "normal") === saved.segmentMode;
-    const sameSettlement = String(current._routeSettlementId || "") === String(saved.settlementId || "");
+    const currentMode = i > 0 ? getRouteSegmentMode(current) : "normal";
+    const sameMode = currentMode === saved.segmentMode;
+    const currentSettlementId = current._routeSettlementId || null;
+    const sameSettlement = String(currentSettlementId || "") === String(saved.settlementId || "");
+    comparisons.push({
+      index: i,
+      old: { lat: Number(saved.lat), lng: Number(saved.lng), segmentMode: saved.segmentMode, settlementId: saved.settlementId || null },
+      current: { lat: Number(current.lat), lng: Number(current.lng), segmentMode: currentMode, settlementId: currentSettlementId },
+      samePosition, sameMode, sameSettlement
+    });
     if (!samePosition || !sameMode || !sameSettlement) break;
     commonCount++;
   }
+  console.log("[RouteResume] route point comparison", comparisons);
 
   // Общая геометрия заканчивается раньше прогресса — возвращаемся к её
   // последней вершине. Если прогресс лежит внутри общего сегмента, сохраняем
