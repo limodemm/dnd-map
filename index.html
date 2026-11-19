@@ -1045,48 +1045,47 @@ function captureRouteRevealProgressForEditing() {
     segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
     settlementId: point._routeSettlementId || null
   }));
-  return { distance, prefix };
-}
-
-// Возвращает расстояние до последней точки пройденного участка, которая
-// сохранилась без изменений. Если совпал весь сохранённый префикс, возвращаем
-// исходную точку анимации; если маршрут изменён раньше — откатываемся только
-// до последней общей точки, а не к началу всего маршрута.
-function getRouteResumeDistanceAtLastCommonPoint(points, resumeState) {
-  if (!resumeState || !Array.isArray(resumeState.prefix) || !resumeState.prefix.length) return 0;
-
-  const totalLength = getRouteTravelLength(points);
-  const checkedDistance = Math.min(resumeState.distance, totalLength);
-  const savedPrefix = resumeState.prefix;
-  // В обоих массивах последняя точка может быть промежуточной точкой
-  // внутри сегмента. Сравниваем именно геометрию до сохранённого прогресса,
-  // а не только вершины исходного маршрута.
-  const currentPrefix = getRoutePointsUpToDistance(points, checkedDistance).map((point, index) => ({
+  const routeSnapshot = routePoints.map((point, index) => ({
     lat: Number(point.lat), lng: Number(point.lng),
     segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
     settlementId: point._routeSettlementId || null
   }));
+  return { distance, prefix, routeSnapshot };
+}
+
+// Точка продолжения ограничена двумя условиями: фактическим прогрессом
+// анимации и последним общим узлом старого и нового маршрутов. Полный снимок
+// вершин нужен, чтобы изменение сегмента после Б не заставляло сравнивать
+// интерполированную точку старого сегмента Б–С с новой геометрией Б–В.
+function getRouteResumeDistanceAtLastCommonPoint(points, resumeState) {
+  if (!resumeState || !Number.isFinite(Number(resumeState.distance))) return 0;
+
+  const totalLength = getRouteTravelLength(points);
+  const progressDistance = Math.max(0, Math.min(Number(resumeState.distance), totalLength));
+  const savedRoute = Array.isArray(resumeState.routeSnapshot) && resumeState.routeSnapshot.length
+    ? resumeState.routeSnapshot
+    : resumeState.prefix;
+  if (!Array.isArray(savedRoute) || !savedRoute.length) return 0;
 
   let commonCount = 0;
-  const count = Math.min(currentPrefix.length, savedPrefix.length);
+  const count = Math.min(points.length, savedRoute.length);
   for (let i = 0; i < count; i++) {
-    const point = currentPrefix[i];
-    const saved = savedPrefix[i];
-    const samePosition = Math.abs(point.lat - saved.lat) < 0.000001 &&
-      Math.abs(point.lng - saved.lng) < 0.000001;
-    const sameMode = point.segmentMode === saved.segmentMode;
-    const sameSettlement = String(point.settlementId || "") === String(saved.settlementId || "");
+    const current = points[i];
+    const saved = savedRoute[i];
+    const samePosition = Math.abs(Number(current.lat) - Number(saved.lat)) < 0.000001 &&
+      Math.abs(Number(current.lng) - Number(saved.lng)) < 0.000001;
+    const sameMode = (i > 0 ? getRouteSegmentMode(current) : "normal") === saved.segmentMode;
+    const sameSettlement = String(current._routeSettlementId || "") === String(saved.settlementId || "");
     if (!samePosition || !sameMode || !sameSettlement) break;
     commonCount++;
   }
 
-  // Весь сохранённый участок совпадает — продолжаем с точной точки прогресса.
-  if (commonCount === savedPrefix.length) return checkedDistance;
-  if (commonCount === 0) return 0;
-
-  // Иначе возвращаемся только к последней общей точке. Если маршрут стал
-  // короче сохранённого прогресса, это будет его последняя оставшаяся точка.
-  return getRouteTravelLength(currentPrefix.slice(0, commonCount));
+  // Общая геометрия заканчивается раньше прогресса — возвращаемся к её
+  // последней вершине. Если прогресс лежит внутри общего сегмента, сохраняем
+  // его точное положение, даже если последующие сегменты были изменены.
+  const commonDistance = commonCount > 0
+    ? getRouteTravelLength(points.slice(0, commonCount)) : 0;
+  return Math.min(progressDistance, commonDistance > progressDistance ? progressDistance : commonDistance);
 }
 
 function beginRouteMarkerAnimation(startDistance, endDistance, sharedStartedAt, sharedDuration) {
@@ -2530,6 +2529,12 @@ window.routePendingConfirmation = false;
       pendingRouteResumeState = {
         distance: rollbackDistance,
         prefix: routePoints.map((point, index) => ({
+          lat: Number(point.lat),
+          lng: Number(point.lng),
+          segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
+          settlementId: point._routeSettlementId || null
+        })),
+        routeSnapshot: routePoints.map((point, index) => ({
           lat: Number(point.lat),
           lng: Number(point.lng),
           segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
