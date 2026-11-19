@@ -8389,9 +8389,17 @@ map.on("zoomend", function() {
         : "Путешествие не ждёт";
       status.style.background = "#245c32";
 
+      const connectedStatusText = status.textContent;
+      setTimeout(function() {
+        if (status.textContent === connectedStatusText) {
+          status.remove();
+        }
+      }, 1000);
+
       console.log("Firebase готов. UID:", user.uid);
       initializePersonalMarkers(user.uid).catch(function(error) {
         console.error("Ошибка загрузки личных меток:", error);
+        if (!status.isConnected) document.body.appendChild(status);
         status.textContent = "Firebase: ошибка загрузки меток";
         status.style.background = "#8b2222";
       });
@@ -8400,10 +8408,12 @@ map.on("zoomend", function() {
     } else {
       window.dndFirebase.ready = false;
       window.dndFirebase.isGameMaster = false;
+      if (!status.isConnected) document.body.appendChild(status);
       status.textContent = "Вспоминаем карту";
 
       signInAnonymously(auth).catch(function(error) {
         console.error("Ошибка авторизации Firebase:", error);
+        if (!status.isConnected) document.body.appendChild(status);
 
         status.textContent = "Firebase: ошибка авторизации";
         status.style.background = "#8b2222";
