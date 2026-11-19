@@ -739,6 +739,7 @@ window.routeAnimationPublished = false;
 window.routeEditingConfirmedRoute = false;
 if (routeLaunchPanel) routeLaunchPanel.style.display = "none";
 pendingRouteResumeState = null;
+routeEditResumeAnchor = null;
 lastConfirmedRoutePointSnapshot = [];
 routeFinished = false;
 window.routeDestinationCityId = null;
@@ -889,6 +890,10 @@ let lastConfirmedRoutePointSnapshot = [];
 // После редактирования продолжим с этой точки, только если весь пройденный
 // участок геометрически и семантически остался неизменным.
 let pendingRouteResumeState = null;
+// Контрольная точка, к которой редактор подтвердённого маршрута вернул
+// путь. При следующем подтверждении новая анимация должна продолжиться
+// именно от неё, даже если прежний маршрут уже полностью анимирован.
+let routeEditResumeAnchor = null;
 let lastCursorPosition = null;
 Object.defineProperty(window, "lastCursorPosition", {
   configurable: true,
@@ -2341,6 +2346,22 @@ if (pendingRouteResumeState) {
   pendingRouteResumeState = null;
 }
 
+// Если подтверждённый маршрут был полностью анимирован, снимок текущего
+// прогресса при открытии редактора отсутствует. Поэтому после «Вернуть»
+// используем сохранённую контрольную точку, а не сравнение с прежним
+// маршрутом: новый участок должен начинаться с выбранного привала/города.
+if (routeEditResumeAnchor) {
+  animationStartDistance = Math.max(0, Math.min(
+    getRouteTravelLength(routePoints), routeEditResumeAnchor.distance
+  ));
+  animationStartIndex = 0;
+  for (let i = 1; i < routePoints.length; i++) {
+    if (getRouteTravelLength(routePoints.slice(0, i + 1)) <= animationStartDistance + 0.001) {
+      animationStartIndex = i;
+    } else break;
+  }
+}
+
 window.routeMode = false;
 map.doubleClickZoom.enable();
 window.routePendingConfirmation = false;
@@ -2402,6 +2423,7 @@ window.routePendingConfirmation = false;
     }
 
     window.publishPartyRoute(routePayload).then(function() {
+      routeEditResumeAnchor = null;
       console.log("Маршрут опубликован для всех участников:", routePayload);
     }).catch(function(error) {
       console.error("Ошибка публикации маршрута:", error);
@@ -2515,6 +2537,21 @@ window.routePendingConfirmation = false;
       routePoints = routePoints.slice(0, targetSettlementIndex + 1);
     } else {
       routePoints = getRoutePointsUpToDistance(routePoints, targetDistance);
+    }
+
+    // В исходном построении маршрута контрольная точка не меняет поведение.
+    // В редакторе опубликованного маршрута запоминаем именно ту точку,
+    // до которой «Вернуть» обрезал путь, чтобы продолжить анимацию от неё.
+    if (lastConfirmedRoutePointSnapshot.length > 0) {
+      routeEditResumeAnchor = {
+        distance: getRouteTravelLength(routePoints),
+        prefix: routePoints.map((point, index) => ({
+          lat: Number(point.lat),
+          lng: Number(point.lng),
+          segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
+          settlementId: point._routeSettlementId || null
+        }))
+      };
     }
 
     // Оставляем выделенными только те города, чьи центры реально остались
@@ -3237,6 +3274,7 @@ function cancelPartyRoute() {
   window.routeMode = false;
   window.routeAnimationPublished = false;
   pendingRouteResumeState = null;
+  routeEditResumeAnchor = null;
   map.doubleClickZoom.enable();
 
   routeForcedMarch = false;
