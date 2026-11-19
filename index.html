@@ -1074,40 +1074,138 @@ function getRouteResumeDistanceAtLastCommonPoint(points, resumeState) {
   const savedRoute = Array.isArray(resumeState.routeSnapshot) && resumeState.routeSnapshot.length
     ? resumeState.routeSnapshot
     : resumeState.prefix;
-  if (!Array.isArray(savedRoute) || !savedRoute.length) return 0;
+  if (!Array.isArray(savedRoute) || !savedRoute.length || !Array.isArray(points) || !points.length) return 0;
 
-  let commonCount = 0;
-  const comparisons = [];
-  const count = Math.min(points.length, savedRoute.length);
-  for (let i = 0; i < count; i++) {
-    const current = points[i];
-    const saved = savedRoute[i];
-    const samePosition = Math.abs(Number(current.lat) - Number(saved.lat)) < 0.000001 &&
-      Math.abs(Number(current.lng) - Number(saved.lng)) < 0.000001;
-    const currentMode = i > 0 ? getRouteSegmentMode(current) : "normal";
-    const sameMode = currentMode === saved.segmentMode;
+  const positionTolerance = 0.00001;
+  const parameterTolerance = 0.000001;
+  const samePoint = (a, b) =>
+    Math.abs(Number(a.lat) - Number(b.lat)) <= positionTolerance &&
+    Math.abs(Number(a.lng) - Number(b.lng)) <= positionTolerance;
+  const samePointMetadata = (current, saved, index) => {
+    const currentMode = index > 0 ? getRouteSegmentMode(current) : "normal";
+    const savedMode = saved.segmentMode || "normal";
     const currentSettlementId = current._routeSettlementId || null;
-    const sameSettlement = String(currentSettlementId || "") === String(saved.settlementId || "");
+    return currentMode === savedMode &&
+      String(currentSettlementId || "") === String(saved.settlementId || "");
+  };
+  const projectOnSegment = (point, start, end) => {
+    const dx = Number(end.lng) - Number(start.lng);
+    const dy = Number(end.lat) - Number(start.lat);
+    const lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared < 1e-12) {
+      return samePoint(point, start) ? { t: 0, error: 0 } : null;
+    }
+    const px = Number(point.lng) - Number(start.lng);
+    const py = Number(point.lat) - Number(start.lat);
+    const t = (px * dx + py * dy) / lengthSquared;
+    if (t < -parameterTolerance || t > 1 + parameterTolerance) return null;
+    const clampedT = Math.max(0, Math.min(1, t));
+    const projectedLng = Number(start.lng) + dx * clampedT;
+    const projectedLat = Number(start.lat) + dy * clampedT;
+    return {
+      t: clampedT,
+      error: Math.hypot(Number(point.lng) - projectedLng, Number(point.lat) - projectedLat)
+    };
+  };
+
+  // Первая точка нового маршрута должна совпадать с началом старого.
+  if (!samePoint(points[0], savedRoute[0]) || !samePointMetadata(points[0], savedRoute[0], 0)) {
+    console.log("[RouteResume] route point comparison", [{
+      index: 0,
+      old: savedRoute[0],
+      current: { lat: Number(points[0].lat), lng: Number(points[0].lng) },
+      samePosition: samePoint(points[0], savedRoute[0]),
+      sameMetadata: samePointMetadata(points[0], savedRoute[0], 0)
+    }]);
+    return 0;
+  }
+
+  let commonPointCount = 1;
+  let commonDistance = 0;
+  let lastOldSegmentIndex = -1;
+  let lastOldSegmentT = 0;
+  const comparisons = [{
+    index: 0,
+    old: { lat: Number(savedRoute[0].lat), lng: Number(savedRoute[0].lng), segmentMode: savedRoute[0].segmentMode || "normal", settlementId: savedRoute[0].settlementId || null },
+    current: { lat: Number(points[0].lat), lng: Number(points[0].lng), segmentMode: "normal", settlementId: points[0]._routeSettlementId || null },
+    samePosition: true,
+    sameMetadata: true,
+    matchedOldSegment: 0,
+    matchedOldSegmentT: 0
+  }];
+
+  // Сравниваем не только вершины, но и геометрию сегментов. Редактор может
+  // превратить точку привала, лежавшую внутри старого отрезка, в отдельную
+  // вершину нового маршрута. Такая точка остаётся общей, даже если в старом
+  // routeSnapshot она не была отдельной записью.
+  for (let i = 1; i < points.length; i++) {
+    const currentStart = points[i - 1];
+    const currentEnd = points[i];
+    const currentMode = getRouteSegmentMode(currentEnd);
+    const currentSettlementId = currentEnd._routeSettlementId || null;
+    let match = null;
+
+    const firstCandidateSegment = Math.max(0, lastOldSegmentIndex);
+    const lastCandidateSegment = Math.min(savedRoute.length - 2, lastOldSegmentIndex + 1);
+    for (let j = firstCandidateSegment; j <= lastCandidateSegment; j++) {
+      const oldStart = savedRoute[j];
+      const oldEnd = savedRoute[j + 1];
+      const oldMode = oldEnd.segmentMode || "normal";
+      if (currentMode !== oldMode) continue;
+
+      const startProjection = projectOnSegment(currentStart, oldStart, oldEnd);
+      const endProjection = projectOnSegment(currentEnd, oldStart, oldEnd);
+      if (!startProjection || !endProjection ||
+          startProjection.error > positionTolerance || endProjection.error > positionTolerance ||
+          endProjection.t < startProjection.t - parameterTolerance) continue;
+
+      // При переходе на следующий старый сегмент начало нового отрезка
+      // обязано находиться ровно в общей старой вершине.
+      if (j > lastOldSegmentIndex &&
+          (lastOldSegmentIndex >= 0 && lastOldSegmentT < 1 - parameterTolerance ||
+           startProjection.t > parameterTolerance)) continue;
+      if (j === lastOldSegmentIndex &&
+          startProjection.t < lastOldSegmentT - parameterTolerance) continue;
+
+      const endsAtOldVertex = endProjection.t >= 1 - parameterTolerance;
+      const settlementMatches = endsAtOldVertex
+        ? String(currentSettlementId || "") === String(oldEnd.settlementId || "")
+        : !currentSettlementId;
+      if (!settlementMatches) continue;
+
+      match = { oldSegmentIndex: j, startT: startProjection.t, endT: endProjection.t };
+      break;
+    }
+
+    if (!match) {
+      comparisons.push({
+        index: i,
+        current: { lat: Number(currentEnd.lat), lng: Number(currentEnd.lng), segmentMode: currentMode, settlementId: currentSettlementId },
+        matchedOldSegment: null,
+        sameGeometry: false
+      });
+      break;
+    }
+
+    lastOldSegmentIndex = match.oldSegmentIndex;
+    lastOldSegmentT = match.endT;
+    commonPointCount++;
+    commonDistance = getRouteTravelLength(points.slice(0, i + 1));
     comparisons.push({
       index: i,
-      old: { lat: Number(saved.lat), lng: Number(saved.lng), segmentMode: saved.segmentMode, settlementId: saved.settlementId || null },
-      current: { lat: Number(current.lat), lng: Number(current.lng), segmentMode: currentMode, settlementId: currentSettlementId },
-      samePosition, sameMode, sameSettlement
+      oldSegment: match.oldSegmentIndex,
+      oldSegmentStartT: match.startT,
+      oldSegmentEndT: match.endT,
+      current: { lat: Number(currentEnd.lat), lng: Number(currentEnd.lng), segmentMode: currentMode, settlementId: currentSettlementId },
+      sameGeometry: true
     });
-    if (!samePosition || !sameMode || !sameSettlement) break;
-    commonCount++;
   }
-  console.log("[RouteResume] route point comparison", comparisons);
 
-  // Общая геометрия заканчивается раньше прогресса — возвращаемся к её
-  // последней вершине. Если прогресс лежит внутри общего сегмента, сохраняем
-  // его точное положение, даже если последующие сегменты были изменены.
-  const commonDistance = commonCount > 0
-    ? getRouteTravelLength(points.slice(0, commonCount)) : 0;
+  console.log("[RouteResume] route point comparison", comparisons);
   const resumeDistance = Math.min(progressDistance, commonDistance);
   console.log("[RouteResume] resolved continuation", {
     savedProgressDistance: progressDistance,
-    commonPointCount: commonCount,
+    commonPointCount,
     commonDistance,
     resumeDistance,
     oldRoutePointCount: savedRoute.length,
