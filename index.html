@@ -3829,10 +3829,9 @@ function updateRouteLine(cursorPosition = null) {
   // В подтверждённом маршруте шкала жетонов и городских пауз должна
   // использовать ровно ту же сглаженную геометрию, что и рисуемая линия.
   // В режиме предпросмотра геометрию общей анимации не переопределяем.
-  if ((!cursorPosition || !window.routeMode) &&
-    pointsToDraw.length === routePoints.length) {
-  syncRouteAnimationGeometry(displayRoutePoints, totalLength, displayRouteLength);
-}
+  if (!cursorPosition && pointsToDraw.length === routePoints.length) {
+    syncRouteAnimationGeometry(displayRoutePoints, totalLength, displayRouteLength);
+  }
 
   // Основная линия маршрута.
   // Разделяем маршрут на золотые и чёрные участки.
