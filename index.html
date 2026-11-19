@@ -542,6 +542,9 @@ document.addEventListener("keydown", function(e) {
   window.routeDestinationCityId = null;
   window.routeDestinationBoundaryPoint = null;
   window.routeDestinationApproachPoint = null;
+  // После возврата в редактор финальный контур временно снимается.
+  // Если маршрут подтверждают без изменений, конечный город нужно обвести снова.
+  window.routeDestinationTraceNeedsReplay = false;
   window.routeIntermediateCityIds = [];
   // История точек возврата перед входом в каждое промежуточное поселение.
   // Нужна, чтобы возврат от второго поселения сохранял первое.
@@ -1011,13 +1014,24 @@ function captureRouteRevealProgressForEditing() {
   const animation = routeMarkerAnimations
     .filter(item => item && item.end > item.start + 0.001)
     .sort((a, b) => b.startedAtEpoch - a.startedAtEpoch)[0];
-  if (!animation) return null;
 
-  const elapsed = getSynchronizedRouteNow() - animation.startedAtEpoch;
-  if (elapsed <= 0) {
+  const totalLength = getRouteTravelLength(routePoints);
+  // Сохраняем привалы как явные контрольные вершины. Иначе привал,
+  // оказавшийся внутри исходного сегмента, не совпадёт с точкой,
+  // которую создаёт «Вернуть», и общий префикс ошибочно оборвётся раньше.
+  const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
+  const checkpointDistances = getNormalRestDistances(totalLength, dailyLimit, routePoints);
+
+  // Если анимация уже завершилась, её объект удалён из routeMarkerAnimations.
+  // Но нажатие шестерёнки всё равно должно запомнить весь пройденный маршрут:
+  // после «Вернуть» новый хвост начнёт анимироваться именно от сохранённого привала.
+  if (!animation) {
+    if (routePoints.length < 2 || totalLength <= 0.001) return null;
+    const anchored = getRoutePointsWithDistanceAnchors(routePoints, checkpointDistances);
     return {
-      distance: animation.start,
-      prefix: getRoutePointsUpToDistance(routePoints, animation.start).map((point, index) => ({
+      distance: totalLength,
+      checkpointDistances,
+      prefix: anchored.map((point, index) => ({
         lat: Number(point.lat), lng: Number(point.lng),
         segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
         settlementId: point._routeSettlementId || null
@@ -1025,30 +1039,35 @@ function captureRouteRevealProgressForEditing() {
     };
   }
 
-  let low = animation.start;
-  let high = animation.end;
-  // Инвертируем временную шкалу штрихов: находим расстояние,
-  // до которого линия уже успела полностью проявиться.
-  for (let i = 0; i < 36; i++) {
-    const mid = (low + high) / 2;
-    const progress = getRouteAnimationScreenProgress(animation, mid);
-    const revealAt = getRouteAnimationRevealTime(animation, progress) + routeLineRevealFadeDuration;
-    if (revealAt <= elapsed) low = mid;
-    else high = mid;
+  const elapsed = getSynchronizedRouteNow() - animation.startedAtEpoch;
+  let distance = animation.start;
+  if (elapsed > 0) {
+    let low = animation.start;
+    let high = animation.end;
+    // Инвертируем временную шкалу штрихов: находим расстояние,
+    // до которого линия уже успела полностью проявиться.
+    for (let i = 0; i < 36; i++) {
+      const mid = (low + high) / 2;
+      const progress = getRouteAnimationScreenProgress(animation, mid);
+      const revealAt = getRouteAnimationRevealTime(animation, progress) + routeLineRevealFadeDuration;
+      if (revealAt <= elapsed) low = mid;
+      else high = mid;
+    }
+    distance = Math.max(animation.start, Math.min(animation.end, low));
   }
-  const distance = Math.max(animation.start, Math.min(animation.end, low));
-  const prefix = getRoutePointsUpToDistance(routePoints, distance).map((point, index) => ({
+
+  const completedCheckpoints = checkpointDistances.filter(value => value <= distance + 0.001);
+  const anchored = getRoutePointsWithDistanceAnchors(
+    getRoutePointsUpToDistance(routePoints, distance), completedCheckpoints
+  );
+  const prefix = anchored.map((point, index) => ({
     lat: Number(point.lat), lng: Number(point.lng),
     segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
     settlementId: point._routeSettlementId || null
   }));
-  return { distance, prefix };
+  return { distance, checkpointDistances: completedCheckpoints, prefix };
 }
 
-// Возвращает расстояние до последней точки пройденного участка, которая
-// сохранилась без изменений. Если совпал весь сохранённый префикс, возвращаем
-// исходную точку анимации; если маршрут изменён раньше — откатываемся только
-// до последней общей точки, а не к началу всего маршрута.
 function getRouteResumeDistanceAtLastCommonPoint(points, resumeState) {
   if (!resumeState || !Array.isArray(resumeState.prefix) || !resumeState.prefix.length) return 0;
 
@@ -1058,7 +1077,12 @@ function getRouteResumeDistanceAtLastCommonPoint(points, resumeState) {
   // В обоих массивах последняя точка может быть промежуточной точкой
   // внутри сегмента. Сравниваем именно геометрию до сохранённого прогресса,
   // а не только вершины исходного маршрута.
-  const currentPrefix = getRoutePointsUpToDistance(points, checkedDistance).map((point, index) => ({
+  const currentPrefixPoints = getRoutePointsWithDistanceAnchors(
+    getRoutePointsUpToDistance(points, checkedDistance),
+    (Array.isArray(resumeState.checkpointDistances) ? resumeState.checkpointDistances : [])
+      .filter(value => value <= checkedDistance + 0.001)
+  );
+  const currentPrefix = currentPrefixPoints.map((point, index) => ({
     lat: Number(point.lat), lng: Number(point.lng),
     segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
     settlementId: point._routeSettlementId || null
@@ -1643,6 +1667,15 @@ function createRouteLaunchPanel() {
     pauseButton.setAttribute("aria-pressed", "false");
   });
   editButton.addEventListener("click", function() {
+    // Конечная обводка относится только к текущей конечной точке маршрута.
+    // Снимаем её при входе в редактор, не затрагивая обводки пройденных городов.
+    // Если маршрут подтвердят без изменений, конечный город будет обведён повторно.
+    const destinationIdForEditing = window.routeDestinationCityId;
+    window.routeDestinationTraceNeedsReplay = Boolean(destinationIdForEditing);
+    if (destinationIdForEditing && typeof window.clearRouteDestinationSettlementTrace === "function") {
+      window.clearRouteDestinationSettlementTrace(destinationIdForEditing);
+    }
+
     // Запоминаем реальную точку завершённых штрихов до остановки таймера.
     // Полный маршрут при возврате в редактор по-прежнему отрисуется статично.
     pendingRouteResumeState = captureRouteRevealProgressForEditing();
@@ -2360,6 +2393,9 @@ window.routePendingConfirmation = false;
       destinationApproachPoint: window.routeDestinationApproachPoint
         ? { lat: window.routeDestinationApproachPoint.lat, lng: window.routeDestinationApproachPoint.lng }
         : null,
+      // Если редактор был открыт после подтверждения с конечным городом,
+      // его обводку нужно повторить даже при неизменившейся геометрии маршрута.
+      retraceDestinationSettlement: Boolean(window.routeDestinationTraceNeedsReplay),
       pace: routePace,
       speedReduced: routeSpeedReduced,
       forcedMarch: routeForcedMarch,
@@ -2399,6 +2435,7 @@ window.routePendingConfirmation = false;
     }
 
     window.publishPartyRoute(routePayload).then(function() {
+      window.routeDestinationTraceNeedsReplay = false;
       console.log("Маршрут опубликован для всех участников:", routePayload);
     }).catch(function(error) {
       console.error("Ошибка публикации маршрута:", error);
@@ -2413,9 +2450,13 @@ window.routePendingConfirmation = false;
   // обычный привал и центр уже пройденного промежуточного поселения.
   document.getElementById("route-undo").addEventListener("click", function() {
     if (window.routeDestinationCityId) {
+      if (window.clearRouteDestinationSettlementTrace) {
+        window.clearRouteDestinationSettlementTrace(window.routeDestinationCityId);
+      }
       window.routeDestinationCityId = null;
       window.routeDestinationBoundaryPoint = null;
       window.routeDestinationApproachPoint = null;
+      window.routeDestinationTraceNeedsReplay = false;
       if (window.clearSettlementOutline) window.clearSettlementOutline();
     }
 
@@ -3231,9 +3272,13 @@ function cancelPartyRoute() {
   routeForcedSegments = [];
   routePoints = [];
   lastCursorPosition = null;
+  if (window.routeDestinationCityId && window.clearRouteDestinationSettlementTrace) {
+    window.clearRouteDestinationSettlementTrace(window.routeDestinationCityId);
+  }
   window.routeDestinationCityId = null;
   window.routeDestinationBoundaryPoint = null;
   window.routeDestinationApproachPoint = null;
+  window.routeDestinationTraceNeedsReplay = false;
   window.routeIntermediateCityIds = [];
   window.routeIntermediateSettlementUndoSnapshots = [];
   clearRouteIntermediateCityOutlines();
@@ -6148,6 +6193,37 @@ map.on("zoomend", function() {
   }
   window.clearSettlementOutline = clearSettlementOutline;
 
+  // Удаляет только уже нарисованную/анимируемую трассу указанного города.
+  // В отличие от clearSettlementOutline, не трогает выбранные и промежуточные города.
+  window.clearRouteDestinationSettlementTrace = function(id) {
+    if (id == null) return;
+    const key = String(id);
+
+    const brushState = activeSettlementBrushTraces.get(key);
+    if (brushState) {
+      activeSettlementBrushTraces.delete(key);
+      if (brushState.layers) removeSettlementBrushLayers(brushState.layers);
+    }
+    const brushLayers = settlementBrushTraceLayers.get(key);
+    if (brushLayers) removeSettlementBrushLayers(brushLayers);
+    settlementBrushTraceLayers.delete(key);
+
+    const traceLayer = settlementTraceLayers.get(id) || settlementTraceLayers.get(key);
+    removeSettlementLayer(traceLayer);
+    settlementTraceLayers.delete(id);
+    settlementTraceLayers.delete(key);
+    settlementTracePaths.delete(id);
+    settlementTracePaths.delete(key);
+    if (activeSettlementTrace && String(activeSettlementTrace.areaId) === key) {
+      removeSettlementLayer(activeSettlementTrace.layer);
+      activeSettlementTrace = null;
+    }
+
+    // Маски маршрута восстанавливаются общим clearSettlementOutline()
+    // при подтверждении, возврате или отмене редактора. Здесь не трогаем
+    // остальные города, чтобы не раскрыть их маршрутные участки преждевременно.
+  };
+
   window.previewSettlementAt = function(point) {
     try {
       if (!window.routeMode) {
@@ -6676,8 +6752,11 @@ map.on("zoomend", function() {
         return;
       }
       // Поселения, уже пройденные до начала изменённого участка, остаются
-      // в статичном состоянии: повторно обводим только новые участки пути.
-      if (boundaryIndex <= changedFromIndex) return;
+      // в статичном состоянии. Исключение — конечный город, обводку которого
+      // редактор специально снял: её нужно восстановить даже при неизменённом пути.
+      const mustRetraceDestination = id === destinationId &&
+        Boolean(routeData.retraceDestinationSettlement);
+      if (boundaryIndex <= changedFromIndex && !mustRetraceDestination) return;
 
       let distance = window.getRouteTravelLength(route.slice(0, boundaryIndex + 1));
       const area = (window.settlementAreas || []).find(item => String(item.id) === id);
