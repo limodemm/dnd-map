@@ -1014,24 +1014,13 @@ function captureRouteRevealProgressForEditing() {
   const animation = routeMarkerAnimations
     .filter(item => item && item.end > item.start + 0.001)
     .sort((a, b) => b.startedAtEpoch - a.startedAtEpoch)[0];
+  if (!animation) return null;
 
-  const totalLength = getRouteTravelLength(routePoints);
-  // Сохраняем привалы как явные контрольные вершины. Иначе привал,
-  // оказавшийся внутри исходного сегмента, не совпадёт с точкой,
-  // которую создаёт «Вернуть», и общий префикс ошибочно оборвётся раньше.
-  const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
-  const checkpointDistances = getNormalRestDistances(totalLength, dailyLimit, routePoints);
-
-  // Если анимация уже завершилась, её объект удалён из routeMarkerAnimations.
-  // Но нажатие шестерёнки всё равно должно запомнить весь пройденный маршрут:
-  // после «Вернуть» новый хвост начнёт анимироваться именно от сохранённого привала.
-  if (!animation) {
-    if (routePoints.length < 2 || totalLength <= 0.001) return null;
-    const anchored = getRoutePointsWithDistanceAnchors(routePoints, checkpointDistances);
+  const elapsed = getSynchronizedRouteNow() - animation.startedAtEpoch;
+  if (elapsed <= 0) {
     return {
-      distance: totalLength,
-      checkpointDistances,
-      prefix: anchored.map((point, index) => ({
+      distance: animation.start,
+      prefix: getRoutePointsUpToDistance(routePoints, animation.start).map((point, index) => ({
         lat: Number(point.lat), lng: Number(point.lng),
         segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
         settlementId: point._routeSettlementId || null
@@ -1039,35 +1028,30 @@ function captureRouteRevealProgressForEditing() {
     };
   }
 
-  const elapsed = getSynchronizedRouteNow() - animation.startedAtEpoch;
-  let distance = animation.start;
-  if (elapsed > 0) {
-    let low = animation.start;
-    let high = animation.end;
-    // Инвертируем временную шкалу штрихов: находим расстояние,
-    // до которого линия уже успела полностью проявиться.
-    for (let i = 0; i < 36; i++) {
-      const mid = (low + high) / 2;
-      const progress = getRouteAnimationScreenProgress(animation, mid);
-      const revealAt = getRouteAnimationRevealTime(animation, progress) + routeLineRevealFadeDuration;
-      if (revealAt <= elapsed) low = mid;
-      else high = mid;
-    }
-    distance = Math.max(animation.start, Math.min(animation.end, low));
+  let low = animation.start;
+  let high = animation.end;
+  // Инвертируем временную шкалу штрихов: находим расстояние,
+  // до которого линия уже успела полностью проявиться.
+  for (let i = 0; i < 36; i++) {
+    const mid = (low + high) / 2;
+    const progress = getRouteAnimationScreenProgress(animation, mid);
+    const revealAt = getRouteAnimationRevealTime(animation, progress) + routeLineRevealFadeDuration;
+    if (revealAt <= elapsed) low = mid;
+    else high = mid;
   }
-
-  const completedCheckpoints = checkpointDistances.filter(value => value <= distance + 0.001);
-  const anchored = getRoutePointsWithDistanceAnchors(
-    getRoutePointsUpToDistance(routePoints, distance), completedCheckpoints
-  );
-  const prefix = anchored.map((point, index) => ({
+  const distance = Math.max(animation.start, Math.min(animation.end, low));
+  const prefix = getRoutePointsUpToDistance(routePoints, distance).map((point, index) => ({
     lat: Number(point.lat), lng: Number(point.lng),
     segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
     settlementId: point._routeSettlementId || null
   }));
-  return { distance, checkpointDistances: completedCheckpoints, prefix };
+  return { distance, prefix };
 }
 
+// Возвращает расстояние до последней точки пройденного участка, которая
+// сохранилась без изменений. Если совпал весь сохранённый префикс, возвращаем
+// исходную точку анимации; если маршрут изменён раньше — откатываемся только
+// до последней общей точки, а не к началу всего маршрута.
 function getRouteResumeDistanceAtLastCommonPoint(points, resumeState) {
   if (!resumeState || !Array.isArray(resumeState.prefix) || !resumeState.prefix.length) return 0;
 
@@ -1077,12 +1061,7 @@ function getRouteResumeDistanceAtLastCommonPoint(points, resumeState) {
   // В обоих массивах последняя точка может быть промежуточной точкой
   // внутри сегмента. Сравниваем именно геометрию до сохранённого прогресса,
   // а не только вершины исходного маршрута.
-  const currentPrefixPoints = getRoutePointsWithDistanceAnchors(
-    getRoutePointsUpToDistance(points, checkedDistance),
-    (Array.isArray(resumeState.checkpointDistances) ? resumeState.checkpointDistances : [])
-      .filter(value => value <= checkedDistance + 0.001)
-  );
-  const currentPrefix = currentPrefixPoints.map((point, index) => ({
+  const currentPrefix = getRoutePointsUpToDistance(points, checkedDistance).map((point, index) => ({
     lat: Number(point.lat), lng: Number(point.lng),
     segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
     settlementId: point._routeSettlementId || null
