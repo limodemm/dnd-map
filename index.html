@@ -793,9 +793,6 @@ Object.defineProperty(window, "routePoints", {
   set: function(value) { routePoints = Array.isArray(value) ? value : []; }
 });
 let routeLine = null;
-// Общий Canvas-рендерер для штрихов маршрута: вместо сотен отдельных SVG-элементов
-// Leaflet рисует их на одном canvas, что заметно снижает нагрузку при длинных маршрутах.
-let routeLineCanvasRenderer = null;
 window.routeRestMarkers = [];
 let routeEndMarker = null;
 
@@ -2099,10 +2096,14 @@ function createRoutePanel() {
       cursor: not-allowed;
     }
 
-/* Линии маршрута рисуются общим Canvas, чтобы длинные маршруты не создавали
-   сотни отдельных SVG-элементов. Лёгкая тень сохраняет читаемость на карте. */
-.leaflet-overlay-pane canvas.route-line-canvas {
+/* Золотая и чёрная линии: чёткие, без тяжёлой тени */
+.leaflet-overlay-pane .route-line-raised {
   filter: drop-shadow(0px 1px 0px rgba(0, 0, 0, 0.65));
+}
+
+/* Поперечные засечки сниженной скорости */
+.leaflet-overlay-pane .route-speed-tick {
+  filter: drop-shadow(0px 0px 1px rgba(238, 211, 158, 0.9));
 }
 
 /* Объём обычным привалам */
@@ -3837,9 +3838,6 @@ function clearRouteAutoPreviewBrushes() {
 }
 
 function updateRouteLine(cursorPosition = null) {
-  if (!routeLineCanvasRenderer) {
-    routeLineCanvasRenderer = L.canvas({ pane: "overlayPane", padding: 0.5 });
-  }
   // Перерисовка карты не отменяет и не перезапускает анимацию жетонов.
   // Время анимации учитывается при создании каждого нового DOM-элемента.
   ensureRouteMarkerPanes();
@@ -4248,7 +4246,7 @@ function updateRouteLine(cursorPosition = null) {
   // Быстрый темп остаётся в золотисто-охристой гамме, чтобы не сливаться
   // с зелёными областями карты.
   function getRoutePaceLineColor(pace) {
-    if (pace === "slow") return "#d6aa65";
+    if (pace === "slow") return "#d3a05f";
     if (pace === "fast") return "#c3b879";
     return "#e2b95f";
   }
@@ -4366,22 +4364,20 @@ function updateRouteLine(cursorPosition = null) {
           return points.map(point => map.layerPointToLatLng(point));
         }
 
-        // Засечки сниженной скорости строятся в экранных координатах прямо
-        // на сглаженной линии: локальная касательная берётся по соседним
-        // точкам кривой, а засечка проводится строго по её нормали.
-        if (segmentSpeedReduced && partScreenLength > 42) {
-          const tickSpacing = 48;
-          const tickHalfLength = 3.6;
-          const tickBatches = [];
-          let currentTickBatch = [];
-          let lastTickRouteDistance = null;
+        // Засечки рассчитываются индивидуально в экранных координатах:
+        // каждая стоит на самой линии и перпендикулярна её локальной касательной.
+        // Слои создаются после соответствующего штриха, поэтому остаются поверх него.
+        const tickSpecs = [];
+        if (segmentSpeedReduced && partScreenLength > 72) {
+          const tickSpacing = 64;
+          const tickHalfLength = 4.2;
 
           for (let tickDistance = tickSpacing / 2;
-               tickDistance < partScreenLength - 3;
+               tickDistance < partScreenLength - 4;
                tickDistance += tickSpacing) {
             const center = getScreenPointAtDistance(tickDistance);
-            const before = getScreenPointAtDistance(Math.max(0, tickDistance - 3));
-            const after = getScreenPointAtDistance(Math.min(partScreenLength, tickDistance + 3));
+            const before = getScreenPointAtDistance(Math.max(0, tickDistance - 4));
+            const after = getScreenPointAtDistance(Math.min(partScreenLength, tickDistance + 4));
             const dx = after.x - before.x;
             const dy = after.y - before.y;
             const tangentLength = Math.hypot(dx, dy);
@@ -4397,38 +4393,36 @@ function updateRouteLine(cursorPosition = null) {
               center.x + normalX * tickHalfLength,
               center.y + normalY * tickHalfLength
             ));
-            if (isMarkerInsideSettlementMask(center && map.layerPointToLatLng(center), 1)) continue;
+            const tickPosition = map.layerPointToLatLng(center);
+            if (isMarkerInsideSettlementMask(tickPosition, 1)) continue;
 
-            currentTickBatch.push([firstEnd, secondEnd]);
-            lastTickRouteDistance = partStart + (partEnd - partStart) *
-              (tickDistance / Math.max(0.001, partScreenLength));
-            if (currentTickBatch.length >= 5) {
-              tickBatches.push({ lines: currentTickBatch, distance: lastTickRouteDistance });
-              currentTickBatch = [];
-            }
+            tickSpecs.push({
+              points: [firstEnd, secondEnd],
+              screenDistance: tickDistance
+            });
           }
-          if (currentTickBatch.length) {
-            tickBatches.push({ lines: currentTickBatch, distance: lastTickRouteDistance });
-          }
+        }
 
-          tickBatches.forEach(batch => {
-            const tickLayer = L.polyline(batch.lines, {
-              color: "#6b5237",
-              weight: 1.8,
-              opacity: activeAnimation ? 0 : opacity,
+        function addIndividualSpeedTicks(revealDelayForTick = null) {
+          tickSpecs.forEach(spec => {
+            const tickLayer = L.polyline(spec.points, {
+              color: "#60452f",
+              weight: 2.8,
+              opacity: revealDelayForTick ? 0 : opacity,
               lineCap: "round",
               lineJoin: "round",
-              renderer: routeLineCanvasRenderer,
+              className: "route-speed-tick",
               interactive: false
             }).addTo(map);
             window.routeRestMarkers.push(tickLayer);
-            if (activeAnimation) {
-              const tickDelay = getRouteBoundaryArrivalDelay(batch.distance);
-              const revealTicks = function() {
+
+            if (revealDelayForTick) {
+              const tickDelay = revealDelayForTick(spec);
+              const revealTick = function() {
                 if (map.hasLayer(tickLayer)) tickLayer.setStyle({ opacity });
               };
-              if (tickDelay === null || tickDelay <= 0) revealTicks();
-              else tickLayer._routeTickRevealTimer = setTimeout(revealTicks, tickDelay);
+              if (tickDelay === null || tickDelay <= 0) revealTick();
+              else tickLayer._routeTickRevealTimer = setTimeout(revealTick, tickDelay);
             }
           });
         }
@@ -4441,11 +4435,10 @@ function updateRouteLine(cursorPosition = null) {
             opacity: opacity,
             lineCap: "round",
             lineJoin: "round",
-            className: "route-line-raised",
-            renderer: routeLineCanvasRenderer
+            className: "route-line-raised"
           }).addTo(map);
-          if (routeLineCanvasRenderer._container) routeLineCanvasRenderer._container.classList.add("route-line-canvas");
           window.routeRestMarkers.push(line);
+          addIndividualSpeedTicks();
           continue;
         }
 
@@ -4487,12 +4480,10 @@ function updateRouteLine(cursorPosition = null) {
             lineJoin: "round",
             // Сначала добавляем путь без класса анимации. Класс будет
             // назначен только после установки индивидуальной задержки.
-            className: "route-line-raised",
-            renderer: routeLineCanvasRenderer
+            className: "route-line-raised"
           }).addTo(map);
 
-          // Canvas-слой раскрывает каждый штрих по прежней временной шкале;
-          // setStyle обновляет только его прозрачность без создания SVG-элемента.
+          // Каждый SVG-штрих раскрывается индивидуально по общей временной шкале.
           const revealDash = function() {
             if (!map.hasLayer(line)) return;
             line.setStyle({ opacity: opacity });
@@ -4504,8 +4495,22 @@ function updateRouteLine(cursorPosition = null) {
             const revealTimer = setTimeout(revealDash, delay);
             line._routeDashRevealTimer = revealTimer;
           }
-          if (routeLineCanvasRenderer._container) routeLineCanvasRenderer._container.classList.add("route-line-canvas");
           window.routeRestMarkers.push(line);
+        }
+
+        if (tickSpecs.length) {
+          addIndividualSpeedTicks(spec => {
+            const tickGlobalScreen = globalScreenStart + spec.screenDistance;
+            const tickDashIndex = Math.max(0, Math.floor(
+              (tickGlobalScreen - activeAnimation.lineStartScreen) / routeLineDashStep
+            ));
+            const tickDashStart = activeAnimation.lineStartScreen + tickDashIndex * routeLineDashStep;
+            const tickDashProgress = Math.max(0, Math.min(1,
+              (tickDashStart - activeAnimation.lineStartScreen) /
+              Math.max(1, activeAnimation.lineEndScreen - activeAnimation.lineStartScreen)
+            ));
+            return getRouteAnimationRevealTime(activeAnimation, tickDashProgress) - elapsed;
+          });
         }
       }
     }
@@ -5296,8 +5301,6 @@ window.handlePartyRouteClick = function(latlng) {
 // при длинном маршруте не нужно запускать полную перерисовку несколько
 // раз за один кадр, иначе очередь обновлений начинает ощущаться как лаги.
 let routePreviewFramePending = false;
-let routePreviewThrottleTimer = null;
-let routePreviewLastRenderAt = 0;
 map.on("mousemove", function(e) {
   // После возврата из панели подтверждения конечная точка зафиксирована:
   // до «Вернуть»/«Отменить» не показываем продолжение маршрута от флажка.
@@ -5315,23 +5318,6 @@ map.on("mousemove", function(e) {
     const position = lastCursorPosition;
     if (!window.routeMode || routeFinished || !hasMouse || !position) return;
 
-    // Полная перерисовка всего уже проложенного пути на каждом кадре мыши
-    // перегружает слабые устройства на длинных маршрутах. Ограничиваем её
-    // примерно 30 кадрами/с, при этом таймер всегда использует последнюю точку.
-    const now = performance.now();
-    const elapsed = now - routePreviewLastRenderAt;
-    if (elapsed < 33) {
-      if (!routePreviewThrottleTimer) {
-        routePreviewThrottleTimer = setTimeout(function() {
-          routePreviewThrottleTimer = null;
-          if (!window.routeMode || routeFinished || !hasMouse || !lastCursorPosition) return;
-          routePreviewLastRenderAt = performance.now();
-          updateRouteLine(lastCursorPosition);
-        }, 33 - elapsed);
-      }
-      return;
-    }
-    routePreviewLastRenderAt = now;
     // updateRouteLine обновляет маршрут и в конце применяет маску
     // наведённого поселения вместе со всеми выбранными промежуточными.
     updateRouteLine(position);
