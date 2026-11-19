@@ -1863,6 +1863,18 @@ function createRouteLaunchPanel() {
       );
       if (destinationArea) window.showSettlementOutline(destinationArea, 1);
     }
+    // При возврате в редактор маршрут перерисовывается заново.
+    // Повторно накладываем маски всех промежуточных городов: иначе
+    // сохранённые транзитные сегменты могут стать видимыми внутри кисти,
+    // особенно когда конечная точка маршрута совпадает с городом.
+    if (window.hideRouteDashesInsideSettlement) {
+      const intermediateIds = Array.isArray(window.routeIntermediateCityIds)
+        ? window.routeIntermediateCityIds : [];
+      intermediateIds.forEach(id => {
+        const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
+        if (area) window.hideRouteDashesInsideSettlement(area, true);
+      });
+    }
   });
 }
 
@@ -5326,6 +5338,9 @@ map.on("zoomend", function() {
   // маршрут проходит через них близко друг к другу. Храним активные
   // анимации отдельно, чтобы следующая не обрывала предыдущую.
   const activeSettlementBrushTraces = new Map();
+  // При открытии редактора активная кисть ставится на паузу, но её прогресс
+  // сохраняется, чтобы масштабирование не превращало частичную обводку в полную.
+  const pausedSettlementBrushTraces = new Map();
 
   // Изолированный тестовый рендерер сухой кисти А.
   // Он использует уже сохранённую геометрию area.points и не меняет
@@ -5946,7 +5961,11 @@ map.on("zoomend", function() {
       ? window.settlementAreas : [];
 
     ids.forEach(id => {
-      const area = areas.find(item => String(item.id) === String(id));
+      const key = String(id);
+      // Частичная и завершённая анимация — уже корректное представление
+      // контура. Статичная промежуточная кисть поверх неё не нужна.
+      if (settlementTraceLayers.has(key) || settlementBrushTraceLayers.has(key)) return;
+      const area = areas.find(item => String(item.id) === key);
       if (!area) return;
       const layers = createSettlementDryBrushLayers(area, 0.96);
       // Помечаем статические слои ID поселения, чтобы убрать только его
@@ -6454,6 +6473,11 @@ map.on("zoomend", function() {
   function showSettlementOutline(area, opacity) {
     try {
       if (!area || !Array.isArray(area.points) || area.points.length < 3) return;
+      // Если для города уже существует начатая или завершённая трасса,
+      // не накладываем поверх неё статичную выбранную кисть при возврате
+      // в редактор: она закрывает частичный прогресс анимации.
+      const areaId = String(area.id);
+      if (settlementTraceLayers.has(areaId) || settlementBrushTraceLayers.has(areaId)) return;
 
       if (shouldUseSettlementDryBrush(area)) {
         // Для отредактированного поселения клик лишь переводит
@@ -6522,6 +6546,7 @@ map.on("zoomend", function() {
       activeSettlementBrushTraces.delete(key);
       if (brushState.layers) removeSettlementBrushLayers(brushState.layers);
     }
+    pausedSettlementBrushTraces.delete(key);
     const brushLayers = settlementBrushTraceLayers.get(key);
     if (brushLayers) removeSettlementBrushLayers(brushLayers);
     settlementBrushTraceLayers.delete(key);
@@ -6649,6 +6674,7 @@ map.on("zoomend", function() {
   }
 
   function animateSettlementDryBrushTrace(area, revealStartPoint = null) {
+    pausedSettlementBrushTraces.delete(String(area.id));
     // Анимации разных поселений независимы: маршрут может дойти до
     // следующего города до того, как закончится росчерк предыдущего.
     const previousLayers = settlementBrushTraceLayers.get(String(area.id));
@@ -6883,9 +6909,13 @@ map.on("zoomend", function() {
       settlementBrushTraceLayers.set(String(id), newLayers);
 
       const activeBrushTrace = activeSettlementBrushTraces.get(String(id));
+      const pausedBrushTrace = pausedSettlementBrushTraces.get(String(id));
       if (activeBrushTrace) {
         activeBrushTrace.layers = newLayers;
         applySettlementBrushTraceProgress(activeBrushTrace, activeBrushTrace.progress);
+      } else if (pausedBrushTrace) {
+        pausedBrushTrace.layers = newLayers;
+        applySettlementBrushTraceProgress(pausedBrushTrace, pausedBrushTrace.progress);
       } else {
         newLayers.forEach(layer => {
           const opacity = Number.isFinite(layer.options.opacity) ? layer.options.opacity : 1;
@@ -6979,20 +7009,19 @@ map.on("zoomend", function() {
     settlementTraceWaitToken++;
   };
   window.cancelActiveRouteSettlementAnimations = function() {
-    // Прерываем только незавершённые обводки. Уже законченные контуры
-    // остаются на карте, а прерванные будут восстановлены редактором статично.
+    // При открытии редактора останавливаем незавершённые RAF-анимации,
+    // но сохраняем уже нарисованную часть контура на карте. После возврата
+    // к маршруту эти частичные обводки остаются видимыми, а не исчезают.
+    // Завершённые контуры также не затрагиваются.
     activeSettlementBrushTraces.forEach((state, id) => {
       activeSettlementBrushTraces.delete(id);
-      const layers = state && state.layers
-        ? state.layers : settlementBrushTraceLayers.get(String(id));
-      if (layers) removeSettlementBrushLayers(layers);
-      settlementBrushTraceLayers.delete(String(id));
+      pausedSettlementBrushTraces.set(String(id), state);
+      // Слои и запись в settlementBrushTraceLayers намеренно сохраняем:
+      // они представляют текущий видимый прогресс сухой кисти.
     });
     if (activeSettlementTrace) {
-      const id = activeSettlementTrace.areaId;
-      removeSettlementLayer(activeSettlementTrace.layer);
-      settlementTraceLayers.delete(id);
-      settlementTracePaths.delete(id);
+      // Следующий кадр старой анимации завершится по проверке
+      // activeSettlementTrace; сам частичный слой и его путь сохраняем.
       activeSettlementTrace = null;
     }
   };
