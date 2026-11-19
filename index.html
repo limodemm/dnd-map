@@ -793,6 +793,9 @@ Object.defineProperty(window, "routePoints", {
   set: function(value) { routePoints = Array.isArray(value) ? value : []; }
 });
 let routeLine = null;
+// Общий Canvas-рендерер для штрихов маршрута: вместо сотен отдельных SVG-элементов
+// Leaflet рисует их на одном canvas, что заметно снижает нагрузку при длинных маршрутах.
+let routeLineCanvasRenderer = null;
 window.routeRestMarkers = [];
 let routeEndMarker = null;
 
@@ -2096,16 +2099,10 @@ function createRoutePanel() {
       cursor: not-allowed;
     }
 
-/* Золотая и чёрная линии: чёткие, без тяжёлой тени */
-.leaflet-overlay-pane .route-line-raised {
+/* Линии маршрута рисуются общим Canvas, чтобы длинные маршруты не создавали
+   сотни отдельных SVG-элементов. Лёгкая тень сохраняет читаемость на карте. */
+.leaflet-overlay-pane canvas.route-line-canvas {
   filter: drop-shadow(0px 1px 0px rgba(0, 0, 0, 0.65));
-}
-
-/* Поперечные засечки сниженной скорости — прозрачные маркеры без рамки. */
-.leaflet-marker-icon.route-speed-tick {
-  background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
 }
 
 /* Объём обычным привалам */
@@ -3501,6 +3498,17 @@ function clearRouteDrawing() {
   }
 
   window.routeRestMarkers.forEach(marker => {
+    // При предпросмотре длинного маршрута слои пересоздаются часто. Отменяем
+    // отложенное появление старых штрихов/засечек, иначе их таймеры копятся
+    // после удаления слоя и продолжают просыпаться без полезной работы.
+    if (marker && marker._routeDashRevealTimer) {
+      clearTimeout(marker._routeDashRevealTimer);
+      marker._routeDashRevealTimer = null;
+    }
+    if (marker && marker._routeTickRevealTimer) {
+      clearTimeout(marker._routeTickRevealTimer);
+      marker._routeTickRevealTimer = null;
+    }
     map.removeLayer(marker);
   });
 
@@ -3829,6 +3837,9 @@ function clearRouteAutoPreviewBrushes() {
 }
 
 function updateRouteLine(cursorPosition = null) {
+  if (!routeLineCanvasRenderer) {
+    routeLineCanvasRenderer = L.canvas({ pane: "overlayPane", padding: 0.5 });
+  }
   // Перерисовка карты не отменяет и не перезапускает анимацию жетонов.
   // Время анимации учитывается при создании каждого нового DOM-элемента.
   ensureRouteMarkerPanes();
@@ -3857,7 +3868,32 @@ function updateRouteLine(cursorPosition = null) {
     window.discardRouteLayersForSettlement();
   }
 
-  const totalLength = getRouteTravelLength(pointsToDraw);
+  // Длины исходных сегментов маршрута считаем один раз. Этот индекс далее
+  // используется и для границ темпа, и для определения параметров участка.
+  const routePointCumulativeDistances = [0];
+  for (let i = 1; i < pointsToDraw.length; i++) {
+    routePointCumulativeDistances.push(
+      routePointCumulativeDistances[i - 1] +
+      getRouteTravelLength([pointsToDraw[i - 1], pointsToDraw[i]])
+    );
+  }
+  const totalLength = routePointCumulativeDistances[routePointCumulativeDistances.length - 1] || 0;
+
+  function findRoutePointIndexAtDistance(distance) {
+    let low = 1;
+    let high = routePointCumulativeDistances.length - 1;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (routePointCumulativeDistances[mid] < distance - 0.000001) low = mid + 1;
+      else high = mid;
+    }
+    while (low < pointsToDraw.length &&
+           routePointCumulativeDistances[low] - routePointCumulativeDistances[low - 1] <= 0.000001) {
+      low++;
+    }
+    return Math.min(low, pointsToDraw.length - 1);
+  }
+
   const dailyLimit =
     routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
 
@@ -3997,7 +4033,121 @@ function updateRouteLine(cursorPosition = null) {
     pointsToDraw,
     protectedDistances
   );
-  const displayRouteLength = getRouteTravelLength(displayRoutePoints);
+
+  // Один проход по сглаженной геометрии заранее рассчитывает длину пути и
+  // экранное расстояние. Раньше каждый отдельный фрагмент маршрута повторно
+  // проходил весь массив точек и заново проверял пересечения с рельефом.
+  const displayRouteCumulative = [0];
+  const displayScreenSegments = [];
+  let displayScreenPassed = 0;
+  for (let i = 1; i < displayRoutePoints.length; i++) {
+    const startPoint = displayRoutePoints[i - 1];
+    const endPoint = displayRoutePoints[i];
+    const parts = getRouteSegmentTerrainParts(startPoint, endPoint);
+    const rawLength = Math.hypot(endPoint.lat - startPoint.lat, endPoint.lng - startPoint.lng);
+    const screenLength = map.latLngToLayerPoint(startPoint).distanceTo(
+      map.latLngToLayerPoint(endPoint)
+    );
+    let segmentTravelLength = 0;
+    parts.forEach(part => {
+      if (part.travelLength <= 0.000001) return;
+      const partScreenLength = part.zeroLength || rawLength <= 0.000001
+        ? 0
+        : screenLength * (part.t1 - part.t0);
+      displayScreenSegments.push({
+        travelStart: displayRouteCumulative[i - 1] + segmentTravelLength,
+        travelEnd: displayRouteCumulative[i - 1] + segmentTravelLength + part.travelLength,
+        screenStart: displayScreenPassed,
+        screenEnd: displayScreenPassed + partScreenLength
+      });
+      segmentTravelLength += part.travelLength;
+      displayScreenPassed += partScreenLength;
+    });
+    displayRouteCumulative.push(displayRouteCumulative[i - 1] + segmentTravelLength);
+  }
+  const displayRouteLength = displayRouteCumulative[displayRouteCumulative.length - 1] || 0;
+
+  function findCumulativeSegment(cumulative, distance) {
+    let low = 1;
+    let high = cumulative.length - 1;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (cumulative[mid] < distance - 0.000001) low = mid + 1;
+      else high = mid;
+    }
+    return low;
+  }
+
+  function getDisplayPointAtDistance(distance) {
+    if (displayRoutePoints.length < 2) return displayRoutePoints[0] || null;
+    if (distance >= displayRouteLength) return displayRoutePoints[displayRoutePoints.length - 1];
+    let index = Math.max(1, findCumulativeSegment(displayRouteCumulative, Math.max(0, distance)));
+    // Пропускаем нулевые соединители поселений так же, как это делает
+    // getRoutePointAtDistance: координата берётся с первого реального сегмента.
+    while (index < displayRoutePoints.length &&
+           displayRouteCumulative[index] - displayRouteCumulative[index - 1] <= 0.000001) {
+      index++;
+    }
+    if (index >= displayRoutePoints.length) return displayRoutePoints[displayRoutePoints.length - 1];
+    const segmentStart = displayRouteCumulative[index - 1];
+    if (Math.abs(displayRouteCumulative[index] - distance) < 0.000001) {
+      return displayRoutePoints[index];
+    }
+    return getRoutePointAtDistance(
+      [displayRoutePoints[index - 1], displayRoutePoints[index]],
+      Math.max(0, distance - segmentStart)
+    );
+  }
+
+  function getDisplayPointsBetweenDistances(startDistance, endDistance) {
+    const start = Math.max(0, Math.min(displayRouteLength, startDistance));
+    const end = Math.max(start, Math.min(displayRouteLength, endDistance));
+    const entries = [];
+    let low = 0;
+    let high = displayRouteCumulative.length - 1;
+    const lowerBound = Math.max(0, start - 0.01);
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (displayRouteCumulative[mid] < lowerBound) low = mid + 1;
+      else high = mid;
+    }
+    for (let index = low; index < displayRoutePoints.length &&
+         displayRouteCumulative[index] <= end + 0.01; index++) {
+      if (displayRouteCumulative[index] >= lowerBound) {
+        entries.push({ distance: displayRouteCumulative[index], point: displayRoutePoints[index], order: index });
+      }
+    }
+    entries.push({ distance: start, point: getDisplayPointAtDistance(start), order: displayRoutePoints.length });
+    entries.push({ distance: end, point: getDisplayPointAtDistance(end), order: displayRoutePoints.length + 1 });
+    entries.sort((a, b) => a.distance - b.distance || a.order - b.order);
+    const result = [];
+    entries.forEach(entry => {
+      if (!entry.point) return;
+      const last = result[result.length - 1];
+      if (!last || Math.hypot(entry.point.lat - last.lat, entry.point.lng - last.lng) > 0.000001) {
+        result.push(entry.point);
+      }
+    });
+    return result;
+  }
+
+  function getDisplayScreenDistanceAtDistance(distance) {
+    if (!displayScreenSegments.length || distance <= 0) return 0;
+    if (distance >= displayRouteLength) return displayScreenPassed;
+    let low = 0;
+    let high = displayScreenSegments.length - 1;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (displayScreenSegments[mid].travelEnd < distance - 0.000001) low = mid + 1;
+      else high = mid;
+    }
+    const segment = displayScreenSegments[low];
+    const span = segment.travelEnd - segment.travelStart;
+    const t = span > 0.000001
+      ? Math.max(0, Math.min(1, (distance - segment.travelStart) / span))
+      : 0;
+    return segment.screenStart + (segment.screenEnd - segment.screenStart) * t;
+  }
 
   // В подтверждённом маршруте шкала жетонов и городских пауз должна
   // использовать ровно ту же сглаженную геометрию, что и рисуемая линия.
@@ -4098,7 +4248,7 @@ function updateRouteLine(cursorPosition = null) {
   // Быстрый темп остаётся в золотисто-охристой гамме, чтобы не сливаться
   // с зелёными областями карты.
   function getRoutePaceLineColor(pace) {
-    if (pace === "slow") return "#c98f68";
+    if (pace === "slow") return "#d6aa65";
     if (pace === "fast") return "#c3b879";
     return "#e2b95f";
   }
@@ -4121,15 +4271,11 @@ function updateRouteLine(cursorPosition = null) {
       const boundaries = [from, to];
       // Границы участков с разными темпами обязательны для визуального
       // разделения линии: смена темпа не должна перекрашивать соседние отрезки.
-      let paceBoundaryDistance = 0;
-      for (let pointIndex = 1; pointIndex < pointsToDraw.length; pointIndex++) {
-        paceBoundaryDistance += getRouteTravelLength([
-          pointsToDraw[pointIndex - 1], pointsToDraw[pointIndex]
-        ]);
-        if (paceBoundaryDistance > from + 0.001 &&
-            paceBoundaryDistance < to - 0.001) {
-          boundaries.push(paceBoundaryDistance);
-        }
+      let pointIndex = findRoutePointIndexAtDistance(from + 0.001);
+      for (; pointIndex < pointsToDraw.length; pointIndex++) {
+        const paceBoundaryDistance = routePointCumulativeDistances[pointIndex];
+        if (paceBoundaryDistance >= to - 0.001) break;
+        if (paceBoundaryDistance > from + 0.001) boundaries.push(paceBoundaryDistance);
       }
       routeMarkerAnimations.forEach(animation => {
         if (animation.start > from && animation.start < to) boundaries.push(animation.start);
@@ -4144,7 +4290,7 @@ function updateRouteLine(cursorPosition = null) {
 
         const midpoint = (partStart + partEnd) / 2;
         const activeAnimation = getRouteMarkerAnimation(midpoint);
-        const segmentSettingsPoint = getRoutePointAtDistance(pointsToDraw, midpoint);
+        const segmentSettingsPoint = pointsToDraw[findRoutePointIndexAtDistance(midpoint)];
         const segmentPace = getRouteSegmentPace(segmentSettingsPoint);
         const segmentSpeedReduced = getRouteSegmentSpeedReduced(segmentSettingsPoint);
         const segmentColor = color === "#e2b95f"
@@ -4159,8 +4305,7 @@ function updateRouteLine(cursorPosition = null) {
         const partDisplayEnd = totalLength > 0.001
           ? partEnd / totalLength * displayRouteLength
           : displayRouteLength;
-        const sectionPoints = getRoutePointsBetweenDistances(
-          displayRoutePoints,
+        const sectionPoints = getDisplayPointsBetweenDistances(
           partDisplayStart,
           partDisplayEnd
         );
@@ -4178,55 +4323,114 @@ function updateRouteLine(cursorPosition = null) {
           if (index > 0 && getRouteSegmentMode(point) !== "settlement-zero") {
             partScreenLength += layerPoint.distanceTo(screenEntries[index - 1].layerPoint);
           }
-          // settlement-zero соединяет центр города с его границей и имеет
-          // нулевую длину в общей шкале маршрута. Не даём этому скрытому
-          // соединителю занимать экранное расстояние в сетке штрихов:
-          // иначе после каждого города реальная линия начинает отставать
-          // от рассчитанного времени всё сильнее.
           screenEntries.push({ point, layerPoint, distance: partScreenLength });
         });
 
-        // Сниженная скорость отмечается небольшими поперечными засечками.
-        // Они используют ту же шкалу появления, что и сама линия маршрута.
-        if (segmentSpeedReduced && partScreenLength > 18) {
-          const tickSpacing = 24;
-          const tickSize = 4.5;
+        // Быстрый поиск точки на экранной геометрии. Бинарный поиск важен для
+        // длинных кривых: засечки и короткие штрихи больше не сканируют весь путь.
+        function getScreenPointAtDistance(targetDistance) {
+          if (targetDistance <= 0) return screenEntries[0].layerPoint;
+          if (targetDistance >= partScreenLength) return screenEntries[screenEntries.length - 1].layerPoint;
+          let low = 1;
+          let high = screenEntries.length - 1;
+          while (low < high) {
+            const mid = (low + high) >> 1;
+            if (screenEntries[mid].distance < targetDistance) low = mid + 1;
+            else high = mid;
+          }
+          const previous = screenEntries[low - 1];
+          const current = screenEntries[low];
+          const segmentLength = current.distance - previous.distance;
+          const t = segmentLength > 0.001
+            ? (targetDistance - previous.distance) / segmentLength
+            : 0;
+          return L.point(
+            previous.layerPoint.x + (current.layerPoint.x - previous.layerPoint.x) * t,
+            previous.layerPoint.y + (current.layerPoint.y - previous.layerPoint.y) * t
+          );
+        }
+
+        function getScreenLinePoints(startPx, endPx) {
+          const points = [getScreenPointAtDistance(startPx)];
+          let low = 1;
+          let high = screenEntries.length - 1;
+          while (low < high) {
+            const mid = (low + high) >> 1;
+            if (screenEntries[mid].distance <= startPx + 0.01) low = mid + 1;
+            else high = mid;
+          }
+          for (let i = low; i < screenEntries.length && screenEntries[i].distance < endPx - 0.01; i++) {
+            points.push(screenEntries[i].layerPoint);
+          }
+          points.push(getScreenPointAtDistance(endPx));
+          return points.map(point => map.layerPointToLatLng(point));
+        }
+
+        // Засечки сниженной скорости строятся в экранных координатах прямо
+        // на сглаженной линии: локальная касательная берётся по соседним
+        // точкам кривой, а засечка проводится строго по её нормали.
+        if (segmentSpeedReduced && partScreenLength > 42) {
+          const tickSpacing = 48;
+          const tickHalfLength = 3.6;
+          const tickBatches = [];
+          let currentTickBatch = [];
+          let lastTickRouteDistance = null;
+
           for (let tickDistance = tickSpacing / 2;
-               tickDistance < partScreenLength - 2;
+               tickDistance < partScreenLength - 3;
                tickDistance += tickSpacing) {
-            const routeDistance = partStart + (partEnd - partStart) *
+            const center = getScreenPointAtDistance(tickDistance);
+            const before = getScreenPointAtDistance(Math.max(0, tickDistance - 3));
+            const after = getScreenPointAtDistance(Math.min(partScreenLength, tickDistance + 3));
+            const dx = after.x - before.x;
+            const dy = after.y - before.y;
+            const tangentLength = Math.hypot(dx, dy);
+            if (tangentLength < 0.001) continue;
+
+            const normalX = -dy / tangentLength;
+            const normalY = dx / tangentLength;
+            const firstEnd = map.layerPointToLatLng(L.point(
+              center.x - normalX * tickHalfLength,
+              center.y - normalY * tickHalfLength
+            ));
+            const secondEnd = map.layerPointToLatLng(L.point(
+              center.x + normalX * tickHalfLength,
+              center.y + normalY * tickHalfLength
+            ));
+            if (isMarkerInsideSettlementMask(center && map.layerPointToLatLng(center), 1)) continue;
+
+            currentTickBatch.push([firstEnd, secondEnd]);
+            lastTickRouteDistance = partStart + (partEnd - partStart) *
               (tickDistance / Math.max(0.001, partScreenLength));
-            const tickPosition = getRoutePointAtDistance(pointsToDraw, routeDistance);
-            if (!tickPosition || isMarkerInsideSettlementMask(tickPosition, 1)) continue;
-
-            const tickAngle = getPerpendicularRouteAngle(pointsToDraw, routeDistance);
-            const tickIcon = L.divIcon({
-              className: "route-speed-tick",
-              html: `<div style="width:2px;height:${tickSize * 2}px;background:#604a35;border:1px solid rgba(238,211,158,.75);border-radius:1px;transform:rotate(${tickAngle}deg);transform-origin:center center;"></div>`,
-              iconSize: [2, tickSize * 2],
-              iconAnchor: [1, tickSize]
-            });
-            const tickMarker = L.marker(tickPosition, {
-              icon: tickIcon,
-              interactive: false,
-              keyboard: false,
-              zIndexOffset: 1150,
-              opacity: activeAnimation ? 0 : opacity
-            }).addTo(map);
-            window.routeRestMarkers.push(tickMarker);
-
-            if (activeAnimation) {
-              const tickDelay = getRouteBoundaryArrivalDelay(routeDistance);
-              const revealTick = function() {
-                if (map.hasLayer(tickMarker)) tickMarker.setOpacity(opacity);
-              };
-              if (tickDelay === null || tickDelay <= 0) {
-                revealTick();
-              } else {
-                setTimeout(revealTick, tickDelay);
-              }
+            if (currentTickBatch.length >= 5) {
+              tickBatches.push({ lines: currentTickBatch, distance: lastTickRouteDistance });
+              currentTickBatch = [];
             }
           }
+          if (currentTickBatch.length) {
+            tickBatches.push({ lines: currentTickBatch, distance: lastTickRouteDistance });
+          }
+
+          tickBatches.forEach(batch => {
+            const tickLayer = L.polyline(batch.lines, {
+              color: "#6b5237",
+              weight: 1.8,
+              opacity: activeAnimation ? 0 : opacity,
+              lineCap: "round",
+              lineJoin: "round",
+              renderer: routeLineCanvasRenderer,
+              interactive: false
+            }).addTo(map);
+            window.routeRestMarkers.push(tickLayer);
+            if (activeAnimation) {
+              const tickDelay = getRouteBoundaryArrivalDelay(batch.distance);
+              const revealTicks = function() {
+                if (map.hasLayer(tickLayer)) tickLayer.setStyle({ opacity });
+              };
+              if (tickDelay === null || tickDelay <= 0) revealTicks();
+              else tickLayer._routeTickRevealTimer = setTimeout(revealTicks, tickDelay);
+            }
+          });
         }
 
         if (!activeAnimation) {
@@ -4237,51 +4441,15 @@ function updateRouteLine(cursorPosition = null) {
             opacity: opacity,
             lineCap: "round",
             lineJoin: "round",
-            className: "route-line-raised"
+            className: "route-line-raised",
+            renderer: routeLineCanvasRenderer
           }).addTo(map);
+          if (routeLineCanvasRenderer._container) routeLineCanvasRenderer._container.classList.add("route-line-canvas");
           window.routeRestMarkers.push(line);
           continue;
         }
 
-        // Получаем кусочек кривой между двумя расстояниями в экранных пикселях.
-        // Так каждый штрих сохраняет кривизну общего маршрута.
-        function getScreenPointAtDistance(targetDistance) {
-          if (targetDistance <= 0) return screenEntries[0].layerPoint;
-          if (targetDistance >= partScreenLength) {
-            return screenEntries[screenEntries.length - 1].layerPoint;
-          }
-          for (let i = 1; i < screenEntries.length; i++) {
-            const previous = screenEntries[i - 1];
-            const current = screenEntries[i];
-            if (current.distance >= targetDistance) {
-              const segmentLength = current.distance - previous.distance;
-              const t = segmentLength > 0.001
-                ? (targetDistance - previous.distance) / segmentLength
-                : 0;
-              return L.point(
-                previous.layerPoint.x + (current.layerPoint.x - previous.layerPoint.x) * t,
-                previous.layerPoint.y + (current.layerPoint.y - previous.layerPoint.y) * t
-              );
-            }
-          }
-          return screenEntries[screenEntries.length - 1].layerPoint;
-        }
-
-        function getScreenLinePoints(startPx, endPx) {
-          const points = [getScreenPointAtDistance(startPx)];
-          screenEntries.forEach(entry => {
-            if (entry.distance > startPx + 0.01 && entry.distance < endPx - 0.01) {
-              points.push(entry.layerPoint);
-            }
-          });
-          points.push(getScreenPointAtDistance(endPx));
-          return points.map(point => map.layerPointToLatLng(point));
-        }
-
-        const globalScreenStart = getRouteScreenDistanceAtDistance(
-          displayRoutePoints,
-          partDisplayStart
-        );
+        const globalScreenStart = getDisplayScreenDistanceAtDistance(partDisplayStart);
         const elapsed = getSynchronizedRouteNow() - activeAnimation.startedAtEpoch;
 
         // Экранные штрихи могут отличаться числом при разном зуме, но время
@@ -4319,20 +4487,14 @@ function updateRouteLine(cursorPosition = null) {
             lineJoin: "round",
             // Сначала добавляем путь без класса анимации. Класс будет
             // назначен только после установки индивидуальной задержки.
-            className: "route-line-raised"
+            className: "route-line-raised",
+            renderer: routeLineCanvasRenderer
           }).addTo(map);
 
-          // Не ждём появления SVG-элемента через requestAnimationFrame:
-          // на некоторых устройствах Leaflet создаёт его позже, из-за чего
-          // прежний fallback раскрывал сразу все штрихи одним блоком.
-          // Таймер привязан к общей шкале маршрута, а setStyle обновит и
-          // уже созданный SVG, и параметры слоя, если SVG появится позже.
+          // Canvas-слой раскрывает каждый штрих по прежней временной шкале;
+          // setStyle обновляет только его прозрачность без создания SVG-элемента.
           const revealDash = function() {
             if (!map.hasLayer(line)) return;
-            const path = line.getElement();
-            if (path) {
-              path.style.transition = `stroke-opacity ${routeLineRevealFadeDuration}ms ease-out`;
-            }
             line.setStyle({ opacity: opacity });
           };
 
@@ -4342,6 +4504,7 @@ function updateRouteLine(cursorPosition = null) {
             const revealTimer = setTimeout(revealDash, delay);
             line._routeDashRevealTimer = revealTimer;
           }
+          if (routeLineCanvasRenderer._container) routeLineCanvasRenderer._container.classList.add("route-line-canvas");
           window.routeRestMarkers.push(line);
         }
       }
@@ -5133,6 +5296,8 @@ window.handlePartyRouteClick = function(latlng) {
 // при длинном маршруте не нужно запускать полную перерисовку несколько
 // раз за один кадр, иначе очередь обновлений начинает ощущаться как лаги.
 let routePreviewFramePending = false;
+let routePreviewThrottleTimer = null;
+let routePreviewLastRenderAt = 0;
 map.on("mousemove", function(e) {
   // После возврата из панели подтверждения конечная точка зафиксирована:
   // до «Вернуть»/«Отменить» не показываем продолжение маршрута от флажка.
@@ -5149,6 +5314,24 @@ map.on("mousemove", function(e) {
     // даст отрисовать устаревший предпросмотр поверх нового состояния.
     const position = lastCursorPosition;
     if (!window.routeMode || routeFinished || !hasMouse || !position) return;
+
+    // Полная перерисовка всего уже проложенного пути на каждом кадре мыши
+    // перегружает слабые устройства на длинных маршрутах. Ограничиваем её
+    // примерно 30 кадрами/с, при этом таймер всегда использует последнюю точку.
+    const now = performance.now();
+    const elapsed = now - routePreviewLastRenderAt;
+    if (elapsed < 33) {
+      if (!routePreviewThrottleTimer) {
+        routePreviewThrottleTimer = setTimeout(function() {
+          routePreviewThrottleTimer = null;
+          if (!window.routeMode || routeFinished || !hasMouse || !lastCursorPosition) return;
+          routePreviewLastRenderAt = performance.now();
+          updateRouteLine(lastCursorPosition);
+        }, 33 - elapsed);
+      }
+      return;
+    }
+    routePreviewLastRenderAt = now;
     // updateRouteLine обновляет маршрут и в конце применяет маску
     // наведённого поселения вместе со всеми выбранными промежуточными.
     updateRouteLine(position);
