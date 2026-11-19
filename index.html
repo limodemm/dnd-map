@@ -1783,9 +1783,9 @@ function createRouteLaunchPanel() {
   routeLaunchPanel.innerHTML = `
     <div class="launch-heading">Отряд в пути</div>
     <div class="launch-actions">
-      <button type="button" id="route-party-pause" class="active" aria-label="Пауза" aria-pressed="true" title="Пауза">Ⅱ</button>
-      <button type="button" id="route-party-play" aria-label="Воспроизвести движение отряда" aria-pressed="false" title="Плей">▶</button>
-      <button type="button" id="route-party-edit" aria-label="Редактировать маршрут" title="Редактировать маршрут">⚙</button>
+      <button type="button" id="route-party-pause" class="active" aria-label="Пауза" aria-pressed="true">Ⅱ</button>
+      <button type="button" id="route-party-play" aria-label="Воспроизвести движение отряда" aria-pressed="false">▶</button>
+      <button type="button" id="route-party-edit" aria-label="Редактировать маршрут">⚙</button>
     </div>
   `;
   document.body.appendChild(routeLaunchPanel);
@@ -8374,7 +8374,7 @@ map.on("zoomend", function() {
     font: 13px sans-serif;
   `;
 
-  status.textContent = "Firebase: подключение...";
+  status.textContent = "Вспоминаем карту";
   document.body.appendChild(status);
 
   // Анонимная авторизация игрока
@@ -8386,7 +8386,7 @@ map.on("zoomend", function() {
 
       status.textContent = window.dndFirebase.isGameMaster
         ? "Firebase: ведущий авторизован"
-        : "Firebase: игрок авторизован";
+        : "Путешествие не ждёт";
       status.style.background = "#245c32";
 
       console.log("Firebase готов. UID:", user.uid);
@@ -8400,7 +8400,7 @@ map.on("zoomend", function() {
     } else {
       window.dndFirebase.ready = false;
       window.dndFirebase.isGameMaster = false;
-      status.textContent = "Firebase: выполняется вход...";
+      status.textContent = "Вспоминаем карту";
 
       signInAnonymously(auth).catch(function(error) {
         console.error("Ошибка авторизации Firebase:", error);
