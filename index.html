@@ -1017,15 +1017,24 @@ function captureRouteRevealProgressForEditing() {
   if (!animation) return null;
 
   const elapsed = getSynchronizedRouteNow() - animation.startedAtEpoch;
+  // Снимок полного маршрута создаём ДО проверки elapsed: если редактор
+  // открыт в первые 800 мс, pending-состояние всё равно должно содержать
+  // всю исходную геометрию, а не только стартовую точку.
+  const routeSnapshot = routePoints.map((point, index) => ({
+    lat: Number(point.lat), lng: Number(point.lng),
+    segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
+    settlementId: point._routeSettlementId || null
+  }));
   if (elapsed <= 0) {
-    return {
-      distance: animation.start,
-      prefix: getRoutePointsUpToDistance(routePoints, animation.start).map((point, index) => ({
-        lat: Number(point.lat), lng: Number(point.lng),
-        segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
-        settlementId: point._routeSettlementId || null
-      }))
-    };
+    const prefix = getRoutePointsUpToDistance(routePoints, animation.start).map((point, index) => ({
+      lat: Number(point.lat), lng: Number(point.lng),
+      segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
+      settlementId: point._routeSettlementId || null
+    }));
+    console.log("[RouteResume] capture before animation start", {
+      elapsed, animationStart: animation.start, routeSnapshotLength: routeSnapshot.length
+    });
+    return { distance: animation.start, prefix, routeSnapshot };
   }
 
   let low = animation.start;
@@ -1045,11 +1054,10 @@ function captureRouteRevealProgressForEditing() {
     segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
     settlementId: point._routeSettlementId || null
   }));
-  const routeSnapshot = routePoints.map((point, index) => ({
-    lat: Number(point.lat), lng: Number(point.lng),
-    segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
-    settlementId: point._routeSettlementId || null
-  }));
+  console.log("[RouteResume] captured animation progress", {
+    elapsed, animationStart: animation.start, animationEnd: animation.end,
+    capturedDistance: distance, routeSnapshotLength: routeSnapshot.length
+  });
   return { distance, prefix, routeSnapshot };
 }
 
@@ -1085,7 +1093,16 @@ function getRouteResumeDistanceAtLastCommonPoint(points, resumeState) {
   // его точное положение, даже если последующие сегменты были изменены.
   const commonDistance = commonCount > 0
     ? getRouteTravelLength(points.slice(0, commonCount)) : 0;
-  return Math.min(progressDistance, commonDistance > progressDistance ? progressDistance : commonDistance);
+  const resumeDistance = Math.min(progressDistance, commonDistance);
+  console.log("[RouteResume] resolved continuation", {
+    savedProgressDistance: progressDistance,
+    commonPointCount: commonCount,
+    commonDistance,
+    resumeDistance,
+    oldRoutePointCount: savedRoute.length,
+    newRoutePointCount: points.length
+  });
+  return resumeDistance;
 }
 
 function beginRouteMarkerAnimation(startDistance, endDistance, sharedStartedAt, sharedDuration) {
@@ -1651,6 +1668,15 @@ function createRouteLaunchPanel() {
     // Запоминаем реальную точку завершённых штрихов до остановки таймера.
     // Полный маршрут при возврате в редактор по-прежнему отрисуется статично.
     pendingRouteResumeState = captureRouteRevealProgressForEditing();
+    console.log("[RouteResume] entered editor", {
+      activeAnimationCount: routeMarkerAnimations.length,
+      capturedResumeState: pendingRouteResumeState ? {
+        distance: pendingRouteResumeState.distance,
+        routeSnapshotLength: Array.isArray(pendingRouteResumeState.routeSnapshot)
+          ? pendingRouteResumeState.routeSnapshot.length : 0
+      } : null,
+      confirmedSnapshotLength: lastConfirmedRoutePointSnapshot.length
+    });
     // Останавливаем раскрытие линии и удаляем её временные штрихи.
     // Повторная отрисовка без активных анимаций вернёт полный маршрут
     // в точности в статичном виде, пригодном для дальнейшего редактирования.
@@ -2325,6 +2351,7 @@ let animationStartDistance = animationStartIndex >= routePoints.length
 // Если редактор открыт во время незавершённой анимации, даже полностью
 // неизменённый маршрут должен продолжить раскрытие с сохранённого прогресса.
 // Только завершённая ранее анимация (без pendingRouteResumeState) пропускается.
+const hadPendingRouteResumeState = Boolean(pendingRouteResumeState);
 if (pendingRouteResumeState) {
   // Неизменённый пройденный префикс сохраняем целиком. Если он изменён,
   // находим последнюю совпадающую точку и повторяем анимацию только от неё.
@@ -2342,6 +2369,12 @@ if (pendingRouteResumeState) {
   }
   pendingRouteResumeState = null;
 }
+console.log("[RouteResume] confirmation animation start", {
+  animationStartDistance,
+  animationStartIndex,
+  routeLength: getRouteTravelLength(routePoints),
+  hadPendingResumeState: hadPendingRouteResumeState
+});
 
 window.routeMode = false;
 map.doubleClickZoom.enable();
