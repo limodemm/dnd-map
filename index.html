@@ -890,6 +890,20 @@ function applyRouteTravelSettings(point, pace = routePace, speedReduced = routeS
   return point;
 }
 
+// Обработчики поселений находятся в отдельном ES-модуле, поэтому функция
+// фиксации настроек сегмента должна быть доступна через window.
+window.applyRouteTravelSettings = applyRouteTravelSettings;
+
+function updateRouteTravelSettingsControls() {
+  const disabled = routeFinished || Boolean(window.routePendingConfirmation) || !window.routeMode;
+  if (!routePanel) return;
+  routePanel.querySelectorAll('.route-speed').forEach(button => {
+    button.disabled = disabled;
+  });
+  const reducedButton = routePanel.querySelector('#route-reduced-speed');
+  if (reducedButton) reducedButton.disabled = disabled;
+}
+
 function getRoutePointTravelSettingsSnapshot(point, index) {
   return {
     segmentPace: index > 0 ? getRouteSegmentPace(point) : null,
@@ -1825,6 +1839,7 @@ function createRouteLaunchPanel() {
     routeLaunchPanel.style.display = "none";
     createRoutePanel();
     routePanel.style.display = isCompactRoutePanelLandscape() ? "grid" : "block";
+    updateRouteTravelSettingsControls();
     routePanel.querySelectorAll(".route-speed").forEach(button => {
       button.classList.toggle("active", button.dataset.pace === routePace);
     });
@@ -2334,6 +2349,7 @@ function createRoutePanel() {
   // Выбор темпа
   routePanel.querySelectorAll(".route-speed").forEach(button => {
     button.addEventListener("click", function() {
+      if (routeFinished || window.routePendingConfirmation || !window.routeMode) return;
       routePace = this.dataset.pace;
 
       routePanel.querySelectorAll(".route-speed").forEach(b => {
@@ -2348,6 +2364,7 @@ function createRoutePanel() {
 const reducedSpeedButton = document.getElementById("route-reduced-speed");
 
 reducedSpeedButton.addEventListener("click", function() {
+  if (routeFinished || window.routePendingConfirmation || !window.routeMode) return;
   routeSpeedReduced = !routeSpeedReduced;
 
   this.classList.toggle("active", routeSpeedReduced);
@@ -3809,7 +3826,7 @@ function updateRouteLine(cursorPosition = null) {
     automaticPreviewIds = automaticPreview.addedIds || [];
     if (previewPath && previewPath.length > 1) {
       const previewSegment = previewPath.slice(1);
-      previewSegment.forEach(point => applyRouteTravelSettings(point));
+      previewSegment.forEach(point => window.applyRouteTravelSettings(point));
       pointsToDraw.push(...previewSegment);
     }
   }
@@ -4514,6 +4531,7 @@ function updateRouteLine(cursorPosition = null) {
     // Подтвердить можно только после явного завершения маршрута:
     // одиночный клик по городу лишь добавляет промежуточное поселение.
     routeConfirmButton.disabled = !routeFinished;
+    updateRouteTravelSettingsControls();
 
     const forcedButton = document.getElementById("route-forced-march");
     if (forcedButton) {
@@ -4577,7 +4595,7 @@ window.applySynchronizedPartyRoute = function(data) {
       setRouteSegmentMode(routePoint, point.segmentMode, point.settlementId || null);
     }
     if (index > 0) {
-      applyRouteTravelSettings(
+      window.applyRouteTravelSettings(
         routePoint,
         point.segmentPace || routePace,
         point.segmentSpeedReduced !== undefined ? point.segmentSpeedReduced : routeSpeedReduced
@@ -4780,7 +4798,7 @@ window.addPartyRoutePoint = function(
   // Нажатие ЛКМ фиксирует весь новый путь до выбранной точки с текущими
   // настройками. Все ранее добавленные точки сохраняют свои параметры.
   const committedSegment = segment.slice(1);
-  committedSegment.forEach(point => applyRouteTravelSettings(
+  committedSegment.forEach(point => window.applyRouteTravelSettings(
     point, segmentPace, segmentSpeedReduced
   ));
   routePoints.push(...committedSegment);
@@ -4825,7 +4843,7 @@ function finishPartyRoute(latlng) {
         return;
       }
       const committedFinalSegment = finalSegment.slice(1);
-      committedFinalSegment.forEach(point => applyRouteTravelSettings(point));
+      committedFinalSegment.forEach(point => window.applyRouteTravelSettings(point));
       routePoints.push(...committedFinalSegment);
       if (routeForcedMarch && routeForcedMarchPendingExit && !getLastPointAtSettlementCenter(routePoints)) {
         routeForcedMarchPendingExit = false;
@@ -6240,7 +6258,7 @@ map.on("zoomend", function() {
         outerApproach = findNearestRoutePointOnSettlementBrush(routeStart, area);
         if (!outerApproach) return;
         currentRoutePoints.splice(1, currentRoutePoints.length - 1);
-        currentRoutePoints.push(applyRouteTravelSettings(window.setRouteSegmentMode(
+        currentRoutePoints.push(window.applyRouteTravelSettings(window.setRouteSegmentMode(
           L.latLng(outerApproach.lat, outerApproach.lng),
           "settlement-count-only",
           area.id
@@ -6261,7 +6279,7 @@ map.on("zoomend", function() {
         return;
       }
       const committedApproachSegment = approachSegment.slice(1);
-      committedApproachSegment.forEach(point => applyRouteTravelSettings(
+      committedApproachSegment.forEach(point => window.applyRouteTravelSettings(
         point, segmentPace, segmentSpeedReduced
       ));
       currentRoutePoints.push(...committedApproachSegment);
@@ -6287,12 +6305,12 @@ map.on("zoomend", function() {
       return;
     }
 
-    currentRoutePoints.push(applyRouteTravelSettings(window.setRouteSegmentMode(
+    currentRoutePoints.push(window.applyRouteTravelSettings(window.setRouteSegmentMode(
       L.latLng(actualBoundary.point.lat, actualBoundary.point.lng),
       "settlement-count-only",
       area.id
     ), segmentPace, segmentSpeedReduced));
-    currentRoutePoints.push(applyRouteTravelSettings(window.setRouteSegmentMode(
+    currentRoutePoints.push(window.applyRouteTravelSettings(window.setRouteSegmentMode(
       L.latLng(Number(area.center.lat), Number(area.center.lng)),
       "settlement-zero",
       area.id
