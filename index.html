@@ -603,6 +603,28 @@ let partyIcon = createPartyIcon();
 
     const partyRef = ref(database, "party/state");
     const sharedRouteRef = ref(database, "party/route");
+    const partyMovementRef = ref(database, "party/movement");
+
+    // Единое состояние движения: все клиенты вычисляют координату из одной
+    // серверной отметки времени, а не пересылают друг другу кадры анимации.
+    onValue(partyMovementRef, snapshot => {
+      const movement = snapshot.val();
+      if (movement && typeof window.applyPartyPlaybackState === "function") {
+        window.applyPartyPlaybackState(movement);
+      }
+    }, error => console.error("Ошибка синхронизации движения отряда:", error));
+
+    window.publishPartyPlaybackState = async function(movement) {
+      if (!window.dndFirebase || !window.dndFirebase.ready || !window.dndFirebase.uid) {
+        throw new Error("Firebase ещё не готов");
+      }
+      await firebaseServerTimeOffsetPromise;
+      await set(partyMovementRef, {
+        ...movement,
+        updatedAt: window.getRouteSynchronizedNow(),
+        updatedBy: window.dndFirebase.uid
+      });
+    };
 
     let firstSharedRouteSnapshot = true;
     let lastSharedRouteEventId = null;
@@ -695,6 +717,14 @@ let partyIcon = createPartyIcon();
         eventId: Date.now() + "_" + window.dndFirebase.uid
       };
       await set(sharedRouteRef, payload);
+      await set(partyMovementRef, {
+        status: "paused",
+        startDistance: Number(routeData.animationStartDistance) || 0,
+        startedAt: null,
+        routeStartedAt: sharedStartedAt,
+        updatedAt: window.getRouteSynchronizedNow(),
+        updatedBy: window.dndFirebase.uid
+      });
     };
 
     try {
@@ -715,6 +745,9 @@ let partyIcon = createPartyIcon();
         const position = snapshot.val();
 
         if (!position) return;
+        // Во время общего движения координату задаёт party/movement.
+        if (window.partyPlaybackState && window.routePlaybackRouteStartedAt &&
+            Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) return;
 
         const coordinates = [
           position.lat,
@@ -1818,21 +1851,41 @@ function createRouteLaunchPanel() {
   const editButton = routeLaunchPanel.querySelector("#route-party-edit");
   syncRouteLaunchControls();
 
-  // Пока переключаем состояние управления. Движение самого маркера отряда
-  // подключается отдельно от анимации построения линии маршрута.
-  pauseButton.addEventListener("click", function() {
-    pauseButton.classList.add("active");
-    pauseButton.setAttribute("aria-pressed", "true");
-    playButton.classList.remove("active");
-    playButton.setAttribute("aria-pressed", "false");
+  pauseButton.addEventListener("click", async function() {
+    const state = window.partyPlaybackState;
+    if (!state || state.status !== "playing" || routeMarkerAnimations.length > 0) return;
+    const distance = getPartyPlaybackDistance(state, getSynchronizedRouteNow());
+    try {
+      await window.publishPartyPlaybackState({
+        status: "paused",
+        startDistance: distance,
+        startedAt: null,
+        routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null
+      });
+    } catch (error) {
+      console.error("Не удалось приостановить движение отряда:", error);
+    }
   });
-  playButton.addEventListener("click", function() {
-    playButton.classList.add("active");
-    playButton.setAttribute("aria-pressed", "true");
-    pauseButton.classList.remove("active");
-    pauseButton.setAttribute("aria-pressed", "false");
+  playButton.addEventListener("click", async function() {
+    if (routeMarkerAnimations.length > 0 || !Array.isArray(routePoints) || routePoints.length < 2) return;
+    const current = window.partyPlaybackState;
+    const distance = current ? getPartyPlaybackDistance(current, getSynchronizedRouteNow()) : 0;
+    const total = getRouteTravelLength(routePoints);
+    if (distance >= total - 0.001) return;
+    try {
+      await window.publishPartyPlaybackState({
+        status: "playing",
+        startDistance: distance,
+        startedAt: getSynchronizedRouteNow() + 500,
+        routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null
+      });
+    } catch (error) {
+      console.error("Не удалось запустить движение отряда:", error);
+    }
   });
+  if (window.partyPlaybackState) renderPartyPlaybackState(window.partyPlaybackState);
   editButton.addEventListener("click", function() {
+    if (window.partyPlaybackState && window.partyPlaybackState.status === "playing") return;
     // Завершённые обводки сохраняются при входе в редактор.
     // Повторное подтверждение неизменённого маршрута оставляет контур статичным.
 
@@ -3427,6 +3480,88 @@ function getRouteDistanceAtElapsedTime(points, startDistance, elapsedUnits, maxD
   return max;
 }
 
+// Общее движение маркера. 8 игровых часов (1/3 игрового дня) проходят
+// за 60 секунд реального времени: один игровой день = 180 секунд.
+window.partyPlaybackState = null;
+let partyPlaybackFrame = null;
+let partyPlaybackDistance = 0;
+let partyPlaybackLastUiStatus = null;
+
+function getPartyPlaybackDistance(state, now) {
+  const start = Math.max(0, Number(state.startDistance) || 0);
+  if (state.status !== "playing") return start;
+  const elapsedUnits = Math.max(0, now - Number(state.startedAt || now)) / 180000;
+  return getRouteDistanceAtElapsedTime(
+    routePoints,
+    start,
+    elapsedUnits,
+    getRouteTravelLength(routePoints)
+  );
+}
+
+function renderPartyPlaybackState(state) {
+  if (!routeLaunchPanel) return;
+  const pauseButton = routeLaunchPanel.querySelector("#route-party-pause");
+  const playButton = routeLaunchPanel.querySelector("#route-party-play");
+  const editButton = routeLaunchPanel.querySelector("#route-party-edit");
+  if (!pauseButton || !playButton) return;
+  const playing = state && state.status === "playing";
+  if (editButton) editButton.disabled = Boolean(playing);
+  pauseButton.classList.toggle("active", playing);
+  pauseButton.setAttribute("aria-pressed", playing ? "true" : "false");
+  playButton.classList.toggle("active", !playing);
+  playButton.setAttribute("aria-pressed", !playing ? "true" : "false");
+  pauseButton.disabled = !playing;
+  playButton.disabled = playing || routeMarkerAnimations.length > 0;
+  syncRouteLaunchControls();
+}
+
+function stopPartyPlaybackFrame() {
+  if (partyPlaybackFrame !== null) cancelAnimationFrame(partyPlaybackFrame);
+  partyPlaybackFrame = null;
+}
+
+function tickPartyPlayback() {
+  const state = window.partyPlaybackState;
+  if (!state || state.status !== "playing") {
+    stopPartyPlaybackFrame();
+    return;
+  }
+  if (routeMarkerAnimations.length > 0 || !Array.isArray(routePoints) || routePoints.length < 2) {
+    partyPlaybackFrame = requestAnimationFrame(tickPartyPlayback);
+    return;
+  }
+  const now = getSynchronizedRouteNow();
+  const total = getRouteTravelLength(routePoints);
+  const distance = Math.min(total, getPartyPlaybackDistance(state, now));
+  partyPlaybackDistance = distance;
+  const position = getRoutePointAtDistance(routePoints, distance);
+  if (position && partyMarker) partyMarker.setLatLng(position);
+  if (distance >= total - 0.001) {
+    window.partyPlaybackState = { ...state, status: "paused", startDistance: total, startedAt: null };
+    partyPlaybackDistance = total;
+    renderPartyPlaybackState(window.partyPlaybackState);
+    stopPartyPlaybackFrame();
+    return;
+  }
+  partyPlaybackFrame = requestAnimationFrame(tickPartyPlayback);
+}
+
+window.applyPartyPlaybackState = function(state) {
+  if (!state || !["playing", "paused"].includes(state.status)) return;
+  window.partyPlaybackState = state;
+  partyPlaybackDistance = getPartyPlaybackDistance(state, getSynchronizedRouteNow());
+  renderPartyPlaybackState(state);
+  if (state.status === "playing") {
+    stopPartyPlaybackFrame();
+    partyPlaybackFrame = requestAnimationFrame(tickPartyPlayback);
+  } else {
+    stopPartyPlaybackFrame();
+    const position = getRoutePointAtDistance(routePoints, partyPlaybackDistance);
+    if (position && partyMarker) partyMarker.setLatLng(position);
+  }
+};
+
 // Пересчитывает привалы по накопленному времени каждого участка.
 // Смена темпа не меняет уже пройденное время: новый темп действует только
 // на сегменты, добавленные после следующего нажатия ЛКМ.
@@ -4899,6 +5034,7 @@ window.applySynchronizedPartyRoute = function(data) {
   window.routeMode = false;
   window.routeEditingConfirmedRoute = false;
   window.routeAnimationPublished = true;
+  window.routePlaybackRouteStartedAt = Number(data.startedAt) || null;
   window.routePendingConfirmation = false;
   window.routeDestinationCityId = data.destinationSettlementId || null;
   window.routeDestinationBoundaryPoint = data.destinationBoundaryPoint
@@ -4907,6 +5043,12 @@ window.applySynchronizedPartyRoute = function(data) {
     ? L.latLng(data.destinationApproachPoint.lat, data.destinationApproachPoint.lng) : null;
   window.routeIntermediateCityIds = Array.isArray(data.intermediateSettlementIds)
     ? data.intermediateSettlementIds.map(id => String(id)) : [];
+  // Снимок движения мог прийти раньше снимка маршрута при подключении.
+  // Повторно применяем его теперь, когда геометрия уже загружена.
+  if (window.partyPlaybackState && typeof window.applyPartyPlaybackState === "function" &&
+      Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) {
+    window.applyPartyPlaybackState(window.partyPlaybackState);
+  }
   // Убираем статичные обводки выбранных промежуточных городов.
   // Они должны появляться только как анимация, когда линия маршрута
   // действительно доходит до соответствующей точки входа.
@@ -5370,6 +5512,16 @@ map.on("zoomend", function() {
         } else {
           // Если маркер уже есть — меняем его положение
           partyMarker.setLatLng(coordinates);
+        }
+
+        if (window.partyPlaybackState && window.routePlaybackRouteStartedAt &&
+            Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt) &&
+            routePoints.length >= 2) {
+          const playbackPosition = getRoutePointAtDistance(
+            routePoints,
+            getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
+          );
+          if (playbackPosition) partyMarker.setLatLng(playbackPosition);
         }
 
         console.log("Положение отряда:", coordinates);
