@@ -774,6 +774,7 @@ window.routeEditingConfirmedRoute = false;
 if (routeLaunchPanel) routeLaunchPanel.style.display = "none";
 pendingRouteResumeState = null;
 pendingRoutePlaybackResumeDistance = null;
+routeRestElapsedUnits = 0;
 lastConfirmedRoutePointSnapshot = [];
 routeFinished = false;
 window.routeDestinationCityId = null;
@@ -856,6 +857,9 @@ let routeForcedMarchStartDistance = 0;
 let routeForcedMarchStartUnits = 0;
 let routeForcedMarchEpochStartDistance = 0;
 let routeForcedMarchPendingExit = false;
+// Накопленная доля игрового дня от последнего привала до текущего начала
+// оставшегося маршрута. Нужна, чтобы редактирование не сдвигало привалы.
+let routeRestElapsedUnits = 0;
 
 // Мост к состоянию форсированного марша для обработчиков поселений,
 // которые находятся в отдельной области видимости ES-модуля.
@@ -1349,7 +1353,7 @@ function beginRouteMarkerAnimation(startDistance, endDistance, sharedStartedAt, 
     routeMarkerAnimations = routeMarkerAnimations.filter(item => item !== animation);
     syncRouteLaunchControls();
     updateRouteLine(lastCursorPosition);
-  }, Math.max(0, duration - elapsed));
+  }, Math.max(0, duration - elapsed - 120));
 }
 
 // Firebase-модуль использует этот метод, чтобы дождаться окончания
@@ -1910,6 +1914,19 @@ function createRouteLaunchPanel() {
       : 0;
     pendingRoutePlaybackResumeDistance = 0;
     if (window.partyPlaybackState && Array.isArray(routePoints) && routePoints.length > 1) {
+      // Сохраняем накопленное время от последнего привала. Сами привалы
+      // остаются привязаны к исходному маршруту, а не пересчитываются от отряда.
+      const existingRestDistances = getNormalRestDistances(
+        getRouteTravelLength(routePoints),
+        routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1),
+        routePoints
+      );
+      const lastPassedRest = existingRestDistances
+        .filter(distance => distance <= absolutePlaybackDistance + 0.001)
+        .reduce((latest, distance) => Math.max(latest, distance), 0);
+      routeRestElapsedUnits = getRouteTravelTimeUnitsBetweenDistances(
+        routePoints, lastPassedRest, absolutePlaybackDistance
+      );
       // Сначала переводим абсолютные интервалы форсированного марша в новую
       // систему координат, пока исходная геометрия ещё доступна.
       const rebasedForcedSegments = routeForcedSegments.map(segment => {
@@ -2680,6 +2697,7 @@ window.routePendingConfirmation = false;
       forcedMarchStartUnits: routeForcedMarchStartUnits,
       forcedMarchEpochStartDistance: routeForcedMarchEpochStartDistance,
       forcedMarchPendingExit: routeForcedMarchPendingExit,
+      restElapsedUnits: routeRestElapsedUnits,
       forcedSegments: window.routeForcedSegments.map(segment => ({ ...segment })),
       intermediateSettlementIds: Array.isArray(window.routeIntermediateCityIds)
         ? window.routeIntermediateCityIds.slice() : [],
@@ -3540,8 +3558,8 @@ function getRouteDistanceAtElapsedTime(points, startDistance, elapsedUnits, maxD
   return max;
 }
 
-// Общее движение маркера. 8 игровых часов (1/3 игрового дня) проходят
-// за 60 секунд реального времени: один игровой день = 180 секунд.
+// ТЕСТОВАЯ СКОРОСТЬ: 8 игровых часов (1/3 дня) проходят за 15 секунд.
+// Один полный игровой день = 45 секунд реального времени.
 window.partyPlaybackState = null;
 let partyPlaybackFrame = null;
 let partyPlaybackDistance = 0;
@@ -3550,7 +3568,7 @@ let partyPlaybackLastUiStatus = null;
 function getPartyPlaybackDistance(state, now) {
   const start = Math.max(0, Number(state.startDistance) || 0);
   if (state.status !== "playing") return start;
-  const elapsedUnits = Math.max(0, now - Number(state.startedAt || now)) / 60000;
+  const elapsedUnits = Math.max(0, now - Number(state.startedAt || now)) / 45000;
   return getRouteDistanceAtElapsedTime(
     routePoints,
     start,
@@ -3696,8 +3714,14 @@ function getNormalRestDistances(totalLength, dailyLimit, routeGeometry = routePo
   function addRegularRests(anchor, end) {
     if (end <= anchor + 0.001) return;
     const totalUnits = getRouteTravelTimeUnitsBetweenDistances(routeGeometry, anchor, end);
-    for (let day = 1; day <= Math.floor(totalUnits + 0.000001); day++) {
-      const distance = getRouteDistanceAtElapsedTime(routeGeometry, anchor, day, end);
+    const carriesElapsed = Math.abs(anchor) <= 0.001;
+    const firstRestInUnits = carriesElapsed
+      ? Math.max(0.000001, 1 - Math.min(0.999999, routeRestElapsedUnits))
+      : 1;
+    for (let targetUnits = firstRestInUnits;
+         targetUnits <= totalUnits + 0.000001;
+         targetUnits += 1) {
+      const distance = getRouteDistanceAtElapsedTime(routeGeometry, anchor, targetUnits, end);
       addRest(distance, end);
     }
   }
@@ -4117,10 +4141,17 @@ function updatePartyPlaybackTokens(distance) {
   tokens.forEach(marker => {
     if (!marker || !Number.isFinite(marker._partyPlaybackDistance)) return;
     const visible = distance < marker._partyPlaybackDistance - 0.001;
-    if (typeof marker.setOpacity === "function") {
-      marker.setOpacity(visible ? 1 : 0);
+    const targetOpacity = visible ? "1" : "0";
+    if (marker._icon) {
+      marker._icon.style.transition = "none";
+      if (marker._icon.style.opacity !== targetOpacity) {
+        marker._icon.style.opacity = targetOpacity;
+      }
     } else if (typeof marker.setStyle === "function") {
-      marker.setStyle({ opacity: visible ? 1 : 0, fillOpacity: visible ? 1 : 0 });
+      const currentOpacity = marker.options && marker.options.opacity;
+      if (Number(currentOpacity) !== Number(targetOpacity)) {
+        marker.setStyle({ opacity: visible ? 1 : 0, fillOpacity: visible ? 1 : 0 });
+      }
     }
   });
 }
@@ -4201,7 +4232,9 @@ function updatePartyPlaybackRouteLine(distance) {
       hiddenPath.setAttribute("fill", "none");
       hiddenPath.setAttribute("stroke", "black");
       hiddenPath.setAttribute("stroke-width", "40");
-      hiddenPath.setAttribute("stroke-linecap", "round");
+      // Плоский край не заходит вперёд текущей позиции маркера.
+      // Скругление исходной линии остаётся у basePath.
+      hiddenPath.setAttribute("stroke-linecap", "butt");
       hiddenPath.setAttribute("stroke-linejoin", "round");
 
       mask.appendChild(basePath);
@@ -4222,7 +4255,11 @@ function updatePartyPlaybackRouteLine(distance) {
     const pathLength = Number(layer._partyPlaybackPathLength) || 0;
     if (!(pathLength > 0.01)) return;
 
-    const hiddenLength = Math.max(0, Math.min(pathLength, pathLength * progress));
+    let hiddenLength = Math.max(0, Math.min(pathLength, pathLength * progress));
+    // У самого первого штриха исходный round-cap выступает за начало SVG-пути.
+    // Компенсируем только этот начальный колпачок; остальные сегменты режутся
+    // строго по позиции маркера и не исчезают перед ним.
+    if (start <= 0.001) hiddenLength = Math.min(pathLength, hiddenLength + 20);
     basePath.setAttribute("d", pathData);
     hiddenPath.setAttribute("d", pathData);
     // Чёрный штрих начинается строго с начала SVG-пути. По мере движения
@@ -5280,6 +5317,7 @@ window.applySynchronizedPartyRoute = function(data) {
   routeForcedMarchStartUnits = Number(data.forcedMarchStartUnits) || 0;
   routeForcedMarchEpochStartDistance = Number(data.forcedMarchEpochStartDistance) || 0;
   routeForcedMarchPendingExit = Boolean(data.forcedMarchPendingExit);
+  routeRestElapsedUnits = Math.max(0, Math.min(0.999999, Number(data.restElapsedUnits) || 0));
   const legacyDailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
   routeForcedSegments = (Array.isArray(data.forcedSegments) ? data.forcedSegments : [])
     .map(segment => {
