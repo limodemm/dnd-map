@@ -1593,6 +1593,9 @@ function refreshRouteAnimationTiming(animation) {
   if (animation.timer) clearTimeout(animation.timer);
   animation.timer = setTimeout(function() {
     routeMarkerAnimations = routeMarkerAnimations.filter(item => item !== animation);
+    // После уточнения геометрии таймер завершения может быть переустановлен.
+    // Синхронизируем кнопку и в этом пути завершения анимации.
+    syncRouteLaunchControls();
     updateRouteLine(lastCursorPosition);
   }, Math.max(0, animation.duration + 100 - elapsed));
 }
