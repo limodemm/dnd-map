@@ -465,7 +465,7 @@ document.addEventListener("keydown", function(e) {
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js";
   import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-auth.js";
-  import { getDatabase, ref, set, get, onValue, serverTimestamp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-database.js";
+  import { getDatabase, ref, set, get, update, onValue, serverTimestamp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-database.js";
 
   // Настройки Firebase
   const firebaseConfig = {
@@ -603,26 +603,19 @@ let partyIcon = createPartyIcon();
 
     const partyRef = ref(database, "party/state");
     const sharedRouteRef = ref(database, "party/route");
-    const partyMovementRef = ref(database, "party/movement");
-
-    // Единое состояние движения: все клиенты вычисляют координату из одной
-    // серверной отметки времени, а не пересылают друг другу кадры анимации.
-    onValue(partyMovementRef, snapshot => {
-      const movement = snapshot.val();
-      if (movement && typeof window.applyPartyPlaybackState === "function") {
-        window.applyPartyPlaybackState(movement);
-      }
-    }, error => console.error("Ошибка синхронизации движения отряда:", error));
-
+    // Состояние движения хранится внутри уже разрешённого узла party/route.
+    // Отдельный party/movement запрещён текущими правилами Firebase Database.
     window.publishPartyPlaybackState = async function(movement) {
       if (!window.dndFirebase || !window.dndFirebase.ready || !window.dndFirebase.uid) {
         throw new Error("Firebase ещё не готов");
       }
       await firebaseServerTimeOffsetPromise;
-      await set(partyMovementRef, {
-        ...movement,
-        updatedAt: window.getRouteSynchronizedNow(),
-        updatedBy: window.dndFirebase.uid
+      await update(sharedRouteRef, {
+        movement: {
+          ...movement,
+          updatedAt: window.getRouteSynchronizedNow(),
+          updatedBy: window.dndFirebase.uid
+        }
       });
     };
 
@@ -656,6 +649,12 @@ let partyIcon = createPartyIcon();
       // поправку серверного времени, иначе можно ошибочно отбросить событие.
       await firebaseServerTimeOffsetPromise;
       const data = snapshot.val();
+
+      // Обновления движения могут приходить для того же маршрута, поэтому
+      // применяем их до проверки eventId (сам маршрут при этом не переигрываем).
+      if (data && data.movement && typeof window.applyPartyPlaybackState === "function") {
+        window.applyPartyPlaybackState(data.movement);
+      }
 
       if (firstSharedRouteSnapshot) {
         firstSharedRouteSnapshot = false;
@@ -716,15 +715,15 @@ let partyIcon = createPartyIcon();
         startedAt: sharedStartedAt,
         eventId: Date.now() + "_" + window.dndFirebase.uid
       };
-      await set(sharedRouteRef, payload);
-      await set(partyMovementRef, {
+      payload.movement = {
         status: "paused",
         startDistance: Number(routeData.animationStartDistance) || 0,
         startedAt: null,
         routeStartedAt: sharedStartedAt,
         updatedAt: window.getRouteSynchronizedNow(),
         updatedBy: window.dndFirebase.uid
-      });
+      };
+      await set(sharedRouteRef, payload);
     };
 
     try {
