@@ -3551,8 +3551,10 @@ function setPartyMarkerBearingForDistance(distance, initialTurn = false) {
 
   const progress = Math.max(0, Math.min(1, Number(distance) / total));
   const displayDistance = progress * displayLength;
-  const sample = Math.max(2, Math.min(8, displayLength * 0.002));
-  const fromDistance = Math.max(0, displayDistance - (displayDistance >= displayLength - 0.001 ? sample : 0));
+  // Берём направление по более длинному участку визуальной линии:
+  // мелкие неровности перестают заставлять значок постоянно менять курс.
+  const sample = Math.max(18, Math.min(36, displayLength * 0.012));
+  const fromDistance = Math.max(0, displayDistance - sample);
   const toDistance = Math.min(displayLength, displayDistance + sample);
   const from = getRoutePointAtDistance(displayPoints, fromDistance);
   const to = getRoutePointAtDistance(displayPoints, toDistance);
@@ -3573,7 +3575,7 @@ function setPartyMarkerBearingForDistance(distance, initialTurn = false) {
   partyMarker._partyBearing = angle;
   const artwork = partyMarker._icon.querySelector("img");
   if (!artwork) return;
-  artwork.style.transitionDuration = initialTurn ? "350ms" : "90ms";
+  artwork.style.transitionDuration = initialTurn ? "1000ms" : "180ms";
   artwork.style.transform = `rotate(${angle}deg)`;
 }
 
