@@ -717,7 +717,7 @@ let partyIcon = createPartyIcon();
       };
       payload.movement = {
         status: "paused",
-        startDistance: Number(routeData.animationStartDistance) || 0,
+        startDistance: Math.max(0, Number(routeData.movementStartDistance) || 0),
         startedAt: null,
         routeStartedAt: sharedStartedAt,
         updatedAt: window.getRouteSynchronizedNow(),
@@ -771,6 +771,7 @@ window.routeAnimationPublished = false;
 window.routeEditingConfirmedRoute = false;
 if (routeLaunchPanel) routeLaunchPanel.style.display = "none";
 pendingRouteResumeState = null;
+pendingRoutePlaybackResumeDistance = null;
 lastConfirmedRoutePointSnapshot = [];
 routeFinished = false;
 window.routeDestinationCityId = null;
@@ -969,6 +970,7 @@ let lastConfirmedRoutePointSnapshot = [];
 // После редактирования продолжим с этой точки, только если весь пройденный
 // участок геометрически и семантически остался неизменным.
 let pendingRouteResumeState = null;
+let pendingRoutePlaybackResumeDistance = null;
 // Контрольная точка, к которой редактор подтвердённого маршрута вернул
 // путь. При следующем подтверждении новая анимация должна продолжиться
 // именно от неё, даже если прежний маршрут уже полностью анимирован.
@@ -1822,6 +1824,14 @@ function createRouteLaunchPanel() {
       filter: grayscale(.65);
       box-shadow: none;
     }
+    /* Выбранная кнопка остаётся визуально яркой, даже если её действие
+       сейчас недоступно (например, «Пауза» при уже поставленной паузе). */
+    #party-route-launch-panel button:disabled.active {
+      opacity: 1;
+      cursor: default;
+      filter: none;
+      box-shadow: inset 0 0 0 1px #e0bd7055, 0 0 7px #d6b46a55;
+    }
     #party-route-launch-panel button:focus-visible {
       outline: 2px solid #f0d28c;
       outline-offset: 2px;
@@ -1891,6 +1901,11 @@ function createRouteLaunchPanel() {
     // Запоминаем реальную точку завершённых штрихов до остановки таймера.
     // Полный маршрут при возврате в редактор по-прежнему отрисуется статично.
     pendingRouteResumeState = captureRouteRevealProgressForEditing();
+    // Отдельно сохраняем положение отряда. Прогресс движения нельзя брать
+    // из анимации раскрытия линии: это две независимые временные шкалы.
+    pendingRoutePlaybackResumeDistance = window.partyPlaybackState
+      ? getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
+      : 0;
     // Останавливаем раскрытие линии и удаляем её временные штрихи.
     // Повторная отрисовка без активных анимаций вернёт полный маршрут
     // в точности в статичном виде, пригодном для дальнейшего редактирования.
@@ -2613,6 +2628,9 @@ window.routePendingConfirmation = false;
     const routePayload = {
       animationStartIndex,
       animationStartDistance,
+      movementStartDistance: Number.isFinite(pendingRoutePlaybackResumeDistance)
+        ? pendingRoutePlaybackResumeDistance
+        : (window.partyPlaybackState ? getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow()) : 0),
       durationMs: typeof window.getRouteRevealDurationForCurrentRoute === "function"
         ? window.getRouteRevealDurationForCurrentRoute(animationStartDistance) : undefined,
       points: routePoints.map((point, index) => ({
@@ -2644,6 +2662,7 @@ window.routePendingConfirmation = false;
         ? window.dndFirebase.uid : null
     };
 
+    pendingRoutePlaybackResumeDistance = null;
     lastCursorPosition = null;
     createRouteLaunchPanel();
     routePanel.style.display = "none";
@@ -2652,10 +2671,7 @@ window.routePendingConfirmation = false;
     // раскрытие линии не должно автоматически двигать жетон отряда.
     const pauseButton = routeLaunchPanel.querySelector("#route-party-pause");
     const playButton = routeLaunchPanel.querySelector("#route-party-play");
-    pauseButton.classList.add("active");
-    pauseButton.setAttribute("aria-pressed", "true");
-    playButton.classList.remove("active");
-    playButton.setAttribute("aria-pressed", "false");
+    renderPartyPlaybackState({ status: "paused" });
     window.confirmedPartyRoute = routePayload.points;
 
     if (!window.publishPartyRoute) {
@@ -3489,7 +3505,7 @@ let partyPlaybackLastUiStatus = null;
 function getPartyPlaybackDistance(state, now) {
   const start = Math.max(0, Number(state.startDistance) || 0);
   if (state.status !== "playing") return start;
-  const elapsedUnits = Math.max(0, now - Number(state.startedAt || now)) / 180000;
+  const elapsedUnits = Math.max(0, now - Number(state.startedAt || now)) / 60000;
   return getRouteDistanceAtElapsedTime(
     routePoints,
     start,
@@ -3506,13 +3522,18 @@ function renderPartyPlaybackState(state) {
   if (!pauseButton || !playButton) return;
   const playing = state && state.status === "playing";
   if (editButton) editButton.disabled = Boolean(playing);
-  pauseButton.classList.toggle("active", playing);
-  pauseButton.setAttribute("aria-pressed", playing ? "true" : "false");
-  playButton.classList.toggle("active", !playing);
-  playButton.setAttribute("aria-pressed", !playing ? "true" : "false");
+  pauseButton.classList.toggle("active", !playing);
+  pauseButton.setAttribute("aria-pressed", !playing ? "true" : "false");
+  playButton.classList.toggle("active", playing);
+  playButton.setAttribute("aria-pressed", playing ? "true" : "false");
   pauseButton.disabled = !playing;
   playButton.disabled = playing || routeMarkerAnimations.length > 0;
   syncRouteLaunchControls();
+}
+
+function setPartyMarkerPlaybackSmoothing(enabled) {
+  if (!partyMarker || !partyMarker._icon) return;
+  partyMarker._icon.style.transition = enabled ? "transform 42ms linear" : "none";
 }
 
 function stopPartyPlaybackFrame() {
@@ -3530,6 +3551,7 @@ function tickPartyPlayback() {
     partyPlaybackFrame = requestAnimationFrame(tickPartyPlayback);
     return;
   }
+  setPartyMarkerPlaybackSmoothing(true);
   const now = getSynchronizedRouteNow();
   const total = getRouteTravelLength(routePoints);
   const distance = Math.min(total, getPartyPlaybackDistance(state, now));
@@ -3541,6 +3563,7 @@ function tickPartyPlayback() {
     partyPlaybackDistance = total;
     renderPartyPlaybackState(window.partyPlaybackState);
     stopPartyPlaybackFrame();
+    setPartyMarkerPlaybackSmoothing(false);
     return;
   }
   partyPlaybackFrame = requestAnimationFrame(tickPartyPlayback);
@@ -3556,6 +3579,7 @@ window.applyPartyPlaybackState = function(state) {
     partyPlaybackFrame = requestAnimationFrame(tickPartyPlayback);
   } else {
     stopPartyPlaybackFrame();
+    setPartyMarkerPlaybackSmoothing(false);
     const position = getRoutePointAtDistance(routePoints, partyPlaybackDistance);
     if (position && partyMarker) partyMarker.setLatLng(position);
   }
@@ -3694,6 +3718,7 @@ function cancelPartyRoute() {
   window.routeMode = false;
   window.routeAnimationPublished = false;
   pendingRouteResumeState = null;
+  pendingRoutePlaybackResumeDistance = null;
   map.doubleClickZoom.enable();
 
   routeForcedMarch = false;
