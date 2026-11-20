@@ -3533,7 +3533,24 @@ function renderPartyPlaybackState(state) {
 
 function setPartyMarkerPlaybackSmoothing(enabled) {
   if (!partyMarker || !partyMarker._icon) return;
-  partyMarker._icon.style.transition = enabled ? "transform 42ms linear" : "none";
+  // Leaflet по умолчанию округляет координаты маркера до целого пикселя.
+  // Во время движения это особенно заметно на дальнем зуме: жетон перескакивает
+  // с пикселя на пиксель. Перемещение теперь выполняется по дробным координатам,
+  // без CSS-transition, который добавлял запаздывание между кадрами.
+  partyMarker._icon.style.transition = "none";
+  partyMarker._icon.style.willChange = enabled ? "transform" : "auto";
+  partyMarker._icon.style.backfaceVisibility = "hidden";
+}
+
+function setPartyMarkerPlaybackPosition(position) {
+  if (!partyMarker || !position || !map) return;
+  const latlng = L.latLng(position);
+  partyMarker._latlng = latlng;
+  if (!partyMarker._icon) return;
+  // map.latLngToLayerPoint() округляет координату. Здесь используем
+  // непрерывную проекцию карты, сохраняя дробные пиксели на любом масштабе.
+  const layerPoint = map.project(latlng, map.getZoom()).subtract(map.getPixelOrigin());
+  L.DomUtil.setPosition(partyMarker._icon, layerPoint);
 }
 
 function stopPartyPlaybackFrame() {
@@ -3557,7 +3574,8 @@ function tickPartyPlayback() {
   const distance = Math.min(total, getPartyPlaybackDistance(state, now));
   partyPlaybackDistance = distance;
   const position = getRoutePointAtDistance(routePoints, distance);
-  if (position && partyMarker) partyMarker.setLatLng(position);
+  if (position && partyMarker) setPartyMarkerPlaybackPosition(position);
+  updatePartyPlaybackRouteLine(distance);
   if (distance >= total - 0.001) {
     window.partyPlaybackState = { ...state, status: "paused", startDistance: total, startedAt: null };
     partyPlaybackDistance = total;
@@ -3581,7 +3599,8 @@ window.applyPartyPlaybackState = function(state) {
     stopPartyPlaybackFrame();
     setPartyMarkerPlaybackSmoothing(false);
     const position = getRoutePointAtDistance(routePoints, partyPlaybackDistance);
-    if (position && partyMarker) partyMarker.setLatLng(position);
+    if (position && partyMarker) setPartyMarkerPlaybackPosition(position);
+    updatePartyPlaybackRouteLine(partyPlaybackDistance);
   }
 };
 
@@ -3681,6 +3700,9 @@ function clearRouteDrawing() {
   }
 
   window.routeRestMarkers.forEach(marker => {
+    if (marker && marker._partyPlaybackMask && marker._partyPlaybackMask.parentNode) {
+      marker._partyPlaybackMask.parentNode.removeChild(marker._partyPlaybackMask);
+    }
     // При предпросмотре длинного маршрута слои пересоздаются часто. Отменяем
     // отложенное появление старых штрихов/засечек, иначе их таймеры копятся
     // после удаления слоя и продолжают просыпаться без полезной работы.
@@ -3696,6 +3718,7 @@ function clearRouteDrawing() {
   });
 
   window.routeRestMarkers = [];
+  partyPlaybackRouteLineLayers = [];
   if (routeEndMarker) {
   map.removeLayer(routeEndMarker);
   routeEndMarker = null;
@@ -4018,6 +4041,91 @@ function getAutomaticSettlementPreview(cursorPosition) {
 let routeAutoPreviewBrushLayers = [];
 function clearRouteAutoPreviewBrushes() {
   routeAutoPreviewBrushLayers = removeSettlementBrushLayers(routeAutoPreviewBrushLayers);
+}
+
+let partyPlaybackRouteLineLayers = [];
+let partyPlaybackMaskSequence = 0;
+
+function registerPartyPlaybackRouteLine(layer, startDistance, endDistance) {
+  if (!layer || !(endDistance > startDistance)) return;
+  layer._partyPlaybackStartDistance = startDistance;
+  layer._partyPlaybackEndDistance = endDistance;
+  layer._partyPlaybackBaseOpacity = Number(layer.options && layer.options.opacity);
+  if (!Number.isFinite(layer._partyPlaybackBaseOpacity)) layer._partyPlaybackBaseOpacity = 1;
+  partyPlaybackRouteLineLayers.push(layer);
+}
+
+function updatePartyPlaybackRouteLine(distance) {
+  if (!Array.isArray(partyPlaybackRouteLineLayers)) return;
+  partyPlaybackRouteLineLayers.forEach(layer => {
+    const path = layer && layer._path;
+    if (!path || !path.ownerSVGElement) return;
+    const start = Number(layer._partyPlaybackStartDistance);
+    const end = Number(layer._partyPlaybackEndDistance);
+    if (!(end > start)) return;
+
+    const progress = Math.max(0, Math.min(1, (distance - start) / (end - start)));
+    if (progress <= 0) {
+      path.removeAttribute("mask");
+      path.style.opacity = String(layer._partyPlaybackBaseOpacity);
+      if (layer._partyPlaybackMask && layer._partyPlaybackMask.parentNode) {
+        layer._partyPlaybackMask.parentNode.removeChild(layer._partyPlaybackMask);
+      }
+      layer._partyPlaybackMask = null;
+      layer._partyPlaybackMaskPath = null;
+      return;
+    }
+    if (progress >= 1) {
+      path.style.opacity = "0";
+      return;
+    }
+
+    const svg = path.ownerSVGElement;
+    let mask = layer._partyPlaybackMask;
+    let maskPath = layer._partyPlaybackMaskPath;
+    if (!mask || !mask.parentNode || !maskPath) {
+      let defs = svg.querySelector("defs");
+      if (!defs) {
+        defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+        svg.insertBefore(defs, svg.firstChild);
+      }
+      mask = document.createElementNS("http://www.w3.org/2000/svg", "mask");
+      const maskId = "party-playback-mask-" + (++partyPlaybackMaskSequence);
+      mask.setAttribute("id", maskId);
+      mask.setAttribute("maskUnits", "userSpaceOnUse");
+      mask.setAttribute("maskContentUnits", "userSpaceOnUse");
+      mask.setAttribute("x", "-100000");
+      mask.setAttribute("y", "-100000");
+      mask.setAttribute("width", "200000");
+      mask.setAttribute("height", "200000");
+      maskPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      maskPath.setAttribute("fill", "none");
+      maskPath.setAttribute("stroke", "white");
+      maskPath.setAttribute("stroke-width", "32");
+      maskPath.setAttribute("stroke-linecap", "round");
+      mask.appendChild(maskPath);
+      defs.appendChild(mask);
+      path.setAttribute("mask", "url(#" + maskId + ")");
+      layer._partyPlaybackMask = mask;
+      layer._partyPlaybackMaskPath = maskPath;
+    }
+
+    const pathData = path.getAttribute("d") || "";
+    if (layer._partyPlaybackPathData !== pathData) {
+      layer._partyPlaybackPathData = pathData;
+      layer._partyPlaybackPathLength = typeof path.getTotalLength === "function"
+        ? path.getTotalLength() : 0;
+    }
+    const pathLength = Number(layer._partyPlaybackPathLength) || 0;
+    if (!(pathLength > 0.01)) return;
+    const hiddenLength = Math.max(0, Math.min(pathLength, pathLength * progress));
+    const visibleLength = Math.max(0.001, pathLength - hiddenLength);
+    maskPath.setAttribute("d", pathData);
+    // Маска оставляет видимой часть исходной пунктирной линии строго впереди жетона.
+    maskPath.setAttribute("stroke-dasharray", visibleLength + " " + Math.max(0.001, hiddenLength));
+    maskPath.setAttribute("stroke-dashoffset", String(-visibleLength));
+    path.style.opacity = String(layer._partyPlaybackBaseOpacity);
+  });
 }
 
 function updateRouteLine(cursorPosition = null) {
@@ -4621,6 +4729,7 @@ function updateRouteLine(cursorPosition = null) {
             className: "route-line-raised"
           }).addTo(map);
           window.routeRestMarkers.push(line);
+          registerPartyPlaybackRouteLine(line, partStart, partEnd);
           addIndividualSpeedTicks();
           continue;
         }
@@ -4679,6 +4788,9 @@ function updateRouteLine(cursorPosition = null) {
             line._routeDashRevealTimer = revealTimer;
           }
           window.routeRestMarkers.push(line);
+          const dashRouteStart = partStart + (partEnd - partStart) * (dashStart / Math.max(0.001, partScreenLength));
+          const dashRouteEnd = partStart + (partEnd - partStart) * (dashEnd / Math.max(0.001, partScreenLength));
+          registerPartyPlaybackRouteLine(line, dashRouteStart, dashRouteEnd);
         }
 
         if (tickSpecs.length) {
@@ -5014,6 +5126,16 @@ function updateRouteLine(cursorPosition = null) {
     maskedAreas.forEach(area => {
       window.hideRouteDashesInsideSettlement(area, true);
     });
+  }
+
+  // После перестроения подтверждённого маршрута восстанавливаем уже
+  // пройденную часть линии, если отряд находится на паузе или в пути.
+  if (!window.routeMode && window.partyPlaybackState &&
+      window.partyPlaybackState.routeStartedAt &&
+      Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) {
+    updatePartyPlaybackRouteLine(
+      getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
+    );
   }
 
   console.log("Длина маршрута:", Math.round(totalLength));
