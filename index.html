@@ -1891,7 +1891,8 @@ function createRouteLaunchPanel() {
       await window.publishPartyPlaybackState({
         status: "playing",
         startDistance: distance,
-        startedAt: getSynchronizedRouteNow() + 500,
+        // Даём маркеру полностью завершить плавный трёхсекундный разворот.
+        startedAt: getSynchronizedRouteNow() + 3000,
         routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null
       });
     } catch (error) {
@@ -3551,9 +3552,10 @@ function setPartyMarkerBearingForDistance(distance, initialTurn = false) {
 
   const progress = Math.max(0, Math.min(1, Number(distance) / total));
   const displayDistance = progress * displayLength;
-  // Берём направление по более длинному участку визуальной линии:
-  // мелкие неровности перестают заставлять значок постоянно менять курс.
-  const sample = Math.max(18, Math.min(36, displayLength * 0.012));
+  // Берём направление по короткому участку визуальной линии:
+  // это сохраняет подавление мелкого шума, но позволяет быстрее
+  // реагировать на реальные повороты маршрута.
+  const sample = Math.max(7, Math.min(14, displayLength * 0.006));
   const fromDistance = Math.max(0, displayDistance - sample);
   const toDistance = Math.min(displayLength, displayDistance + sample);
   const from = getRoutePointAtDistance(displayPoints, fromDistance);
@@ -3575,7 +3577,7 @@ function setPartyMarkerBearingForDistance(distance, initialTurn = false) {
   partyMarker._partyBearing = angle;
   const artwork = partyMarker._icon.querySelector("img");
   if (!artwork) return;
-  artwork.style.transitionDuration = initialTurn ? "1000ms" : "180ms";
+  artwork.style.transitionDuration = initialTurn ? "3000ms" : "180ms";
   artwork.style.transform = `rotate(${angle}deg)`;
 }
 
@@ -3640,7 +3642,10 @@ function tickPartyPlayback() {
   partyPlaybackDistance = distance;
   const position = getPartyPlaybackDisplayPosition(distance);
   if (position && partyMarker) setPartyMarkerPlaybackPosition(position);
-  setPartyMarkerBearingForDistance(distance, false);
+  // Не перебиваем трёхсекундный начальный разворот обычным обновлением угла.
+  if (now >= Number(state.startedAt || 0)) {
+    setPartyMarkerBearingForDistance(distance, false);
+  }
   updatePartyPlaybackRouteLine(distance);
   if (distance >= total - 0.001) {
     window.partyPlaybackState = { ...state, status: "paused", startDistance: total, startedAt: null };
@@ -5777,7 +5782,9 @@ map.on("zoomend", function() {
           );
           const playbackPosition = getPartyPlaybackDisplayPosition(playbackDistance);
           if (playbackPosition) setPartyMarkerPlaybackPosition(playbackPosition);
-          setPartyMarkerBearingForDistance(playbackDistance, false);
+          if (getSynchronizedRouteNow() >= Number(window.partyPlaybackState.startedAt || 0)) {
+            setPartyMarkerBearingForDistance(playbackDistance, false);
+          }
         }
 
         console.log("Положение отряда:", coordinates);
