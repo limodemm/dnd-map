@@ -755,9 +755,7 @@ let partyIcon = createPartyIcon();
 
         // Если маркера ещё нет — создаём его
         if (!partyMarker) {
-          ensureRouteMarkerPanes();
-partyMarker = L.marker(coordinates, {
-  pane: "party-marker-pane",
+          partyMarker = L.marker(coordinates, {
   icon: partyIcon,
   interactive: true,
   zIndexOffset: 1000
@@ -774,7 +772,6 @@ window.routeEditingConfirmedRoute = false;
 if (routeLaunchPanel) routeLaunchPanel.style.display = "none";
 pendingRouteResumeState = null;
 pendingRoutePlaybackResumeDistance = null;
-routeRestElapsedUnits = 0;
 lastConfirmedRoutePointSnapshot = [];
 routeFinished = false;
 window.routeDestinationCityId = null;
@@ -857,9 +854,6 @@ let routeForcedMarchStartDistance = 0;
 let routeForcedMarchStartUnits = 0;
 let routeForcedMarchEpochStartDistance = 0;
 let routeForcedMarchPendingExit = false;
-// Накопленная доля игрового дня от последнего привала до текущего начала
-// оставшегося маршрута. Нужна, чтобы редактирование не сдвигало привалы.
-let routeRestElapsedUnits = 0;
 
 // Мост к состоянию форсированного марша для обработчиков поселений,
 // которые находятся в отдельной области видимости ES-модуля.
@@ -1343,7 +1337,7 @@ function beginRouteMarkerAnimation(startDistance, endDistance, sharedStartedAt, 
   const elapsed = getSynchronizedRouteNow() - startedAtEpoch;
   // Если событие пришло уже после завершения, показываем готовый маршрут,
   // а не запускаем устаревшую анимацию с нуля.
-  if (elapsed >= duration) {
+  if (elapsed >= duration + 100) {
     return;
   }
 
@@ -1353,7 +1347,7 @@ function beginRouteMarkerAnimation(startDistance, endDistance, sharedStartedAt, 
     routeMarkerAnimations = routeMarkerAnimations.filter(item => item !== animation);
     syncRouteLaunchControls();
     updateRouteLine(lastCursorPosition);
-  }, Math.max(0, duration - elapsed - 120));
+  }, Math.max(0, duration + 100 - elapsed));
 }
 
 // Firebase-модуль использует этот метод, чтобы дождаться окончания
@@ -1909,46 +1903,9 @@ function createRouteLaunchPanel() {
     pendingRouteResumeState = captureRouteRevealProgressForEditing();
     // Отдельно сохраняем положение отряда. Прогресс движения нельзя брать
     // из анимации раскрытия линии: это две независимые временные шкалы.
-    const absolutePlaybackDistance = window.partyPlaybackState
+    pendingRoutePlaybackResumeDistance = window.partyPlaybackState
       ? getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
       : 0;
-    pendingRoutePlaybackResumeDistance = 0;
-    if (window.partyPlaybackState && Array.isArray(routePoints) && routePoints.length > 1) {
-      // Сохраняем накопленное время от последнего привала. Сами привалы
-      // остаются привязаны к исходному маршруту, а не пересчитываются от отряда.
-      const existingRestDistances = getNormalRestDistances(
-        getRouteTravelLength(routePoints),
-        routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1),
-        routePoints
-      );
-      const lastPassedRest = existingRestDistances
-        .filter(distance => distance <= absolutePlaybackDistance + 0.001)
-        .reduce((latest, distance) => Math.max(latest, distance), 0);
-      routeRestElapsedUnits = getRouteTravelTimeUnitsBetweenDistances(
-        routePoints, lastPassedRest, absolutePlaybackDistance
-      );
-      // Сначала переводим абсолютные интервалы форсированного марша в новую
-      // систему координат, пока исходная геометрия ещё доступна.
-      const rebasedForcedSegments = routeForcedSegments.map(segment => {
-        const absolute = getForcedSegmentDistances(segment);
-        return { ...segment, start: absolute.start - absolutePlaybackDistance,
-          end: absolute.end - absolutePlaybackDistance, fixed: true };
-      }).filter(segment => segment.end > 0.001);
-      const currentPartyPosition = getRoutePointAtDistance(routePoints, absolutePlaybackDistance);
-      // Отныне начало редактора — сам отряд. Пройденные вершины физически
-      // исключаются из рабочей геометрии, поэтому «Вернуть» не может их выбрать.
-      routePoints = getRoutePointsFromDistance(routePoints, absolutePlaybackDistance);
-      pendingRouteResumeState = null;
-      const remainingLength = getRouteTravelLength(routePoints);
-      routeForcedSegments = rebasedForcedSegments
-        .filter(segment => segment.start < remainingLength + 0.001)
-        .map(segment => ({ ...segment, start: Math.max(0, segment.start),
-          end: Math.min(remainingLength, segment.end) }));
-      routeForcedMarchStartDistance = Math.max(0, routeForcedMarchStartDistance - absolutePlaybackDistance);
-      routeForcedMarchEpochStartDistance = Math.max(0, routeForcedMarchEpochStartDistance - absolutePlaybackDistance);
-      partyPlaybackDistance = 0;
-      if (currentPartyPosition) setPartyMarkerPlaybackPosition(currentPartyPosition);
-    }
     // Останавливаем раскрытие линии и удаляем её временные штрихи.
     // Повторная отрисовка без активных анимаций вернёт полный маршрут
     // в точности в статичном виде, пригодном для дальнейшего редактирования.
@@ -2697,7 +2654,6 @@ window.routePendingConfirmation = false;
       forcedMarchStartUnits: routeForcedMarchStartUnits,
       forcedMarchEpochStartDistance: routeForcedMarchEpochStartDistance,
       forcedMarchPendingExit: routeForcedMarchPendingExit,
-      restElapsedUnits: routeRestElapsedUnits,
       forcedSegments: window.routeForcedSegments.map(segment => ({ ...segment })),
       intermediateSettlementIds: Array.isArray(window.routeIntermediateCityIds)
         ? window.routeIntermediateCityIds.slice() : [],
@@ -3392,25 +3348,6 @@ function getRoutePointsUpToDistance(points, targetDistance) {
   return result;
 }
 
-// Возвращает только непройденную часть маршрута. Первая точка — точное
-// положение отряда; последующие вершины сохраняют настройки своих сегментов.
-function getRoutePointsFromDistance(points, targetDistance) {
-  if (!Array.isArray(points) || !points.length) return [];
-  const total = getRouteTravelLength(points);
-  const distance = Math.max(0, Math.min(total, Number(targetDistance) || 0));
-  const current = getRoutePointAtDistance(points, distance);
-  if (!current) return [points[0]];
-  const result = [copyRoutePointMetadata(current, L.latLng(current.lat, current.lng))];
-  let passed = 0;
-  for (let i = 1; i < points.length; i++) {
-    const segmentLength = getRouteTravelLength([points[i - 1], points[i]]);
-    passed += segmentLength;
-    if (passed > distance + 0.001) result.push(points[i]);
-  }
-  if (result.length === 1 && distance < total - 0.001) result.push(points[points.length - 1]);
-  return result;
-}
-
 // Вставляет в геометрию точные точки на заданных расстояниях.
 // Это гарантирует, что привалы, черты и крестики лежат непосредственно на линии.
 function getRoutePointsWithDistanceAnchors(points, distances) {
@@ -3558,8 +3495,8 @@ function getRouteDistanceAtElapsedTime(points, startDistance, elapsedUnits, maxD
   return max;
 }
 
-// ТЕСТОВАЯ СКОРОСТЬ: 8 игровых часов (1/3 дня) проходят за 15 секунд.
-// Один полный игровой день = 45 секунд реального времени.
+// Общее движение маркера. 8 игровых часов (1/3 игрового дня) проходят
+// за 60 секунд реального времени: один игровой день = 180 секунд.
 window.partyPlaybackState = null;
 let partyPlaybackFrame = null;
 let partyPlaybackDistance = 0;
@@ -3568,7 +3505,7 @@ let partyPlaybackLastUiStatus = null;
 function getPartyPlaybackDistance(state, now) {
   const start = Math.max(0, Number(state.startDistance) || 0);
   if (state.status !== "playing") return start;
-  const elapsedUnits = Math.max(0, now - Number(state.startedAt || now)) / 45000;
+  const elapsedUnits = Math.max(0, now - Number(state.startedAt || now)) / 60000;
   return getRouteDistanceAtElapsedTime(
     routePoints,
     start,
@@ -3639,7 +3576,6 @@ function tickPartyPlayback() {
   const position = getRoutePointAtDistance(routePoints, distance);
   if (position && partyMarker) setPartyMarkerPlaybackPosition(position);
   updatePartyPlaybackRouteLine(distance);
-  updatePartyPlaybackTokens(distance);
   if (distance >= total - 0.001) {
     window.partyPlaybackState = { ...state, status: "paused", startDistance: total, startedAt: null };
     partyPlaybackDistance = total;
@@ -3665,7 +3601,6 @@ window.applyPartyPlaybackState = function(state) {
     const position = getRoutePointAtDistance(routePoints, partyPlaybackDistance);
     if (position && partyMarker) setPartyMarkerPlaybackPosition(position);
     updatePartyPlaybackRouteLine(partyPlaybackDistance);
-    updatePartyPlaybackTokens(partyPlaybackDistance);
   }
 };
 
@@ -3714,14 +3649,8 @@ function getNormalRestDistances(totalLength, dailyLimit, routeGeometry = routePo
   function addRegularRests(anchor, end) {
     if (end <= anchor + 0.001) return;
     const totalUnits = getRouteTravelTimeUnitsBetweenDistances(routeGeometry, anchor, end);
-    const carriesElapsed = Math.abs(anchor) <= 0.001;
-    const firstRestInUnits = carriesElapsed
-      ? Math.max(0.000001, 1 - Math.min(0.999999, routeRestElapsedUnits))
-      : 1;
-    for (let targetUnits = firstRestInUnits;
-         targetUnits <= totalUnits + 0.000001;
-         targetUnits += 1) {
-      const distance = getRouteDistanceAtElapsedTime(routeGeometry, anchor, targetUnits, end);
+    for (let day = 1; day <= Math.floor(totalUnits + 0.000001); day++) {
+      const distance = getRouteDistanceAtElapsedTime(routeGeometry, anchor, day, end);
       addRest(distance, end);
     }
   }
@@ -3875,10 +3804,6 @@ function ensureRouteMarkerPanes() {
   let flagPane = map.getPane("route-flag-pane");
   if (!flagPane) flagPane = map.createPane("route-flag-pane");
   flagPane.style.zIndex = "700";
-
-  let partyPane = map.getPane("party-marker-pane");
-  if (!partyPane) partyPane = map.createPane("party-marker-pane");
-  partyPane.style.zIndex = "800";
 }
 
 // Объединяем крестики только тогда, когда их экранные области 28x28 px
@@ -4130,32 +4055,6 @@ function registerPartyPlaybackRouteLine(layer, startDistance, endDistance) {
   partyPlaybackRouteLineLayers.push(layer);
 }
 
-function registerPartyPlaybackToken(marker, distance) {
-  if (!marker || !Number.isFinite(Number(distance))) return;
-  marker._partyPlaybackDistance = Math.max(0, Number(distance));
-}
-
-function updatePartyPlaybackTokens(distance) {
-  const tokens = [...(window.routeRestMarkers || [])];
-  if (routeEndMarker) tokens.push(routeEndMarker);
-  tokens.forEach(marker => {
-    if (!marker || !Number.isFinite(marker._partyPlaybackDistance)) return;
-    const visible = distance < marker._partyPlaybackDistance - 0.001;
-    const targetOpacity = visible ? "1" : "0";
-    if (marker._icon) {
-      marker._icon.style.transition = "none";
-      if (marker._icon.style.opacity !== targetOpacity) {
-        marker._icon.style.opacity = targetOpacity;
-      }
-    } else if (typeof marker.setStyle === "function") {
-      const currentOpacity = marker.options && marker.options.opacity;
-      if (Number(currentOpacity) !== Number(targetOpacity)) {
-        marker.setStyle({ opacity: visible ? 1 : 0, fillOpacity: visible ? 1 : 0 });
-      }
-    }
-  });
-}
-
 function updatePartyPlaybackRouteLine(distance) {
   // Пока строится маршрут, его прозрачные штрихи принадлежат анимации
   // появления. Маска движения не должна менять их opacity или скрывать их.
@@ -4232,8 +4131,6 @@ function updatePartyPlaybackRouteLine(distance) {
       hiddenPath.setAttribute("fill", "none");
       hiddenPath.setAttribute("stroke", "black");
       hiddenPath.setAttribute("stroke-width", "40");
-      // Плоский край не заходит вперёд текущей позиции маркера.
-      // Скругление исходной линии остаётся у basePath.
       hiddenPath.setAttribute("stroke-linecap", "butt");
       hiddenPath.setAttribute("stroke-linejoin", "round");
 
@@ -4255,11 +4152,7 @@ function updatePartyPlaybackRouteLine(distance) {
     const pathLength = Number(layer._partyPlaybackPathLength) || 0;
     if (!(pathLength > 0.01)) return;
 
-    let hiddenLength = Math.max(0, Math.min(pathLength, pathLength * progress));
-    // У самого первого штриха исходный round-cap выступает за начало SVG-пути.
-    // Компенсируем только этот начальный колпачок; остальные сегменты режутся
-    // строго по позиции маркера и не исчезают перед ним.
-    if (start <= 0.001) hiddenLength = Math.min(pathLength, hiddenLength + 20);
+    const hiddenLength = Math.max(0, Math.min(pathLength, pathLength * progress));
     basePath.setAttribute("d", pathData);
     hiddenPath.setAttribute("d", pathData);
     // Чёрный штрих начинается строго с начала SVG-пути. По мере движения
@@ -5066,7 +4959,6 @@ function updateRouteLine(cursorPosition = null) {
       zIndexOffset: 1100
     }).addTo(map);
     if (boundaryShouldAnimate) animateRouteToken(boundaryMarker, boundaryAnimationDelay, ".route-token-appear");
-    registerPartyPlaybackToken(boundaryMarker, boundaryDistance);
     window.routeRestMarkers.push(boundaryMarker);
 
     // Крестики истощения — каждые 1/8 игрового дня после первой суточной
@@ -5127,7 +5019,6 @@ function updateRouteLine(cursorPosition = null) {
         zIndexOffset: 1100
       }).addTo(map);
       if (exhaustionShouldAnimate) animateRouteToken(marker, exhaustionAnimationDelay, ".route-token-appear");
-      registerPartyPlaybackToken(marker, Math.max(...cluster.distances));
       window.routeRestMarkers.push(marker);
     });
   });
@@ -5167,7 +5058,6 @@ function updateRouteLine(cursorPosition = null) {
 
     // Привал находится в отдельном слое выше крестиков.
     marker.bringToFront();
-    registerPartyPlaybackToken(marker, distance);
     window.routeRestMarkers.push(marker);
   });
 
@@ -5211,7 +5101,6 @@ function updateRouteLine(cursorPosition = null) {
       zIndexOffset: 1200
     }).addTo(map);
     if (flagShouldAnimate) animateRouteToken(routeEndMarker, flagAnimationDelay, ".route-token-appear");
-    registerPartyPlaybackToken(routeEndMarker, routeEndDistance);
   }
 
   // Информация в панели.
@@ -5317,7 +5206,6 @@ window.applySynchronizedPartyRoute = function(data) {
   routeForcedMarchStartUnits = Number(data.forcedMarchStartUnits) || 0;
   routeForcedMarchEpochStartDistance = Number(data.forcedMarchEpochStartDistance) || 0;
   routeForcedMarchPendingExit = Boolean(data.forcedMarchPendingExit);
-  routeRestElapsedUnits = Math.max(0, Math.min(0.999999, Number(data.restElapsedUnits) || 0));
   const legacyDailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
   routeForcedSegments = (Array.isArray(data.forcedSegments) ? data.forcedSegments : [])
     .map(segment => {
