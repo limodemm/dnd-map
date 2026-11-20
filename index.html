@@ -755,9 +755,7 @@ let partyIcon = createPartyIcon();
 
         // Если маркера ещё нет — создаём его
         if (!partyMarker) {
-          ensureRouteMarkerPanes();
-partyMarker = L.marker(coordinates, {
-  pane: "party-marker-pane",
+          partyMarker = L.marker(coordinates, {
   icon: partyIcon,
   interactive: true,
   zIndexOffset: 1000
@@ -1339,7 +1337,7 @@ function beginRouteMarkerAnimation(startDistance, endDistance, sharedStartedAt, 
   const elapsed = getSynchronizedRouteNow() - startedAtEpoch;
   // Если событие пришло уже после завершения, показываем готовый маршрут,
   // а не запускаем устаревшую анимацию с нуля.
-  if (elapsed >= duration) {
+  if (elapsed >= duration + 100) {
     return;
   }
 
@@ -1349,7 +1347,7 @@ function beginRouteMarkerAnimation(startDistance, endDistance, sharedStartedAt, 
     routeMarkerAnimations = routeMarkerAnimations.filter(item => item !== animation);
     syncRouteLaunchControls();
     updateRouteLine(lastCursorPosition);
-  }, Math.max(0, duration - elapsed));
+  }, Math.max(0, duration + 100 - elapsed));
 }
 
 // Firebase-модуль использует этот метод, чтобы дождаться окончания
@@ -1905,33 +1903,9 @@ function createRouteLaunchPanel() {
     pendingRouteResumeState = captureRouteRevealProgressForEditing();
     // Отдельно сохраняем положение отряда. Прогресс движения нельзя брать
     // из анимации раскрытия линии: это две независимые временные шкалы.
-    const absolutePlaybackDistance = window.partyPlaybackState
+    pendingRoutePlaybackResumeDistance = window.partyPlaybackState
       ? getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
       : 0;
-    pendingRoutePlaybackResumeDistance = 0;
-    if (window.partyPlaybackState && Array.isArray(routePoints) && routePoints.length > 1) {
-      // Сначала переводим абсолютные интервалы форсированного марша в новую
-      // систему координат, пока исходная геометрия ещё доступна.
-      const rebasedForcedSegments = routeForcedSegments.map(segment => {
-        const absolute = getForcedSegmentDistances(segment);
-        return { ...segment, start: absolute.start - absolutePlaybackDistance,
-          end: absolute.end - absolutePlaybackDistance, fixed: true };
-      }).filter(segment => segment.end > 0.001);
-      const currentPartyPosition = getRoutePointAtDistance(routePoints, absolutePlaybackDistance);
-      // Отныне начало редактора — сам отряд. Пройденные вершины физически
-      // исключаются из рабочей геометрии, поэтому «Вернуть» не может их выбрать.
-      routePoints = getRoutePointsFromDistance(routePoints, absolutePlaybackDistance);
-      pendingRouteResumeState = null;
-      const remainingLength = getRouteTravelLength(routePoints);
-      routeForcedSegments = rebasedForcedSegments
-        .filter(segment => segment.start < remainingLength + 0.001)
-        .map(segment => ({ ...segment, start: Math.max(0, segment.start),
-          end: Math.min(remainingLength, segment.end) }));
-      routeForcedMarchStartDistance = Math.max(0, routeForcedMarchStartDistance - absolutePlaybackDistance);
-      routeForcedMarchEpochStartDistance = Math.max(0, routeForcedMarchEpochStartDistance - absolutePlaybackDistance);
-      partyPlaybackDistance = 0;
-      if (currentPartyPosition) setPartyMarkerPlaybackPosition(currentPartyPosition);
-    }
     // Останавливаем раскрытие линии и удаляем её временные штрихи.
     // Повторная отрисовка без активных анимаций вернёт полный маршрут
     // в точности в статичном виде, пригодном для дальнейшего редактирования.
@@ -3374,25 +3348,6 @@ function getRoutePointsUpToDistance(points, targetDistance) {
   return result;
 }
 
-// Возвращает только непройденную часть маршрута. Первая точка — точное
-// положение отряда; последующие вершины сохраняют настройки своих сегментов.
-function getRoutePointsFromDistance(points, targetDistance) {
-  if (!Array.isArray(points) || !points.length) return [];
-  const total = getRouteTravelLength(points);
-  const distance = Math.max(0, Math.min(total, Number(targetDistance) || 0));
-  const current = getRoutePointAtDistance(points, distance);
-  if (!current) return [points[0]];
-  const result = [copyRoutePointMetadata(current, L.latLng(current.lat, current.lng))];
-  let passed = 0;
-  for (let i = 1; i < points.length; i++) {
-    const segmentLength = getRouteTravelLength([points[i - 1], points[i]]);
-    passed += segmentLength;
-    if (passed > distance + 0.001) result.push(points[i]);
-  }
-  if (result.length === 1 && distance < total - 0.001) result.push(points[points.length - 1]);
-  return result;
-}
-
 // Вставляет в геометрию точные точки на заданных расстояниях.
 // Это гарантирует, что привалы, черты и крестики лежат непосредственно на линии.
 function getRoutePointsWithDistanceAnchors(points, distances) {
@@ -3621,7 +3576,6 @@ function tickPartyPlayback() {
   const position = getRoutePointAtDistance(routePoints, distance);
   if (position && partyMarker) setPartyMarkerPlaybackPosition(position);
   updatePartyPlaybackRouteLine(distance);
-  updatePartyPlaybackTokens(distance);
   if (distance >= total - 0.001) {
     window.partyPlaybackState = { ...state, status: "paused", startDistance: total, startedAt: null };
     partyPlaybackDistance = total;
@@ -3647,7 +3601,6 @@ window.applyPartyPlaybackState = function(state) {
     const position = getRoutePointAtDistance(routePoints, partyPlaybackDistance);
     if (position && partyMarker) setPartyMarkerPlaybackPosition(position);
     updatePartyPlaybackRouteLine(partyPlaybackDistance);
-    updatePartyPlaybackTokens(partyPlaybackDistance);
   }
 };
 
@@ -3851,10 +3804,6 @@ function ensureRouteMarkerPanes() {
   let flagPane = map.getPane("route-flag-pane");
   if (!flagPane) flagPane = map.createPane("route-flag-pane");
   flagPane.style.zIndex = "700";
-
-  let partyPane = map.getPane("party-marker-pane");
-  if (!partyPane) partyPane = map.createPane("party-marker-pane");
-  partyPane.style.zIndex = "800";
 }
 
 // Объединяем крестики только тогда, когда их экранные области 28x28 px
@@ -4106,25 +4055,6 @@ function registerPartyPlaybackRouteLine(layer, startDistance, endDistance) {
   partyPlaybackRouteLineLayers.push(layer);
 }
 
-function registerPartyPlaybackToken(marker, distance) {
-  if (!marker || !Number.isFinite(Number(distance))) return;
-  marker._partyPlaybackDistance = Math.max(0, Number(distance));
-}
-
-function updatePartyPlaybackTokens(distance) {
-  const tokens = [...(window.routeRestMarkers || [])];
-  if (routeEndMarker) tokens.push(routeEndMarker);
-  tokens.forEach(marker => {
-    if (!marker || !Number.isFinite(marker._partyPlaybackDistance)) return;
-    const visible = distance < marker._partyPlaybackDistance - 0.001;
-    if (typeof marker.setOpacity === "function") {
-      marker.setOpacity(visible ? 1 : 0);
-    } else if (typeof marker.setStyle === "function") {
-      marker.setStyle({ opacity: visible ? 1 : 0, fillOpacity: visible ? 1 : 0 });
-    }
-  });
-}
-
 function updatePartyPlaybackRouteLine(distance) {
   // Пока строится маршрут, его прозрачные штрихи принадлежат анимации
   // появления. Маска движения не должна менять их opacity или скрывать их.
@@ -4201,7 +4131,7 @@ function updatePartyPlaybackRouteLine(distance) {
       hiddenPath.setAttribute("fill", "none");
       hiddenPath.setAttribute("stroke", "black");
       hiddenPath.setAttribute("stroke-width", "40");
-      hiddenPath.setAttribute("stroke-linecap", "round");
+      hiddenPath.setAttribute("stroke-linecap", "butt");
       hiddenPath.setAttribute("stroke-linejoin", "round");
 
       mask.appendChild(basePath);
@@ -5029,7 +4959,6 @@ function updateRouteLine(cursorPosition = null) {
       zIndexOffset: 1100
     }).addTo(map);
     if (boundaryShouldAnimate) animateRouteToken(boundaryMarker, boundaryAnimationDelay, ".route-token-appear");
-    registerPartyPlaybackToken(boundaryMarker, boundaryDistance);
     window.routeRestMarkers.push(boundaryMarker);
 
     // Крестики истощения — каждые 1/8 игрового дня после первой суточной
@@ -5090,7 +5019,6 @@ function updateRouteLine(cursorPosition = null) {
         zIndexOffset: 1100
       }).addTo(map);
       if (exhaustionShouldAnimate) animateRouteToken(marker, exhaustionAnimationDelay, ".route-token-appear");
-      registerPartyPlaybackToken(marker, Math.max(...cluster.distances));
       window.routeRestMarkers.push(marker);
     });
   });
@@ -5130,7 +5058,6 @@ function updateRouteLine(cursorPosition = null) {
 
     // Привал находится в отдельном слое выше крестиков.
     marker.bringToFront();
-    registerPartyPlaybackToken(marker, distance);
     window.routeRestMarkers.push(marker);
   });
 
@@ -5174,7 +5101,6 @@ function updateRouteLine(cursorPosition = null) {
       zIndexOffset: 1200
     }).addTo(map);
     if (flagShouldAnimate) animateRouteToken(routeEndMarker, flagAnimationDelay, ".route-token-appear");
-    registerPartyPlaybackToken(routeEndMarker, routeEndDistance);
   }
 
   // Информация в панели.
