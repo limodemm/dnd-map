@@ -3553,10 +3553,17 @@ function setPartyMarkerBearingForDistance(distance, initialTurn = false) {
 
   const progress = Math.max(0, Math.min(1, Number(distance) / total));
   const displayDistance = progress * displayLength;
-  // Для коротких изгибов используем более близкие точки: длинная база
-  // усредняла малые повороты и заставляла маркер проходить их почти прямо.
-  // Небольшой нижний предел сохраняет устойчивость на микронеровностях.
-  const sample = Math.max(3, Math.min(6, displayLength * 0.003));
+  // База сглаживания задаётся в масштабе максимального зума. При отдалении
+  // камеры тот же географический отрезок занимает меньше экранных пикселей,
+  // поэтому увеличиваем базу пропорционально уменьшению масштаба. Это
+  // сохраняет примерно одинаковую экранную длину выборки и не даёт углу
+  // реагировать на микронеровности, которые на дальнем зуме сжимаются в пиксель.
+  const baseSample = Math.max(3, Math.min(6, displayLength * 0.003));
+  const maxZoom = typeof map.getMaxZoom === "function" ? map.getMaxZoom() : map.getZoom();
+  const zoomScale = typeof map.getZoomScale === "function"
+    ? map.getZoomScale(maxZoom, map.getZoom())
+    : 1;
+  const sample = baseSample * Math.max(1, Math.min(4, zoomScale || 1));
   const fromDistance = Math.max(0, displayDistance - sample);
   const toDistance = Math.min(displayLength, displayDistance + sample);
   const from = getRoutePointAtDistance(displayPoints, fromDistance);
