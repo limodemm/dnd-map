@@ -2447,7 +2447,7 @@ function createRouteLaunchPanel() {
     // Маркер фиксируется на начале новой геометрии ещё до подтверждения.
     if (partyMarker && routePoints.length >= 2) {
       partyMarker.setLatLng(routePoints[0]);
-      setPartyMarkerPlaybackPosition(routePoints[0]);
+      window.setPartyMarkerPlaybackPosition(routePoints[0]);
     }
     if (window.routeDestinationCityId && window.showSettlementOutline) {
       const destinationArea = (window.settlementAreas || []).find(area =>
@@ -4263,6 +4263,7 @@ function setPartyMarkerBearingForDistance(distance, initialTurn = false, preserv
   }
   partyMarker._partyBearing = angle;
 }
+window.setPartyMarkerBearingForDistance = setPartyMarkerBearingForDistance;
 
 window.startPartyInitialTurnAfterRouteRedraw = function() {
   if (window.routeMode || window.routePendingConfirmation || window.routeEditingConfirmedRoute ||
@@ -4274,7 +4275,7 @@ window.startPartyInitialTurnAfterRouteRedraw = function() {
   const movementStart = movement && Number(movement.routeStartedAt) === routeStartedAt
     ? Math.max(0, Number(movement.startDistance) || 0)
     : Math.max(0, Number(window.routePlaybackAnimationStartDistance) || 0);
-  setPartyMarkerBearingForDistance(movementStart, true);
+  window.setPartyMarkerBearingForDistance(movementStart, true);
   partyMarker._partyInitialTurnRouteStartedAt = routeStartedAt;
 };
 
@@ -4336,6 +4337,7 @@ function setPartyMarkerPlaybackPosition(position) {
   const layerPoint = map.project(latlng, map.getZoom()).subtract(map.getPixelOrigin());
   L.DomUtil.setPosition(partyMarker._icon, layerPoint);
 }
+window.setPartyMarkerPlaybackPosition = setPartyMarkerPlaybackPosition;
 
 function stopPartyPlaybackFrame() {
   if (partyPlaybackFrame !== null) cancelAnimationFrame(partyPlaybackFrame);
@@ -4367,11 +4369,11 @@ function tickPartyPlayback() {
   if (reachedRestStop) distance = nextRestStop;
   partyPlaybackDistance = distance;
   const position = window.getPartyPlaybackDisplayPosition(distance);
-  if (position && partyMarker) setPartyMarkerPlaybackPosition(position);
+  if (position && partyMarker) window.setPartyMarkerPlaybackPosition(position);
   // Обычное сопровождение направления включается после завершения
   // начального трёхсекундного разворота, не задерживая само движение.
   if (now >= Math.max(Number(state.startedAt || 0), Number(partyMarker && partyMarker._partyInitialTurnUntil) || 0)) {
-    setPartyMarkerBearingForDistance(distance, false);
+    window.setPartyMarkerBearingForDistance(distance, false);
   }
   updatePartyPlaybackRouteLine(distance);
   updatePartyPlaybackRouteTokens(distance);
@@ -4422,7 +4424,7 @@ window.applyPartyPlaybackState = function(state) {
     // повторным Firebase-снимком. Иначе запускаем как резервный вариант.
     const initialTurnStarted = Boolean(partyMarker && partyMarker._partyInitialTurnStarted);
     if (!initialTurnStarted) {
-      setPartyMarkerBearingForDistance(partyPlaybackDistance, true);
+      window.setPartyMarkerBearingForDistance(partyPlaybackDistance, true);
     }
     stopPartyPlaybackFrame();
     partyPlaybackFrame = requestAnimationFrame(tickPartyPlayback);
@@ -4430,11 +4432,11 @@ window.applyPartyPlaybackState = function(state) {
     stopPartyPlaybackFrame();
     setPartyMarkerPlaybackSmoothing(false);
     const position = window.getPartyPlaybackDisplayPosition(partyPlaybackDistance);
-    if (position && partyMarker) setPartyMarkerPlaybackPosition(position);
+    if (position && partyMarker) window.setPartyMarkerPlaybackPosition(position);
     const initialTurnActive = Boolean(partyMarker &&
       Number(partyMarker._partyInitialTurnUntil) > window.getSynchronizedRouteNow());
     if (!initialTurnActive) {
-      setPartyMarkerBearingForDistance(partyPlaybackDistance, false);
+      window.setPartyMarkerBearingForDistance(partyPlaybackDistance, false);
     }
     updatePartyPlaybackRouteLine(partyPlaybackDistance);
     updatePartyPlaybackRouteTokens(partyPlaybackDistance);
@@ -6730,7 +6732,7 @@ function refreshPartyPlaybackDuringMapMove() {
   // Сначала обновляем сам жетон по текущему времени и новой позиции карты,
   // затем режем линию точно под его фактическим экранным положением.
   const position = window.getPartyPlaybackDisplayPosition(distance);
-  if (position) setPartyMarkerPlaybackPosition(position);
+  if (position) window.setPartyMarkerPlaybackPosition(position);
   updatePartyPlaybackRouteLine(distance);
 }
 map.on("move", refreshPartyPlaybackDuringMapMove);
@@ -6796,12 +6798,12 @@ map.on("zoomend", function() {
         artwork.style.transform = `rotate(${currentAngle}deg)`;
         void artwork.getBoundingClientRect();
       }
-      setPartyMarkerBearingForDistance(bearingDistance, false, true);
+      window.setPartyMarkerBearingForDistance(bearingDistance, false, true);
     } else {
       if (window.partyPlaybackState && window.partyPlaybackState.status === "playing") {
         bearingDistance = window.getPartyPlaybackDistance(window.partyPlaybackState, now);
       }
-      setPartyMarkerBearingForDistance(bearingDistance, false, false, true);
+      window.setPartyMarkerBearingForDistance(bearingDistance, false, false, true);
     }
   }
   // После смены масштаба SVG иногда пересчитывает экранные координаты
@@ -6818,7 +6820,7 @@ map.on("zoomend", function() {
         : Math.max(0, Number(state.startDistance) || 0);
       partyPlaybackDistance = distance;
       const position = window.getPartyPlaybackDisplayPosition(distance);
-      if (position) setPartyMarkerPlaybackPosition(position);
+      if (position) window.setPartyMarkerPlaybackPosition(position);
       updatePartyPlaybackRouteLine(distance);
       updatePartyPlaybackRouteTokens(distance);
     }));
@@ -6838,11 +6840,11 @@ map.on("zoomend", function() {
             window.partyPlaybackState, window.getSynchronizedRouteNow()
           );
           const playbackPosition = window.getPartyPlaybackDisplayPosition(playbackDistance);
-          if (playbackPosition) setPartyMarkerPlaybackPosition(playbackPosition);
+          if (playbackPosition) window.setPartyMarkerPlaybackPosition(playbackPosition);
           const bearingNow = window.getSynchronizedRouteNow();
           const initialTurnUntil = Number(partyMarker && partyMarker._partyInitialTurnUntil) || 0;
           if (bearingNow >= Math.max(Number(window.partyPlaybackState.startedAt || 0), initialTurnUntil)) {
-            setPartyMarkerBearingForDistance(playbackDistance, false);
+            window.setPartyMarkerBearingForDistance(playbackDistance, false);
           }
         }
 
