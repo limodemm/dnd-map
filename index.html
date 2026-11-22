@@ -761,10 +761,15 @@ let partyIcon = createPartyIcon();
 
         // Если маркера ещё нет — создаём его
         if (!partyMarker) {
+          let partyPane = map.getPane("party-marker-pane");
+          if (!partyPane) partyPane = map.createPane("party-marker-pane");
+          // Отряд всегда выше маршрутных жетонов, включая флажок финиша.
+          partyPane.style.zIndex = "760";
           partyMarker = L.marker(coordinates, {
+  pane: "party-marker-pane",
   icon: partyIcon,
   interactive: true,
-  zIndexOffset: 1000
+  zIndexOffset: 2000
 }).addTo(map);
 
 partyMarker.on("click", function() {
@@ -3716,7 +3721,23 @@ function setPartyMarkerBearingForDistance(distance, initialTurn = false, preserv
     partyMarker._partyInitialTurnTo = angle;
     partyMarker._partyInitialTurnStartedAt = now;
     partyMarker._partyInitialTurnUntil = now + 3000;
-    artwork.style.transitionDuration = "3000ms";
+    // Сбрасываем предыдущий переход и принудительно фиксируем стартовый угол,
+    // иначе браузер может продолжить старый 180/250-мс transition вместо 3 секунд.
+    if (partyMarker._partyInitialTurnFrame) {
+      cancelAnimationFrame(partyMarker._partyInitialTurnFrame);
+      partyMarker._partyInitialTurnFrame = null;
+    }
+    artwork.style.transition = "none";
+    artwork.style.transform = `rotate(${partyMarker._partyInitialTurnFrom}deg)`;
+    void artwork.getBoundingClientRect();
+    partyMarker._partyInitialTurnFrame = requestAnimationFrame(() => {
+      if (!partyMarker || !partyMarker._icon) return;
+      const currentArtwork = partyMarker._icon.querySelector("img");
+      if (!currentArtwork) return;
+      currentArtwork.style.transition = "transform 3000ms linear";
+      currentArtwork.style.transform = `rotate(${angle}deg)`;
+      partyMarker._partyInitialTurnFrame = null;
+    });
   } else if (!preserveInitialTurn && Number(partyMarker._partyInitialTurnUntil) > now) {
     // Обычные тики движения не должны перебивать начальную CSS-анимацию.
     return;
@@ -3801,6 +3822,7 @@ function tickPartyPlayback() {
     setPartyMarkerBearingForDistance(distance, false);
   }
   updatePartyPlaybackRouteLine(distance);
+  updatePartyPlaybackRouteTokens(distance);
   if (distance >= total - 0.001) {
     window.partyPlaybackState = { ...state, status: "paused", startDistance: total, startedAt: null };
     partyPlaybackDistance = total;
@@ -3833,6 +3855,7 @@ window.applyPartyPlaybackState = function(state) {
     if (position && partyMarker) setPartyMarkerPlaybackPosition(position);
     setPartyMarkerBearingForDistance(partyPlaybackDistance, false);
     updatePartyPlaybackRouteLine(partyPlaybackDistance);
+    updatePartyPlaybackRouteTokens(partyPlaybackDistance);
   }
 };
 
@@ -4343,6 +4366,21 @@ function getPartyPathDistanceAtScreenPoint(path, screenPoint) {
   // При сильном расхождении оставляем прежнюю дистанционную оценку как fallback.
   if (nearestSquared > 60 * 60) return null;
   return Math.max(0, Math.min(length, result));
+}
+
+function updatePartyPlaybackRouteTokens(distance) {
+  const passedDistance = Number(distance) || 0;
+  const layers = Array.isArray(window.routeRestMarkers)
+    ? [...window.routeRestMarkers] : [];
+  if (routeEndMarker) layers.push(routeEndMarker);
+  layers.forEach(layer => {
+    const tokenDistance = Number(layer && layer._partyPlaybackTokenDistance);
+    if (!Number.isFinite(tokenDistance) || !layer || !map.hasLayer(layer)) return;
+    if (passedDistance + 0.02 >= tokenDistance) {
+      map.removeLayer(layer);
+      layer._partyPlaybackTokenRemoved = true;
+    }
+  });
 }
 
 function updatePartyPlaybackRouteLine(distance) {
@@ -5058,6 +5096,8 @@ function updateRouteLine(cursorPosition = null) {
               className: "route-speed-tick",
               interactive: false
             }).addTo(map);
+            tickLayer._partyPlaybackTokenDistance = partStart +
+              (partEnd - partStart) * (spec.screenDistance / Math.max(0.001, partScreenLength));
             window.routeRestMarkers.push(tickLayer);
 
             if (revealDelayForTick) {
@@ -5276,6 +5316,7 @@ function updateRouteLine(cursorPosition = null) {
       zIndexOffset: 1100
     }).addTo(map);
     if (boundaryShouldAnimate) animateRouteToken(boundaryMarker, boundaryAnimationDelay, ".route-token-appear");
+    boundaryMarker._partyPlaybackTokenDistance = boundaryDistance;
     window.routeRestMarkers.push(boundaryMarker);
 
     // Крестики истощения — каждые 1/8 игрового дня после первой суточной
@@ -5336,6 +5377,7 @@ function updateRouteLine(cursorPosition = null) {
         zIndexOffset: 1100
       }).addTo(map);
       if (exhaustionShouldAnimate) animateRouteToken(marker, exhaustionAnimationDelay, ".route-token-appear");
+      marker._partyPlaybackTokenDistance = Math.max(...cluster.distances);
       window.routeRestMarkers.push(marker);
     });
   });
@@ -5375,6 +5417,7 @@ function updateRouteLine(cursorPosition = null) {
 
     // Привал находится в отдельном слое выше крестиков.
     marker.bringToFront();
+    marker._partyPlaybackTokenDistance = distance;
     window.routeRestMarkers.push(marker);
   });
 
@@ -5417,6 +5460,7 @@ function updateRouteLine(cursorPosition = null) {
       keyboard: false,
       zIndexOffset: 1200
     }).addTo(map);
+    routeEndMarker._partyPlaybackTokenDistance = routeEndDistance;
     if (flagShouldAnimate) animateRouteToken(routeEndMarker, flagAnimationDelay, ".route-token-appear");
   }
 
