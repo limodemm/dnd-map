@@ -3528,6 +3528,25 @@ function getPartyPlaybackDistance(state, now) {
 // берётся с визуальной геометрии, чтобы маркер не срезал неровности.
 function getPartyPlaybackDisplayPosition(distance) {
   if (!Array.isArray(routePoints) || routePoints.length < 2) return null;
+
+  // Если Leaflet уже отрисовал маршрут, берём координату непосредственно
+  // с его SVG path. Это не только меняет угол, но и не позволяет маркеру
+  // повторять невидимые на текущем масштабе мелкие неровности исходной линии.
+  const entries = getPartyRenderedRouteSegments();
+  const entry = getPartyRenderedRouteSegmentAtDistance(entries, Number(distance) || 0);
+  if (entry && map) {
+    const progress = Math.max(0, Math.min(1,
+      ((Number(distance) || 0) - entry.start) / Math.max(0.000001, entry.end - entry.start)
+    ));
+    const screenPoint = getPartyRenderedRouteScreenPoint(entry, progress * entry.length);
+    const container = map.getContainer();
+    const rect = container.getBoundingClientRect();
+    if (screenPoint && rect) {
+      return map.containerPointToLatLng(L.point(screenPoint.x - rect.left, screenPoint.y - rect.top));
+    }
+  }
+
+  // Резерв до появления SVG-слоёв (например, сразу после загрузки маршрута).
   const sourceLength = getRouteTravelLength(routePoints);
   const displayPoints = Array.isArray(window.partyVisualRoutePoints) &&
     window.partyVisualRoutePoints.length >= 2
@@ -3616,73 +3635,16 @@ let partyBearingScreenGeometryCache = null;
 // выборки в экранных пикселях: мелкие колебания, которые визуально уже не
 // различимы на линии, не должны заставлять маркер вилять.
 function getPartyRenderedRouteBearing(distance) {
-  const displayPoints = Array.isArray(window.partyVisualRoutePoints) &&
-    window.partyVisualRoutePoints.length >= 2
-      ? window.partyVisualRoutePoints : createRouteDisplayPoints(routePoints, []);
-  if (displayPoints.length < 2 || !map) return null;
-
-  const zoom = map.getZoom();
-  let cache = partyBearingScreenGeometryCache;
-  if (!cache || cache.points !== displayPoints || cache.zoom !== zoom) {
-    const projected = displayPoints.map(point => map.project(point, zoom));
-    const travelCumulative = [0];
-    const screenCumulative = [0];
-    for (let i = 1; i < displayPoints.length; i++) {
-      travelCumulative.push(travelCumulative[i - 1] +
-        getRouteTravelLength([displayPoints[i - 1], displayPoints[i]]));
-      screenCumulative.push(screenCumulative[i - 1] + projected[i - 1].distanceTo(projected[i]));
-    }
-    cache = partyBearingScreenGeometryCache = {
-      points: displayPoints, zoom, projected, travelCumulative, screenCumulative,
-      travelLength: travelCumulative[travelCumulative.length - 1],
-      screenLength: screenCumulative[screenCumulative.length - 1]
-    };
-  }
-  if (!(cache.travelLength > 0.001) || !(cache.screenLength > 0.001)) return null;
-
-  const sourceLength = getRouteTravelLength(routePoints);
-  if (!(sourceLength > 0.001)) return null;
-  const normalizedDistance = Math.max(0, Math.min(1, (Number(distance) || 0) / sourceLength));
-  const targetTravel = normalizedDistance * cache.travelLength;
-  let low = 1;
-  let high = cache.travelCumulative.length - 1;
-  while (low < high) {
-    const mid = (low + high) >> 1;
-    if (cache.travelCumulative[mid] < targetTravel) low = mid + 1;
-    else high = mid;
-  }
-  const index = low;
-  const travelSpan = cache.travelCumulative[index] - cache.travelCumulative[index - 1];
-  const t = travelSpan > 0.000001
-    ? Math.max(0, Math.min(1, (targetTravel - cache.travelCumulative[index - 1]) / travelSpan)) : 0;
-  const targetScreen = cache.screenCumulative[index - 1] +
-    (cache.screenCumulative[index] - cache.screenCumulative[index - 1]) * t;
-
-  const minZoom = map.getMinZoom();
-  const maxZoom = map.getMaxZoom();
-  const zoomProgress = maxZoom > minZoom
-    ? Math.max(0, Math.min(1, (zoom - minZoom) / (maxZoom - minZoom))) : 1;
-  const sampleRadius = 35 - 24 * zoomProgress; // 35 px на минимальном, 11 px на максимальном зуме
-
-  function pointAtScreenDistance(target) {
-    const d = Math.max(0, Math.min(cache.screenLength, target));
-    let a = 1;
-    let b = cache.screenCumulative.length - 1;
-    while (a < b) {
-      const mid = (a + b) >> 1;
-      if (cache.screenCumulative[mid] < d) a = mid + 1;
-      else b = mid;
-    }
-    const span = cache.screenCumulative[a] - cache.screenCumulative[a - 1];
-    const part = span > 0.000001 ? (d - cache.screenCumulative[a - 1]) / span : 0;
-    return L.point(
-      cache.projected[a - 1].x + (cache.projected[a].x - cache.projected[a - 1].x) * part,
-      cache.projected[a - 1].y + (cache.projected[a].y - cache.projected[a - 1].y) * part
-    );
-  }
-
-  const from = pointAtScreenDistance(targetScreen - sampleRadius);
-  const to = pointAtScreenDistance(targetScreen + sampleRadius);
+  const entries = getPartyRenderedRouteSegments();
+  const entry = getPartyRenderedRouteSegmentAtDistance(entries, distance);
+  if (!entry) return null;
+  const progress = Math.max(0, Math.min(1,
+    (distance - entry.start) / Math.max(0.000001, entry.end - entry.start)
+  ));
+  const centerLength = progress * entry.length;
+  const sample = 11;
+  const from = getPartyRenderedRouteScreenPoint(entry, centerLength - sample);
+  const to = getPartyRenderedRouteScreenPoint(entry, centerLength + sample);
   if (!from || !to || Math.hypot(to.x - from.x, to.y - from.y) < 0.01) return null;
   return { from, to };
 }
@@ -3755,6 +3717,9 @@ function setPartyMarkerBearingForDistance(distance, initialTurn = false, preserv
     partyMarker._partyInitialTurnStartedAt = now;
     partyMarker._partyInitialTurnUntil = now + 3000;
     artwork.style.transitionDuration = "3000ms";
+  } else if (!preserveInitialTurn && Number(partyMarker._partyInitialTurnUntil) > now) {
+    // Обычные тики движения не должны перебивать начальную CSS-анимацию.
+    return;
   } else if (preserveInitialTurn && Number(partyMarker._partyInitialTurnUntil) > now) {
     const remaining = Number(partyMarker._partyInitialTurnUntil) - now;
     // Если геометрия линии после zoomend немного изменилась, продолжаем
