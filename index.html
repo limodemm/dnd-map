@@ -2354,32 +2354,13 @@ function createRouteLaunchPanel() {
       routeRestElapsedCarryUnits = getRouteElapsedUnitsSinceLastRest(
         routePoints, editOriginDistance, routeRestElapsedCarryUnits
       );
-
-      // Если отряд уже прошёл часть активного форсированного марша,
-      // переносим этот фактически пройденный отрезок в накопленный прогресс
-      // от последнего привала. После обрезки маршрута точка отряда станет
-      // новым нулём геометрии, поэтому начало активного форсированного
-      // участка тоже должно стать 0, но его временной carry обязан вырасти.
-      if (routeForcedMarch && !routeForcedMarchPendingExit &&
-          editOriginDistance > routeForcedMarchStartDistance + 0.001) {
-        const forcedDistanceAlreadyTravelled = getRouteTravelTimeUnitsBetweenDistances(
-          routePoints, routeForcedMarchStartDistance, editOriginDistance
-        );
-        routeForcedMarchStartUnits = Math.max(
-          0,
-          (Number(routeForcedMarchStartUnits) || 0) + forcedDistanceAlreadyTravelled
-        );
-        routeForcedMarchStartDistance = 0;
-      } else {
-        routeForcedMarchStartDistance = Math.max(0, routeForcedMarchStartDistance - editOriginDistance);
-      }
-      routeForcedMarchEpochStartDistance = Math.max(0, routeForcedMarchEpochStartDistance - editOriginDistance);
-
       routePoints = getRoutePointsBetweenDistances(
         routePoints, editOriginDistance, originalRouteLength
       );
       // В новой геометрии начало пути — сам отряд, поэтому его дистанция 0.
       pendingRoutePlaybackResumeDistance = 0;
+      routeForcedMarchStartDistance = Math.max(0, routeForcedMarchStartDistance - editOriginDistance);
+      routeForcedMarchEpochStartDistance = Math.max(0, routeForcedMarchEpochStartDistance - editOriginDistance);
       routeForcedSegments = routeForcedSegments
         .map(segment => ({ ...segment, start: Math.max(0, segment.start - editOriginDistance), end: segment.end - editOriginDistance }))
         .filter(segment => segment.end > 0.001);
@@ -5300,21 +5281,17 @@ function updateRouteLine(cursorPosition = null) {
     const safeStart = Math.max(0, start);
     const safeEnd = Math.min(totalLength, end);
     if (safeEnd <= safeStart + 0.001) return;
-    // Carry может быть больше 1: отряд не останавливается на разделителе,
-    // поэтому после редактирования уже пройденные суточные границы остаются
-    // позади новой нулевой точки. Рисуем следующую, ещё не достигнутую границу.
-    const carry = Math.max(0, Number(initialElapsedUnits) || 0);
+    const carry = Math.max(0, Math.min(0.999999, Number(initialElapsedUnits) || 0));
     const travelledUnits = getRouteTravelTimeUnitsBetweenDistances(
       pointsToDraw, safeStart, safeEnd
     );
     const elapsedUnits = carry + travelledUnits;
-    const nextBoundaryUnits = Math.floor(carry + 0.000001) + 1;
-    if (elapsedUnits < nextBoundaryUnits - 0.001) return;
+    if (elapsedUnits < 1 - 0.001) return;
     const boundaryDistance = getRouteDistanceAtElapsedTime(
-      pointsToDraw, safeStart, nextBoundaryUnits - carry, safeEnd
+      pointsToDraw, safeStart, 1 - carry, safeEnd
     );
     const exhaustionDistances = [];
-    for (let unit = nextBoundaryUnits + 0.125; unit <= elapsedUnits + 0.000001; unit += 0.125) {
+    for (let unit = 1.125; unit <= elapsedUnits + 0.000001; unit += 0.125) {
       const unitsAfterStart = unit - carry;
       if (unitsAfterStart <= 0.000001) continue;
       exhaustionDistances.push(getRouteDistanceAtElapsedTime(
