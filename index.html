@@ -4043,7 +4043,7 @@ window.getPartyPlaybackDistance = getPartyPlaybackDistance;
 // Переводит игровую дистанцию маршрута в точку на фактически нарисованной
 // линии. Скорость остаётся рассчитанной по исходному маршруту, а координата
 // берётся с визуальной геометрии, чтобы маркер не срезал неровности.
-function window.getPartyPlaybackDisplayPosition(distance) {
+function getPartyPlaybackDisplayPosition(distance) {
   if (!Array.isArray(routePoints) || routePoints.length < 2) return null;
 
   // Если Leaflet уже отрисовал маршрут, берём координату непосредственно
