@@ -3609,33 +3609,109 @@ function getPartyRenderedRouteScreenPoint(entry, pathDistance) {
   return L.point(localPoint.x, localPoint.y);
 }
 
+let partyBearingScreenGeometryCache = null;
+
+// Рассчитываем касательную по непрерывной геометрии всего видимого маршрута,
+// а не по отдельному короткому пунктиру. На дальнем зуме увеличиваем окно
+// выборки в экранных пикселях: мелкие колебания, которые визуально уже не
+// различимы на линии, не должны заставлять маркер вилять.
 function getPartyRenderedRouteBearing(distance) {
-  const entries = getPartyRenderedRouteSegments();
-  const entry = getPartyRenderedRouteSegmentAtDistance(entries, distance);
-  if (!entry) return null;
-  const progress = Math.max(0, Math.min(1,
-    (distance - entry.start) / Math.max(0.000001, entry.end - entry.start)
-  ));
-  const centerLength = progress * entry.length;
-  const sample = 11;
-  const from = getPartyRenderedRouteScreenPoint(entry, centerLength - sample);
-  const to = getPartyRenderedRouteScreenPoint(entry, centerLength + sample);
+  const displayPoints = Array.isArray(window.partyVisualRoutePoints) &&
+    window.partyVisualRoutePoints.length >= 2
+      ? window.partyVisualRoutePoints : createRouteDisplayPoints(routePoints, []);
+  if (displayPoints.length < 2 || !map) return null;
+
+  const zoom = map.getZoom();
+  let cache = partyBearingScreenGeometryCache;
+  if (!cache || cache.points !== displayPoints || cache.zoom !== zoom) {
+    const projected = displayPoints.map(point => map.project(point, zoom));
+    const travelCumulative = [0];
+    const screenCumulative = [0];
+    for (let i = 1; i < displayPoints.length; i++) {
+      travelCumulative.push(travelCumulative[i - 1] +
+        getRouteTravelLength([displayPoints[i - 1], displayPoints[i]]));
+      screenCumulative.push(screenCumulative[i - 1] + projected[i - 1].distanceTo(projected[i]));
+    }
+    cache = partyBearingScreenGeometryCache = {
+      points: displayPoints, zoom, projected, travelCumulative, screenCumulative,
+      travelLength: travelCumulative[travelCumulative.length - 1],
+      screenLength: screenCumulative[screenCumulative.length - 1]
+    };
+  }
+  if (!(cache.travelLength > 0.001) || !(cache.screenLength > 0.001)) return null;
+
+  const sourceLength = getRouteTravelLength(routePoints);
+  if (!(sourceLength > 0.001)) return null;
+  const normalizedDistance = Math.max(0, Math.min(1, (Number(distance) || 0) / sourceLength));
+  const targetTravel = normalizedDistance * cache.travelLength;
+  let low = 1;
+  let high = cache.travelCumulative.length - 1;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (cache.travelCumulative[mid] < targetTravel) low = mid + 1;
+    else high = mid;
+  }
+  const index = low;
+  const travelSpan = cache.travelCumulative[index] - cache.travelCumulative[index - 1];
+  const t = travelSpan > 0.000001
+    ? Math.max(0, Math.min(1, (targetTravel - cache.travelCumulative[index - 1]) / travelSpan)) : 0;
+  const targetScreen = cache.screenCumulative[index - 1] +
+    (cache.screenCumulative[index] - cache.screenCumulative[index - 1]) * t;
+
+  const minZoom = map.getMinZoom();
+  const maxZoom = map.getMaxZoom();
+  const zoomProgress = maxZoom > minZoom
+    ? Math.max(0, Math.min(1, (zoom - minZoom) / (maxZoom - minZoom))) : 1;
+  const sampleRadius = 35 - 24 * zoomProgress; // 35 px на минимальном, 11 px на максимальном зуме
+
+  function pointAtScreenDistance(target) {
+    const d = Math.max(0, Math.min(cache.screenLength, target));
+    let a = 1;
+    let b = cache.screenCumulative.length - 1;
+    while (a < b) {
+      const mid = (a + b) >> 1;
+      if (cache.screenCumulative[mid] < d) a = mid + 1;
+      else b = mid;
+    }
+    const span = cache.screenCumulative[a] - cache.screenCumulative[a - 1];
+    const part = span > 0.000001 ? (d - cache.screenCumulative[a - 1]) / span : 0;
+    return L.point(
+      cache.projected[a - 1].x + (cache.projected[a].x - cache.projected[a - 1].x) * part,
+      cache.projected[a - 1].y + (cache.projected[a].y - cache.projected[a - 1].y) * part
+    );
+  }
+
+  const from = pointAtScreenDistance(targetScreen - sampleRadius);
+  const to = pointAtScreenDistance(targetScreen + sampleRadius);
   if (!from || !to || Math.hypot(to.x - from.x, to.y - from.y) < 0.01) return null;
   return { from, to };
 }
 
-function setPartyMarkerBearingForDistance(distance, initialTurn = false, preserveInitialTurn = false) {
+function getPartyMarkerInitialTurnAngle(now = getSynchronizedRouteNow()) {
+  if (!partyMarker) return 0;
+  const from = Number(partyMarker._partyInitialTurnFrom);
+  const to = Number(partyMarker._partyInitialTurnTo);
+  const startedAt = Number(partyMarker._partyInitialTurnStartedAt);
+  const until = Number(partyMarker._partyInitialTurnUntil);
+  if (![from, to, startedAt, until].every(Number.isFinite) || until <= startedAt) {
+    return Number(partyMarker._partyBearing) || 0;
+  }
+  const progress = Math.max(0, Math.min(1, (now - startedAt) / (until - startedAt)));
+  return from + (to - from) * progress;
+}
+
+function setPartyMarkerBearingForDistance(distance, initialTurn = false, preserveInitialTurn = false, immediate = false) {
   if (!partyMarker || !partyMarker._icon || !map || routePoints.length < 2) return;
   const total = getRouteTravelLength(routePoints);
   if (!(total > 0)) return;
 
-  // Сначала используем фактический SVG path линии. Поэтому при уменьшении
-  // масштаба маркер повторяет именно ту упрощённую кривую, которую видит игрок,
-  // а не более подробную исходную геометрию маршрута.
+  // Направление рассчитывается по непрерывной экранной геометрии всей линии,
+  // а не по отдельным коротким SVG-штрихам: это не даёт маркеру вилять
+  // на мелких изгибах, которые при текущем масштабе визуально неразличимы.
   let bearing = getPartyRenderedRouteBearing(Number(distance) || 0);
   if (!bearing) {
-    // Резервный вариант нужен только до появления SVG-слоёв (например, сразу
-    // после загрузки состояния): направление берётся с визуальной геометрии.
+    // Резервный вариант на случай, если экранная геометрия ещё не готова:
+    // направление берётся с той же визуальной геометрии маршрута.
     const displayPoints = Array.isArray(window.partyVisualRoutePoints) &&
       window.partyVisualRoutePoints.length >= 2
         ? window.partyVisualRoutePoints
@@ -3659,25 +3735,36 @@ function setPartyMarkerBearingForDistance(distance, initialTurn = false, preserv
 
   // Нулевой угол соответствует направлению вверх (на север) у значка.
   let angle = Math.atan2(dx, -dy) * 180 / Math.PI;
-  if (Number.isFinite(partyMarker._partyBearing)) {
-    while (angle - partyMarker._partyBearing > 180) angle -= 360;
-    while (angle - partyMarker._partyBearing < -180) angle += 360;
+  const previousBearing = Number(partyMarker._partyBearing);
+  if (Number.isFinite(previousBearing)) {
+    while (angle - previousBearing > 180) angle -= 360;
+    while (angle - previousBearing < -180) angle += 360;
   }
   partyMarker._partyBearing = angle;
   const artwork = partyMarker._icon.querySelector("img");
   if (!artwork) return;
+  const now = getSynchronizedRouteNow();
   if (initialTurn) {
-    // Начальный разворот запускается вместе с раскрытием линии маршрута.
-    // Его нельзя перезапускать или перебивать обычными обновлениями угла.
+    // Начальный разворот длится ровно три секунды и запускается вместе
+    // с анимацией линии. Сохраняем его временную шкалу для восстановления
+    // после setIcon(), который Leaflet вызывает при смене масштаба.
     partyMarker._partyInitialTurnStarted = true;
     partyMarker._partyInitialTurnDistance = Number(distance) || 0;
-    partyMarker._partyInitialTurnUntil = getSynchronizedRouteNow() + 3000;
+    partyMarker._partyInitialTurnFrom = Number.isFinite(previousBearing) ? previousBearing : 0;
+    partyMarker._partyInitialTurnTo = angle;
+    partyMarker._partyInitialTurnStartedAt = now;
+    partyMarker._partyInitialTurnUntil = now + 3000;
     artwork.style.transitionDuration = "3000ms";
-  } else if (preserveInitialTurn && Number(partyMarker._partyInitialTurnUntil) > getSynchronizedRouteNow()) {
-    const remaining = Number(partyMarker._partyInitialTurnUntil) - getSynchronizedRouteNow();
+  } else if (preserveInitialTurn && Number(partyMarker._partyInitialTurnUntil) > now) {
+    const remaining = Number(partyMarker._partyInitialTurnUntil) - now;
+    // Если геометрия линии после zoomend немного изменилась, продолжаем
+    // оставшуюся часть разворота от текущего визуального угла к новой касательной.
+    partyMarker._partyInitialTurnFrom = getPartyMarkerInitialTurnAngle(now);
+    partyMarker._partyInitialTurnTo = angle;
+    partyMarker._partyInitialTurnStartedAt = now;
     artwork.style.transitionDuration = `${Math.max(1, remaining)}ms`;
   } else {
-    artwork.style.transitionDuration = "180ms";
+    artwork.style.transitionDuration = immediate ? "0ms" : "180ms";
   }
   artwork.style.transform = `rotate(${angle}deg)`;
 }
@@ -4235,6 +4322,64 @@ function registerPartyPlaybackRouteLine(layer, startDistance, endDistance) {
   partyPlaybackRouteLineLayers.push(layer);
 }
 
+function getPartyPlaybackMarkerScreenCenter() {
+  const icon = partyMarker && partyMarker._icon;
+  if (!icon || typeof icon.getBoundingClientRect !== "function") return null;
+  const rect = icon.getBoundingClientRect();
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+}
+
+// Находим точку SVG-пути, которая в текущем кадре находится ближе всего
+// к центру маркера. Это устраняет рассинхронизацию маски и жетона при pan:
+// cut больше не зависит от условной доли длины пунктирного штриха.
+function getPartyPathDistanceAtScreenPoint(path, screenPoint) {
+  if (!path || !screenPoint || typeof path.getTotalLength !== "function" ||
+      typeof path.getPointAtLength !== "function" || typeof path.getScreenCTM !== "function") return null;
+  const length = path.getTotalLength();
+  const svg = path.ownerSVGElement;
+  const matrix = path.getScreenCTM();
+  if (!(length > 0.01) || !svg || !matrix || typeof matrix.inverse !== "function") return null;
+  let localTarget;
+  try {
+    const svgPoint = svg.createSVGPoint();
+    svgPoint.x = screenPoint.x;
+    svgPoint.y = screenPoint.y;
+    localTarget = svgPoint.matrixTransform(matrix.inverse());
+  } catch (_) {
+    return null;
+  }
+  const distanceSquaredAt = value => {
+    const point = path.getPointAtLength(value);
+    const dx = point.x - localTarget.x;
+    const dy = point.y - localTarget.y;
+    return dx * dx + dy * dy;
+  };
+  const steps = Math.max(8, Math.ceil(length / 1.25));
+  let bestIndex = 0;
+  let bestSquared = Infinity;
+  for (let i = 0; i <= steps; i++) {
+    const value = length * i / steps;
+    const squared = distanceSquaredAt(value);
+    if (squared < bestSquared) {
+      bestSquared = squared;
+      bestIndex = i;
+    }
+  }
+  let left = length * Math.max(0, bestIndex - 1) / steps;
+  let right = length * Math.min(steps, bestIndex + 1) / steps;
+  for (let i = 0; i < 8; i++) {
+    const oneThird = left + (right - left) / 3;
+    const twoThirds = right - (right - left) / 3;
+    if (distanceSquaredAt(oneThird) <= distanceSquaredAt(twoThirds)) right = twoThirds;
+    else left = oneThird;
+  }
+  const result = (left + right) / 2;
+  const nearestSquared = distanceSquaredAt(result);
+  // При сильном расхождении оставляем прежнюю дистанционную оценку как fallback.
+  if (nearestSquared > 60 * 60) return null;
+  return Math.max(0, Math.min(length, result));
+}
+
 function updatePartyPlaybackRouteLine(distance) {
   // Пока строится маршрут, его прозрачные штрихи принадлежат анимации
   // появления. Маска движения не должна менять их opacity или скрывать их.
@@ -4242,6 +4387,7 @@ function updatePartyPlaybackRouteLine(distance) {
   // можно безопасно применять обрезание пройденной части.
   if (routeMarkerAnimations.length > 0) return;
   if (!Array.isArray(partyPlaybackRouteLineLayers)) return;
+  const markerScreenCenter = getPartyPlaybackMarkerScreenCenter();
   partyPlaybackRouteLineLayers.forEach(layer => {
     const path = layer && layer._path;
     if (!path || !path.ownerSVGElement) return;
@@ -4351,7 +4497,11 @@ function updatePartyPlaybackRouteLine(distance) {
     const pathLength = Number(layer._partyPlaybackPathLength) || 0;
     if (!(pathLength > 0.01)) return;
 
-    const hiddenLength = Math.max(0, Math.min(pathLength, pathLength * progress));
+    let hiddenLength = Math.max(0, Math.min(pathLength, pathLength * progress));
+    if (markerScreenCenter) {
+      const markerAlignedLength = getPartyPathDistanceAtScreenPoint(path, markerScreenCenter);
+      if (Number.isFinite(markerAlignedLength)) hiddenLength = markerAlignedLength;
+    }
     basePath.setAttribute("d", pathData);
     hiddenPath.setAttribute("d", pathData);
     // Чёрный штрих начинается строго с начала SVG-пути. По мере движения
@@ -5886,11 +6036,19 @@ map.on("mousemove", function(e) {
 // Во время перетаскивания карты Leaflet может обновить/перенести SVG renderer.
 // Сразу перепривязываем маски пройденной линии к актуальным SVG-путям, чтобы
 // уже скрытый участок не появлялся повторно над маркером до следующего кадра.
-map.on("move", function() {
+function refreshPartyPlaybackDuringMapMove() {
   const state = window.partyPlaybackState;
   if (!state || state.status !== "playing" || routeMarkerAnimations.length > 0) return;
-  updatePartyPlaybackRouteLine(getPartyPlaybackDistance(state, getSynchronizedRouteNow()));
-});
+  const distance = getPartyPlaybackDistance(state, getSynchronizedRouteNow());
+  partyPlaybackDistance = distance;
+  // Сначала обновляем сам жетон по текущему времени и новой позиции карты,
+  // затем режем линию точно под его фактическим экранным положением.
+  const position = getPartyPlaybackDisplayPosition(distance);
+  if (position) setPartyMarkerPlaybackPosition(position);
+  updatePartyPlaybackRouteLine(distance);
+}
+map.on("move", refreshPartyPlaybackDuringMapMove);
+map.on("moveend", refreshPartyPlaybackDuringMapMove);
 
 // При изменении масштаба пересобираем группы крестиков,
 // чтобы они не накладывались друг на друга.
@@ -5909,18 +6067,28 @@ map.on("zoomend", function() {
   if (routePoints.length >= 2 || window.routeMode) {
     updateRouteLine(lastCursorPosition);
   }
-  // setIcon() создаёт новый img и сбрасывает его CSS-transform. Восстанавливаем
-  // направление уже после пересборки линии, используя её актуальную геометрию.
+  // setIcon() создаёт новый img. Восстанавливаем текущий визуальный угол
+  // без сброса в 0 и не запускаем начальную трёхсекундную анимацию заново.
   if (partyMarker && routePoints.length >= 2) {
     const now = getSynchronizedRouteNow();
     const initialTurnUntil = Number(partyMarker._partyInitialTurnUntil) || 0;
     let bearingDistance = partyPlaybackDistance;
     if (now < initialTurnUntil) {
       bearingDistance = Number(partyMarker._partyInitialTurnDistance) || 0;
-    } else if (window.partyPlaybackState && window.partyPlaybackState.status === "playing") {
-      bearingDistance = getPartyPlaybackDistance(window.partyPlaybackState, now);
+      const artwork = partyMarker._icon && partyMarker._icon.querySelector("img");
+      if (artwork) {
+        const currentAngle = getPartyMarkerInitialTurnAngle(now);
+        artwork.style.transitionDuration = "0ms";
+        artwork.style.transform = `rotate(${currentAngle}deg)`;
+        void artwork.getBoundingClientRect();
+      }
+      setPartyMarkerBearingForDistance(bearingDistance, false, true);
+    } else {
+      if (window.partyPlaybackState && window.partyPlaybackState.status === "playing") {
+        bearingDistance = getPartyPlaybackDistance(window.partyPlaybackState, now);
+      }
+      setPartyMarkerBearingForDistance(bearingDistance, false, false, true);
     }
-    setPartyMarkerBearingForDistance(bearingDistance, false, true);
   }
 });
 
