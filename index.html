@@ -1381,13 +1381,26 @@ window.isRouteRevealRunning = function() {
 // ещё показывается анимация построения линии маршрута.
 function syncRouteLaunchControls() {
   if (!routeLaunchPanel) return;
+  const state = window.partyPlaybackState;
+  const animationRunning = routeMarkerAnimations.length > 0;
+  const playing = Boolean(state && state.status === "playing");
+  const paused = Boolean(state && state.status === "paused");
+  const campRequired = Boolean(state && state.campRequired);
   const playButton = routeLaunchPanel.querySelector("#route-party-play");
+  const editButton = routeLaunchPanel.querySelector("#route-party-edit");
+  const campButton = routeLaunchPanel.querySelector("#route-party-camp");
+  const shortRestButton = routeLaunchPanel.querySelector("#route-party-short-rest");
+  const safetySlider = routeLaunchPanel.querySelector("#route-party-camp-safety-slider");
   if (playButton) {
-    const state = window.partyPlaybackState;
-    playButton.disabled = routeMarkerAnimations.length > 0 ||
-      Boolean(state && state.status === "playing") || Boolean(state && state.campRequired);
+    playButton.disabled = animationRunning || playing || campRequired;
     playButton.setAttribute("aria-disabled", playButton.disabled ? "true" : "false");
   }
+  // Во время раскрытия маршрута все действия, кроме кнопки паузы,
+  // заблокированы до полного завершения анимации.
+  if (editButton) editButton.disabled = animationRunning || playing;
+  if (campButton) campButton.disabled = animationRunning || !paused;
+  if (shortRestButton) shortRestButton.disabled = animationRunning || !paused;
+  if (safetySlider) safetySlider.disabled = animationRunning || !paused;
 }
 
 // При зуме меняется только экранная геометрия штрихов. Общие время старта,
@@ -1957,7 +1970,11 @@ function createRouteLaunchPanel() {
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 19 12 5l9 14H3Z"/><path d="m10 19 2-6 2 6"/></svg>
       </button>
       <button type="button" id="route-party-short-rest" aria-label="Короткий отдых" disabled>
-        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12.2 2.1c.5 3.3-1.8 4.8-2.8 7.1-.7 1.6-.4 3.1.7 3.8-.1-2.2 1.3-3.4 2.5-4.8 1.1 2.2 3.8 3.9 4.1 7.2.3 3.4-2.2 6.4-5.9 6.4-3.5 0-6-2.7-6-6.1 0-2.6 1.4-4.5 3-6.5.1 2.3.8 3.3 1.7 3.4-.2-2.2 1.5-4.3 2.7-6.2.8-1.3 1-2.6 0-4.3Z"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M11.9 22c-3.8 0-6.4-2.6-6.4-6.1 0-2.2 1-4.1 2.5-6.1-.1 2.1.4 3.2 1.3 3.4-.2-2.1.5-3.9 1.8-5.8 1.1-1.6 1.5-3.3 1.1-5.3 2.2 2.4 2.7 4.5 2.1 6.5 1.2-.8 1.9-2.1 2.1-3.7 2.2 2.5 3.2 5.1 3.2 7.8 0 5.4-3.1 9.3-7.7 9.3Z"/>
+          <path d="M5.1 17.4C2.9 16.2 2 14.1 2.5 11.8c.3-1.4 1.1-2.7 2.3-4-.2 1.9.4 3.1 1.4 3.6-.4 2.1-.7 4.1-1.1 6Z"/>
+          <path d="M18.1 17.3c2.5-1.2 3.7-3.2 3.4-5.7-.2-1.3-.8-2.6-1.8-3.9.1 1.9-.5 3.1-1.6 3.7.5 2 .5 4 .0 5.9Z"/>
+        </svg>
       </button>
     </div>
   `;
@@ -2064,6 +2081,32 @@ function createRouteLaunchPanel() {
     pendingRoutePlaybackResumeDistance = window.partyPlaybackState
       ? getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
       : 0;
+    // Редактор открывается от текущего положения отряда, а не от исходного
+    // старта путешествия: вся уже пройденная геометрия удаляется из редактора.
+    const originalRouteLength = getRouteTravelLength(routePoints);
+    const editOriginDistance = Math.max(0, Math.min(
+      originalRouteLength, pendingRoutePlaybackResumeDistance
+    ));
+    if (editOriginDistance > 0.001) {
+      routePoints = getRoutePointsBetweenDistances(
+        routePoints, editOriginDistance, originalRouteLength
+      );
+      // В новой геометрии начало пути — сам отряд, поэтому его дистанция 0.
+      pendingRoutePlaybackResumeDistance = 0;
+      routeForcedMarchStartDistance = Math.max(0, routeForcedMarchStartDistance - editOriginDistance);
+      routeForcedMarchEpochStartDistance = Math.max(0, routeForcedMarchEpochStartDistance - editOriginDistance);
+      routeForcedSegments = routeForcedSegments
+        .map(segment => ({ ...segment, start: Math.max(0, segment.start - editOriginDistance), end: segment.end - editOriginDistance }))
+        .filter(segment => segment.end > 0.001);
+      lastConfirmedRoutePointSnapshot = routePoints.map((point, index) => ({
+        lat: Number(point.lat), lng: Number(point.lng),
+        segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
+        settlementId: point._routeSettlementId || null,
+        ...getRoutePointTravelSettingsSnapshot(point, index)
+      }));
+      // Пройденный участок уже не является частью редактируемого маршрута.
+      pendingRouteResumeState = null;
+    }
     // Принудительный привал сохраняется, даже если маршрут редактируют.
     pendingRoutePlaybackResumeCampRequired = Boolean(
       window.partyPlaybackState && window.partyPlaybackState.campRequired
