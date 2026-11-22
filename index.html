@@ -3127,9 +3127,13 @@ window.routePendingConfirmation = false;
     const routePayload = {
       animationStartIndex,
       animationStartDistance,
+      // Если маршрут редактируется, pendingRoutePlaybackResumeDistance
+      // содержит сохранённую точку продолжения. Для нового маршрута это
+      // значение null: начинаем движение с его первой точки, а не переносим
+      // дистанцию старого завершённого маршрута на новую геометрию.
       movementStartDistance: Number.isFinite(pendingRoutePlaybackResumeDistance)
-        ? pendingRoutePlaybackResumeDistance
-        : (window.partyPlaybackState ? window.getPartyPlaybackDistance(window.partyPlaybackState, window.getSynchronizedRouteNow()) : 0),
+        ? Math.max(0, Number(pendingRoutePlaybackResumeDistance) || 0)
+        : 0,
       movementCampRequired: pendingRoutePlaybackResumeCampRequired,
       movementCampHoursElapsed: Math.max(0, Number(window.partyPlaybackState && window.partyPlaybackState.campHoursElapsed) || 0),
       restElapsedCarryUnits: Math.max(0, Number(routeRestElapsedCarryUnits) || 0),
@@ -6201,8 +6205,8 @@ function updateRouteLine(cursorPosition = null) {
 
   // После перестроения подтверждённого маршрута восстанавливаем уже
   // пройденную часть линии, если отряд находится на паузе или в пути.
-  if (!window.routeMode && window.partyPlaybackState &&
-      window.partyPlaybackState.routeStartedAt &&
+  if (!window.routeMode && !window.routePendingConfirmation &&
+      window.partyPlaybackState && window.partyPlaybackState.routeStartedAt &&
       Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) {
     updatePartyPlaybackRouteLine(
       window.getPartyPlaybackDistance(window.partyPlaybackState, window.getSynchronizedRouteNow())
