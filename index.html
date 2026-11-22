@@ -849,7 +849,7 @@ let partyIcon = createPartyIcon();
           ? window.getPartyPlaybackDistance(window.partyPlaybackState, window.getSynchronizedRouteNow())
           : null;
         const playbackPosition = hasMatchingPlaybackRoute
-          ? getPartyPlaybackDisplayPosition(playbackDistance)
+          ? window.getPartyPlaybackDisplayPosition(playbackDistance)
           : null;
         const coordinates = playbackPosition
           ? [playbackPosition.lat, playbackPosition.lng]
@@ -4043,7 +4043,7 @@ window.getPartyPlaybackDistance = getPartyPlaybackDistance;
 // Переводит игровую дистанцию маршрута в точку на фактически нарисованной
 // линии. Скорость остаётся рассчитанной по исходному маршруту, а координата
 // берётся с визуальной геометрии, чтобы маркер не срезал неровности.
-function getPartyPlaybackDisplayPosition(distance) {
+function window.getPartyPlaybackDisplayPosition(distance) {
   if (!Array.isArray(routePoints) || routePoints.length < 2) return null;
 
   // Если Leaflet уже отрисовал маршрут, берём координату непосредственно
@@ -4076,6 +4076,7 @@ function getPartyPlaybackDisplayPosition(distance) {
   const progress = Math.max(0, Math.min(1, Number(distance) / sourceLength));
   return getRoutePointAtDistance(displayPoints, progress * displayLength);
 }
+window.getPartyPlaybackDisplayPosition = getPartyPlaybackDisplayPosition;
 
 let partyBearingGeometryCache = null;
 
@@ -4365,7 +4366,7 @@ function tickPartyPlayback() {
   const reachedRestStop = Number.isFinite(nextRestStop);
   if (reachedRestStop) distance = nextRestStop;
   partyPlaybackDistance = distance;
-  const position = getPartyPlaybackDisplayPosition(distance);
+  const position = window.getPartyPlaybackDisplayPosition(distance);
   if (position && partyMarker) setPartyMarkerPlaybackPosition(position);
   // Обычное сопровождение направления включается после завершения
   // начального трёхсекундного разворота, не задерживая само движение.
@@ -4428,7 +4429,7 @@ window.applyPartyPlaybackState = function(state) {
   } else {
     stopPartyPlaybackFrame();
     setPartyMarkerPlaybackSmoothing(false);
-    const position = getPartyPlaybackDisplayPosition(partyPlaybackDistance);
+    const position = window.getPartyPlaybackDisplayPosition(partyPlaybackDistance);
     if (position && partyMarker) setPartyMarkerPlaybackPosition(position);
     const initialTurnActive = Boolean(partyMarker &&
       Number(partyMarker._partyInitialTurnUntil) > window.getSynchronizedRouteNow());
@@ -6728,7 +6729,7 @@ function refreshPartyPlaybackDuringMapMove() {
   partyPlaybackDistance = distance;
   // Сначала обновляем сам жетон по текущему времени и новой позиции карты,
   // затем режем линию точно под его фактическим экранным положением.
-  const position = getPartyPlaybackDisplayPosition(distance);
+  const position = window.getPartyPlaybackDisplayPosition(distance);
   if (position) setPartyMarkerPlaybackPosition(position);
   updatePartyPlaybackRouteLine(distance);
 }
@@ -6816,7 +6817,7 @@ map.on("zoomend", function() {
         ? window.getPartyPlaybackDistance(state, window.getSynchronizedRouteNow())
         : Math.max(0, Number(state.startDistance) || 0);
       partyPlaybackDistance = distance;
-      const position = getPartyPlaybackDisplayPosition(distance);
+      const position = window.getPartyPlaybackDisplayPosition(distance);
       if (position) setPartyMarkerPlaybackPosition(position);
       updatePartyPlaybackRouteLine(distance);
       updatePartyPlaybackRouteTokens(distance);
@@ -6836,7 +6837,7 @@ map.on("zoomend", function() {
           const playbackDistance = window.getPartyPlaybackDistance(
             window.partyPlaybackState, window.getSynchronizedRouteNow()
           );
-          const playbackPosition = getPartyPlaybackDisplayPosition(playbackDistance);
+          const playbackPosition = window.getPartyPlaybackDisplayPosition(playbackDistance);
           if (playbackPosition) setPartyMarkerPlaybackPosition(playbackPosition);
           const bearingNow = window.getSynchronizedRouteNow();
           const initialTurnUntil = Number(partyMarker && partyMarker._partyInitialTurnUntil) || 0;
