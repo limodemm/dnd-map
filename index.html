@@ -2114,6 +2114,19 @@ function createRouteLaunchPanel() {
       // Пройденный участок уже не является частью редактируемого маршрута.
       pendingRouteResumeState = null;
     }
+    // В редакторе текущая позиция отряда становится нулевой точкой новой
+    // геометрии. Не оставляем старую абсолютную дистанцию в playback state:
+    // zoomend и функции обрезки линии иначе применят её к уже укороченному
+    // маршруту, из-за чего исчезают участки предпросмотра и скачет маркер.
+    partyPlaybackDistance = 0;
+    if (window.partyPlaybackState) {
+      window.partyPlaybackState = {
+        ...window.partyPlaybackState,
+        status: "paused",
+        startDistance: 0,
+        startedAt: null
+      };
+    }
     // Принудительный привал сохраняется, даже если маршрут редактируют.
     pendingRoutePlaybackResumeCampRequired = Boolean(
       window.partyPlaybackState && window.partyPlaybackState.campRequired
@@ -2160,6 +2173,11 @@ function createRouteLaunchPanel() {
     }
     refreshRouteIntermediateCityOutlines();
     updateRouteLine();
+    // Маркер фиксируется на начале новой геометрии ещё до подтверждения.
+    if (partyMarker && routePoints.length >= 2) {
+      partyMarker.setLatLng(routePoints[0]);
+      setPartyMarkerPlaybackPosition(routePoints[0]);
+    }
     if (window.routeDestinationCityId && window.showSettlementOutline) {
       const destinationArea = (window.settlementAreas || []).find(area =>
         String(area.id) === String(window.routeDestinationCityId)
@@ -6404,7 +6422,9 @@ map.on("zoomend", function() {
   }
   // updateRouteLine пересоздаёт жетоны. Сразу после перерисовки удаляем те,
   // чьи точки уже пройдены, чтобы они не вспыхивали снова после смены зума.
-  if (window.partyPlaybackState && routePoints.length >= 2) {
+  if (window.partyPlaybackState && routePoints.length >= 2 &&
+      !window.routeMode && !window.routePendingConfirmation &&
+      !window.routeEditingConfirmedRoute) {
     if (window.partyPlaybackState.status === "playing") {
       partyPlaybackDistance = getPartyPlaybackDistance(
         window.partyPlaybackState, getSynchronizedRouteNow()
@@ -6439,7 +6459,9 @@ map.on("zoomend", function() {
   // После смены масштаба SVG иногда пересчитывает экранные координаты
   // маски на кадр позже, чем Leaflet пересоздаёт путь. Повторно накладываем
   // маску после двух кадров, чтобы на паузе не мигал отдельный участок линии.
-  if (window.partyPlaybackState && routePoints.length >= 2) {
+  if (window.partyPlaybackState && routePoints.length >= 2 &&
+      !window.routeMode && !window.routePendingConfirmation &&
+      !window.routeEditingConfirmedRoute) {
     requestAnimationFrame(() => requestAnimationFrame(() => {
       const state = window.partyPlaybackState;
       if (!state || Number(state.routeStartedAt) !== Number(window.routePlaybackRouteStartedAt)) return;
