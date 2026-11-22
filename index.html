@@ -3543,94 +3543,118 @@ function getPartyPlaybackDisplayPosition(distance) {
 
 let partyBearingGeometryCache = null;
 
-// Leaflet упрощает координаты Polyline перед отрисовкой с тем же tolerance,
-// что и smoothFactor (по умолчанию 1px). Для направления используем такую же
-// упрощённую геометрию: тогда на дальнем зуме маркер не реагирует на изгибы,
-// которые сам Leaflet уже убрал с экрана.
-function getPartyVisibleBearingGeometry(displayPoints) {
-  const zoom = map.getZoom();
-  if (partyBearingGeometryCache &&
-      partyBearingGeometryCache.points === displayPoints &&
-      partyBearingGeometryCache.zoom === zoom) {
-    return partyBearingGeometryCache.vertices;
-  }
+// Берём геометрию непосредственно из SVG-путей, которые Leaflet уже нарисовал.
+// Это точнее повторного вызова simplify(): учитываются реальные границы частей
+// маршрута, текущий smoothFactor и все экранные упрощения конкретного слоя.
+function getPartyRenderedRouteSegments() {
+  const layers = Array.isArray(partyPlaybackRouteLineLayers)
+    ? partyPlaybackRouteLineLayers : [];
+  const cacheIsCurrent = partyBearingGeometryCache &&
+    partyBearingGeometryCache.layers === layers &&
+    partyBearingGeometryCache.entries.every(entry =>
+      entry.layer._path === entry.path &&
+      (entry.path.getAttribute("d") || "") === entry.pathData
+    );
+  if (cacheIsCurrent) return partyBearingGeometryCache.entries;
 
-  const projected = [];
-  const pointIndexes = new Map();
-  const cumulative = new Array(displayPoints.length).fill(0);
-  for (let i = 0; i < displayPoints.length; i++) {
-    const point = map.latLngToLayerPoint(displayPoints[i]);
-    projected.push(point);
-    pointIndexes.set(point, i);
-    if (i > 0) {
-      cumulative[i] = cumulative[i - 1] +
-        getRouteTravelLength([displayPoints[i - 1], displayPoints[i]]);
-    }
-  }
-
-  const simplified = L.LineUtil && typeof L.LineUtil.simplify === "function"
-    ? L.LineUtil.simplify(projected, 1)
-    : projected;
-  const vertices = simplified.map(point => {
-    const index = pointIndexes.get(point);
-    return index === undefined ? null : {
-      point,
-      distance: cumulative[index]
-    };
-  }).filter(Boolean);
-
-  partyBearingGeometryCache = { points: displayPoints, zoom, vertices };
-  return vertices;
+  const entries = [];
+  layers.forEach(layer => {
+    const path = layer && layer._path;
+    if (!path || typeof path.getTotalLength !== "function" ||
+        typeof path.getPointAtLength !== "function") return;
+    const start = Number(layer._partyPlaybackStartDistance);
+    const end = Number(layer._partyPlaybackEndDistance);
+    if (!(end > start)) return;
+    const pathData = path.getAttribute("d") || "";
+    if (!pathData) return;
+    const length = path.getTotalLength();
+    if (!(length > 0.01)) return;
+    entries.push({ layer, path, start, end, length, pathData });
+  });
+  entries.sort((a, b) => a.start - b.start || a.end - b.end);
+  partyBearingGeometryCache = { layers, entries };
+  return entries;
 }
 
-function getPartyVisibleBearingPoint(vertices, distance) {
-  if (!vertices.length) return null;
-  if (distance <= vertices[0].distance) return vertices[0].point;
-  const last = vertices[vertices.length - 1];
-  if (distance >= last.distance) return last.point;
-
-  let low = 1;
-  let high = vertices.length - 1;
+function getPartyRenderedRouteSegmentAtDistance(entries, distance) {
+  if (!entries.length) return null;
+  let low = 0;
+  let high = entries.length - 1;
   while (low < high) {
-    const middle = (low + high) >> 1;
-    if (vertices[middle].distance < distance) low = middle + 1;
-    else high = middle;
+    const mid = (low + high) >> 1;
+    if (entries[mid].end < distance - 0.0001) low = mid + 1;
+    else high = mid;
   }
-  const a = vertices[low - 1];
-  const b = vertices[low];
-  const span = b.distance - a.distance;
-  const t = span > 0.000001 ? (distance - a.distance) / span : 0;
-  return L.point(
-    a.point.x + (b.point.x - a.point.x) * t,
-    a.point.y + (b.point.y - a.point.y) * t
-  );
+  const candidate = entries[low];
+  if (distance >= candidate.start - 0.0001 && distance <= candidate.end + 0.0001) {
+    return candidate;
+  }
+  return null;
+}
+
+function getPartyRenderedRouteScreenPoint(entry, pathDistance) {
+  if (!entry || !entry.path || !entry.path.ownerSVGElement) return null;
+  const localDistance = Math.max(0, Math.min(entry.length, pathDistance));
+  const localPoint = entry.path.getPointAtLength(localDistance);
+  const svg = entry.path.ownerSVGElement;
+  const matrix = typeof entry.path.getScreenCTM === "function"
+    ? entry.path.getScreenCTM() : null;
+  if (matrix && typeof svg.createSVGPoint === "function") {
+    const svgPoint = svg.createSVGPoint();
+    svgPoint.x = localPoint.x;
+    svgPoint.y = localPoint.y;
+    const screenPoint = svgPoint.matrixTransform(matrix);
+    return L.point(screenPoint.x, screenPoint.y);
+  }
+  return L.point(localPoint.x, localPoint.y);
+}
+
+function getPartyRenderedRouteBearing(distance) {
+  const entries = getPartyRenderedRouteSegments();
+  const entry = getPartyRenderedRouteSegmentAtDistance(entries, distance);
+  if (!entry) return null;
+  const progress = Math.max(0, Math.min(1,
+    (distance - entry.start) / Math.max(0.000001, entry.end - entry.start)
+  ));
+  const centerLength = progress * entry.length;
+  const sample = 11;
+  const from = getPartyRenderedRouteScreenPoint(entry, centerLength - sample);
+  const to = getPartyRenderedRouteScreenPoint(entry, centerLength + sample);
+  if (!from || !to || Math.hypot(to.x - from.x, to.y - from.y) < 0.01) return null;
+  return { from, to };
 }
 
 function setPartyMarkerBearingForDistance(distance, initialTurn = false, preserveInitialTurn = false) {
   if (!partyMarker || !partyMarker._icon || !map || routePoints.length < 2) return;
   const total = getRouteTravelLength(routePoints);
-  const displayPoints = Array.isArray(window.partyVisualRoutePoints) &&
-    window.partyVisualRoutePoints.length >= 2
-      ? window.partyVisualRoutePoints
-      : createRouteDisplayPoints(routePoints, []);
-  const displayLength = getRouteTravelLength(displayPoints);
-  if (!(total > 0) || !(displayLength > 0)) return;
+  if (!(total > 0)) return;
 
-  const progress = Math.max(0, Math.min(1, Number(distance) / total));
-  const displayDistance = progress * displayLength;
-  const vertices = getPartyVisibleBearingGeometry(displayPoints);
-  if (vertices.length < 2) return;
+  // Сначала используем фактический SVG path линии. Поэтому при уменьшении
+  // масштаба маркер повторяет именно ту упрощённую кривую, которую видит игрок,
+  // а не более подробную исходную геометрию маршрута.
+  let bearing = getPartyRenderedRouteBearing(Number(distance) || 0);
+  if (!bearing) {
+    // Резервный вариант нужен только до появления SVG-слоёв (например, сразу
+    // после загрузки состояния): направление берётся с визуальной геометрии.
+    const displayPoints = Array.isArray(window.partyVisualRoutePoints) &&
+      window.partyVisualRoutePoints.length >= 2
+        ? window.partyVisualRoutePoints
+        : createRouteDisplayPoints(routePoints, []);
+    const displayLength = getRouteTravelLength(displayPoints);
+    if (!(displayLength > 0)) return;
+    const progress = Math.max(0, Math.min(1, Number(distance) / total));
+    const displayDistance = progress * displayLength;
+    const before = getRoutePointAtDistance(displayPoints, Math.max(0, displayDistance - 6));
+    const after = getRoutePointAtDistance(displayPoints, Math.min(displayLength, displayDistance + 6));
+    if (!before || !after) return;
+    bearing = {
+      from: map.latLngToContainerPoint(before),
+      to: map.latLngToContainerPoint(after)
+    };
+  }
 
-  // После экранного упрощения Leaflet мелкие изгибы уже исключены из расчёта.
-  // Поэтому сохраняем короткую выборку, хорошо реагирующую на настоящие
-  // короткие повороты, и не увеличиваем её искусственно на дальнем зуме.
-  const sample = Math.max(3, Math.min(6, displayLength * 0.003));
-  const from = getPartyVisibleBearingPoint(vertices, Math.max(0, displayDistance - sample));
-  const to = getPartyVisibleBearingPoint(vertices, Math.min(displayLength, displayDistance + sample));
-  if (!from || !to) return;
-
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
+  const dx = bearing.to.x - bearing.from.x;
+  const dy = bearing.to.y - bearing.from.y;
   if (Math.hypot(dx, dy) < 0.01) return;
 
   // Нулевой угол соответствует направлению вверх (на север) у значка.
@@ -4235,6 +4259,7 @@ function updatePartyPlaybackRouteLine(distance) {
       layer._partyPlaybackMask = null;
       layer._partyPlaybackMaskBasePath = null;
       layer._partyPlaybackMaskHiddenPath = null;
+      layer._partyPlaybackMaskSvg = null;
       layer._partyPlaybackPathData = null;
       return;
     }
@@ -4247,6 +4272,7 @@ function updatePartyPlaybackRouteLine(distance) {
       layer._partyPlaybackMask = null;
       layer._partyPlaybackMaskBasePath = null;
       layer._partyPlaybackMaskHiddenPath = null;
+      layer._partyPlaybackMaskSvg = null;
       layer._partyPlaybackPathData = null;
       return;
     }
@@ -4255,6 +4281,19 @@ function updatePartyPlaybackRouteLine(distance) {
     let mask = layer._partyPlaybackMask;
     let basePath = layer._partyPlaybackMaskBasePath;
     let hiddenPath = layer._partyPlaybackMaskHiddenPath;
+    // Leaflet может заменить SVG renderer при перестройке/перемещении слоёв.
+    // Старый mask при этом всё ещё имеет parentNode, но уже находится в другом
+    // SVG и ссылка url(#id) на новом path не работает — пройденная линия всплывает.
+    if (mask && layer._partyPlaybackMaskSvg !== svg) {
+      if (mask.parentNode) mask.parentNode.removeChild(mask);
+      mask = null;
+      basePath = null;
+      hiddenPath = null;
+      layer._partyPlaybackMask = null;
+      layer._partyPlaybackMaskBasePath = null;
+      layer._partyPlaybackMaskHiddenPath = null;
+      layer._partyPlaybackMaskSvg = null;
+    }
     if (!mask || !mask.parentNode || !basePath || !hiddenPath) {
       let defs = svg.querySelector("defs");
       if (!defs) {
@@ -4297,7 +4336,11 @@ function updatePartyPlaybackRouteLine(distance) {
       layer._partyPlaybackMask = mask;
       layer._partyPlaybackMaskBasePath = basePath;
       layer._partyPlaybackMaskHiddenPath = hiddenPath;
+      layer._partyPlaybackMaskSvg = svg;
     }
+    // Повторно назначаем ссылку на каждом кадре: после перемещения карты
+    // Leaflet может перестроить SVG path, сохранив сам объект слоя.
+    path.setAttribute("mask", "url(#" + mask.id + ")");
 
     const pathData = path.getAttribute("d") || "";
     if (layer._partyPlaybackPathData !== pathData) {
@@ -5838,6 +5881,15 @@ map.on("mousemove", function(e) {
     // наведённого поселения вместе со всеми выбранными промежуточными.
     updateRouteLine(position);
   });
+});
+
+// Во время перетаскивания карты Leaflet может обновить/перенести SVG renderer.
+// Сразу перепривязываем маски пройденной линии к актуальным SVG-путям, чтобы
+// уже скрытый участок не появлялся повторно над маркером до следующего кадра.
+map.on("move", function() {
+  const state = window.partyPlaybackState;
+  if (!state || state.status !== "playing" || routeMarkerAnimations.length > 0) return;
+  updatePartyPlaybackRouteLine(getPartyPlaybackDistance(state, getSynchronizedRouteNow()));
 });
 
 // При изменении масштаба пересобираем группы крестиков,
