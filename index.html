@@ -846,7 +846,7 @@ let partyIcon = createPartyIcon();
         if (hasMatchingPlaybackRoute && partyMarker) return;
 
         const playbackDistance = hasMatchingPlaybackRoute
-          ? getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
+          ? window.getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
           : null;
         const playbackPosition = hasMatchingPlaybackRoute
           ? getPartyPlaybackDisplayPosition(playbackDistance)
@@ -2303,7 +2303,7 @@ function createRouteLaunchPanel() {
   pauseButton.addEventListener("click", async function() {
     const state = window.partyPlaybackState;
     if (!state || state.status !== "playing" || routeMarkerAnimations.length > 0) return;
-    const distance = getPartyPlaybackDistance(state, getSynchronizedRouteNow());
+    const distance = window.getPartyPlaybackDistance(state, getSynchronizedRouteNow());
     try {
       await window.publishPartyPlaybackState({
         status: "paused",
@@ -2321,7 +2321,7 @@ function createRouteLaunchPanel() {
     if (routeMarkerAnimations.length > 0 || !Array.isArray(routePoints) || routePoints.length < 2) return;
     const current = window.partyPlaybackState;
     if (current && current.campRequired) return;
-    const distance = current ? getPartyPlaybackDistance(current, getSynchronizedRouteNow()) : 0;
+    const distance = current ? window.getPartyPlaybackDistance(current, getSynchronizedRouteNow()) : 0;
     const total = getRouteTravelLength(routePoints);
     if (distance >= total - 0.001) return;
     try {
@@ -2351,7 +2351,7 @@ function createRouteLaunchPanel() {
     // Отдельно сохраняем положение отряда. Прогресс движения нельзя брать
     // из анимации раскрытия линии: это две независимые временные шкалы.
     pendingRoutePlaybackResumeDistance = window.partyPlaybackState
-      ? getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
+      ? window.getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
       : 0;
     // Редактор открывается от текущего положения отряда, а не от исходного
     // старта путешествия: вся уже пройденная геометрия удаляется из редактора.
@@ -3126,7 +3126,7 @@ window.routePendingConfirmation = false;
       animationStartDistance,
       movementStartDistance: Number.isFinite(pendingRoutePlaybackResumeDistance)
         ? pendingRoutePlaybackResumeDistance
-        : (window.partyPlaybackState ? getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow()) : 0),
+        : (window.partyPlaybackState ? window.getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow()) : 0),
       movementCampRequired: pendingRoutePlaybackResumeCampRequired,
       movementCampHoursElapsed: Math.max(0, Number(window.partyPlaybackState && window.partyPlaybackState.campHoursElapsed) || 0),
       restElapsedCarryUnits: Math.max(0, Number(routeRestElapsedCarryUnits) || 0),
@@ -4033,6 +4033,10 @@ function getPartyPlaybackDistance(state, now) {
   );
 }
 
+// Делаем расчётную функцию доступной обработчикам Firebase и маркера,
+// которые могут выполняться из вложенных областей видимости.
+window.getPartyPlaybackDistance = getPartyPlaybackDistance;
+
 // Переводит игровую дистанцию маршрута в точку на фактически нарисованной
 // линии. Скорость остаётся рассчитанной по исходному маршруту, а координата
 // берётся с визуальной геометрии, чтобы маркер не срезал неровности.
@@ -4347,7 +4351,7 @@ function tickPartyPlayback() {
   setPartyMarkerPlaybackSmoothing(true);
   const now = getSynchronizedRouteNow();
   const total = getRouteTravelLength(routePoints);
-  let distance = Math.min(total, getPartyPlaybackDistance(state, now));
+  let distance = Math.min(total, window.getPartyPlaybackDistance(state, now));
   const playbackStartDistance = Math.max(0, Number(state.startDistance) || 0);
   const nextRestStop = (Array.isArray(window.routeRestMarkers) ? window.routeRestMarkers : [])
     .filter(marker => marker && marker._partyPlaybackRestStop === true)
@@ -4407,7 +4411,7 @@ function tickPartyPlayback() {
 window.applyPartyPlaybackState = function(state) {
   if (!state || !["playing", "paused"].includes(state.status)) return;
   window.partyPlaybackState = state;
-  partyPlaybackDistance = getPartyPlaybackDistance(state, getSynchronizedRouteNow());
+  partyPlaybackDistance = window.getPartyPlaybackDistance(state, getSynchronizedRouteNow());
   renderPartyPlaybackState(state);
   if (state.status === "playing") {
     // Если разворот уже начался при раскрытии линии, не перезапускаем его
@@ -6195,7 +6199,7 @@ function updateRouteLine(cursorPosition = null) {
       window.partyPlaybackState.routeStartedAt &&
       Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) {
     updatePartyPlaybackRouteLine(
-      getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
+      window.getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
     );
   }
   // Геометрия текущего маршрута и SVG-штрихи уже созданы — теперь касательная
@@ -6717,7 +6721,7 @@ map.on("mousemove", function(e) {
 function refreshPartyPlaybackDuringMapMove() {
   const state = window.partyPlaybackState;
   if (!state || state.status !== "playing" || routeMarkerAnimations.length > 0) return;
-  const distance = getPartyPlaybackDistance(state, getSynchronizedRouteNow());
+  const distance = window.getPartyPlaybackDistance(state, getSynchronizedRouteNow());
   partyPlaybackDistance = distance;
   // Сначала обновляем сам жетон по текущему времени и новой позиции карты,
   // затем режем линию точно под его фактическим экранным положением.
@@ -6766,7 +6770,7 @@ map.on("zoomend", function() {
       !window.routeMode && !window.routePendingConfirmation &&
       !window.routeEditingConfirmedRoute) {
     if (window.partyPlaybackState.status === "playing") {
-      partyPlaybackDistance = getPartyPlaybackDistance(
+      partyPlaybackDistance = window.getPartyPlaybackDistance(
         window.partyPlaybackState, getSynchronizedRouteNow()
       );
     }
@@ -6791,7 +6795,7 @@ map.on("zoomend", function() {
       setPartyMarkerBearingForDistance(bearingDistance, false, true);
     } else {
       if (window.partyPlaybackState && window.partyPlaybackState.status === "playing") {
-        bearingDistance = getPartyPlaybackDistance(window.partyPlaybackState, now);
+        bearingDistance = window.getPartyPlaybackDistance(window.partyPlaybackState, now);
       }
       setPartyMarkerBearingForDistance(bearingDistance, false, false, true);
     }
@@ -6806,7 +6810,7 @@ map.on("zoomend", function() {
       const state = window.partyPlaybackState;
       if (!state || Number(state.routeStartedAt) !== Number(window.routePlaybackRouteStartedAt)) return;
       const distance = state.status === "playing"
-        ? getPartyPlaybackDistance(state, getSynchronizedRouteNow())
+        ? window.getPartyPlaybackDistance(state, getSynchronizedRouteNow())
         : Math.max(0, Number(state.startDistance) || 0);
       partyPlaybackDistance = distance;
       const position = getPartyPlaybackDisplayPosition(distance);
@@ -6826,7 +6830,7 @@ map.on("zoomend", function() {
         if (window.partyPlaybackState && window.routePlaybackRouteStartedAt &&
             Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt) &&
             routePoints.length >= 2) {
-          const playbackDistance = getPartyPlaybackDistance(
+          const playbackDistance = window.getPartyPlaybackDistance(
             window.partyPlaybackState, getSynchronizedRouteNow()
           );
           const playbackPosition = getPartyPlaybackDisplayPosition(playbackDistance);
