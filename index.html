@@ -691,6 +691,7 @@ let partyIcon = createPartyIcon();
         // Модуль Firebase и основной скрипт имеют разные области видимости.
         // Поэтому ожидающие данные храним на window, а не в локальной let.
         window.pendingSharedRouteData = data;
+        if (data && data.movement) window.pendingSharedPartyMovement = data.movement;
         return;
       }
 
@@ -702,9 +703,12 @@ let partyIcon = createPartyIcon();
       // Состояние движения применяем только после перерисовки новой геометрии
       // и запуска начального поворота — иначе paused-снимок мгновенно ставит
       // маркер в целевой угол и уничтожает саму анимацию.
-      if (window.partyPlaybackState && typeof window.applyPartyPlaybackState === "function" &&
-          Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) {
-        window.applyPartyPlaybackState(window.partyPlaybackState);
+      const movementToRestore = (data && data.movement) ||
+        window.pendingSharedPartyMovement || window.partyPlaybackState;
+      if (movementToRestore && typeof window.applyPartyPlaybackState === "function" &&
+          Number(movementToRestore.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) {
+        window.applyPartyPlaybackState(movementToRestore);
+        window.pendingSharedPartyMovement = null;
       }
     }
 
@@ -721,8 +725,13 @@ let partyIcon = createPartyIcon();
 
       // Обновления движения могут приходить для того же маршрута, поэтому
       // применяем их до проверки eventId (сам маршрут при этом не переигрываем).
-      if (data && data.movement && typeof window.applyPartyPlaybackState === "function") {
-        window.applyPartyPlaybackState(data.movement);
+      if (data && data.movement) {
+        // Первый Firebase-снимок может прийти раньше, чем основной скрипт
+        // объявит applyPartyPlaybackState. Не теряем движение в этом случае.
+        window.pendingSharedPartyMovement = data.movement;
+        if (typeof window.applyPartyPlaybackState === "function") {
+          window.applyPartyPlaybackState(data.movement);
+        }
       }
 
       if (firstSharedRouteSnapshot) {
@@ -6308,9 +6317,12 @@ if (window.pendingSharedRouteData) {
     waitForRouteRevealThenTraceSettlements(pendingData);
   }
   window.updateRouteLine(null);
-  if (window.partyPlaybackState && typeof window.applyPartyPlaybackState === "function" &&
-      Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) {
-    window.applyPartyPlaybackState(window.partyPlaybackState);
+  const movementToRestore = pendingData.movement ||
+    window.pendingSharedPartyMovement || window.partyPlaybackState;
+  if (movementToRestore && typeof window.applyPartyPlaybackState === "function" &&
+      Number(movementToRestore.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) {
+    window.applyPartyPlaybackState(movementToRestore);
+    window.pendingSharedPartyMovement = null;
   }
 }
 
