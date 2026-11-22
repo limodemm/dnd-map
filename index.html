@@ -1818,30 +1818,27 @@ function createRouteLaunchPanel() {
     }
     #party-route-launch-panel .launch-actions {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       justify-content: center;
       gap: 6px;
     }
-    #party-route-launch-panel .camp-control {
-      width: 44px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 3px;
-      flex: 0 0 44px;
-    }
+    /* Кнопка долгого отдыха, шкала безопасности и короткий отдых
+       стоят в один ряд: шкала находится строго между двумя отдыхами. */
+    #party-route-launch-panel .camp-control { display: contents; }
     #party-route-launch-panel .camp-control button {
       width: 44px;
       height: 42px;
+      flex: 0 0 44px;
     }
     #party-route-launch-panel .camp-safety {
-      width: 24px;
+      width: 22px;
+      height: 70px;
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
-      gap: 3px;
-      font: 13px/1 Arial, sans-serif;
+      justify-content: space-between;
+      gap: 1px;
+      flex: 0 0 22px;
     }
     #party-route-launch-panel button svg {
       display: block;
@@ -1855,20 +1852,21 @@ function createRouteLaunchPanel() {
       stroke-linejoin: round;
     }
     #party-route-launch-panel .camp-safety svg {
-      flex: 0 0 14px;
-      width: 14px;
-      height: 14px;
+      flex: 0 0 13px;
+      width: 13px;
+      height: 13px;
       fill: none;
       stroke: #d8c8a8;
       stroke-width: 1.8;
       stroke-linecap: round;
       stroke-linejoin: round;
     }
-    #party-route-launch-panel .camp-safety[data-safety="unsafe"] svg:first-child { stroke: #cf746d; }
-    #party-route-launch-panel .camp-safety[data-safety="safe"] svg:last-child { stroke: #e2bd4f; }
+    #party-route-launch-panel .camp-safety[data-safety="unsafe"] svg:last-child { stroke: #cf625b; }
+    #party-route-launch-panel .camp-safety[data-safety="safe"] svg:first-child { stroke: #e2bd4f; }
     #party-route-launch-panel .camp-safety input {
       width: 12px;
       height: 42px;
+      flex: 0 0 42px;
       margin: 0;
       padding: 0;
       cursor: pointer;
@@ -1920,10 +1918,10 @@ function createRouteLaunchPanel() {
       #party-route-launch-panel button { width: 42px; height: 39px; }
       #party-route-launch-panel .launch-actions { gap: 4px; }
       #party-route-launch-panel .launch-actions > button { flex-basis: 42px; width: 42px; }
-      #party-route-launch-panel .camp-control { width: 42px; flex-basis: 42px; }
-      #party-route-launch-panel .camp-control button { width: 42px; height: 39px; }
-      #party-route-launch-panel .camp-safety { width: 24px; }
-      #party-route-launch-panel .camp-safety input { width: 12px; height: 38px; }
+      #party-route-launch-panel .camp-control button { width: 42px; height: 39px; flex-basis: 42px; }
+      #party-route-launch-panel .camp-safety { width: 22px; flex-basis: 22px; height: 65px; }
+      #party-route-launch-panel .camp-safety svg { flex-basis: 12px; width: 12px; height: 12px; }
+      #party-route-launch-panel .camp-safety input { width: 12px; height: 39px; flex-basis: 39px; }
     }
   `;
   document.head.appendChild(style);
@@ -1937,17 +1935,17 @@ function createRouteLaunchPanel() {
       <button type="button" id="route-party-play" aria-label="Воспроизвести движение отряда" aria-pressed="false">▶</button>
       <button type="button" id="route-party-edit" aria-label="Редактировать маршрут">⚙</button>
       <div class="camp-control">
-        <button type="button" id="route-party-camp" aria-label="Разбить лагерь и отдохнуть 8 часов">
+        <button type="button" id="route-party-camp" aria-label="Разбить лагерь и отдохнуть 8 часов" disabled>
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 19 12 5l9 14H3Z"/><path d="m10 19 2-6 2 6"/></svg>
         </button>
         <div class="camp-safety" id="route-party-camp-safety" data-safety="unsafe">
-          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 8.5 8.2 5l3.8-1 3.8 1L17 8.5l2 2v5l-3 3H8l-3-3v-5l2-2Z"/><path d="M9 11h.01M15 11h.01M9.5 15c1.5-1.2 3.5-1.2 5 0"/></svg>
-          <input type="range" id="route-party-camp-safety-slider" min="0" max="1" step="1" value="0" aria-label="Безопасность лагеря">
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2.8 20 6v5.2c0 5.1-3.3 8.3-8 10-4.7-1.7-8-4.9-8-10V6l8-3.2Z"/><path d="m8.2 12.1 2.5 2.5 5.2-5.3"/></svg>
+          <input type="range" id="route-party-camp-safety-slider" min="0" max="1" step="1" value="0" aria-label="Безопасность лагеря" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3.2c-4.8 0-8.2 3.7-8.2 8.3v3.2l2.2 2.1v2.1h12v-2.1l2.2-2.1v-3.2c0-4.6-3.4-8.3-8.2-8.3Z"/><path d="M8.2 10.2h.01M15.8 10.2h.01M8.5 14.2l1.6-1 1.9 1 1.9-1 1.6 1M9 18.9v2h6v-2"/></svg>
         </div>
       </div>
-      <button type="button" id="route-party-short-rest" aria-label="Короткий отдых">
-        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2.5c.8 3.2-2.2 4.6-1.3 7.1.5 1.4 1.8 1.8 2.7 1 .9-.8 1.1-2.1.8-3.3 3.2 2.3 5.1 5 4.2 8.6-.8 3.1-3.3 5.1-6.5 5.1s-5.8-2-6.5-5.1c-.8-3.3 1.1-5.7 3.2-7.7.1 2.2.8 3.2 1.7 3.2 1.3 0 1.8-1.8 1.7-3.1-.1-1.8-.8-3.4 0-5.8Z"/><path d="m5 20 14 0"/></svg>
+      <button type="button" id="route-party-short-rest" aria-label="Короткий отдых" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3.2c1.2 2.2-.8 3.5-.8 5.2 0 1.1.7 1.8 1.6 1.8 1.2 0 1.8-1.3 1.5-2.6 2.7 2.1 4.2 4.1 4.2 6.8a6.5 6.5 0 0 1-13 0c0-2.4 1.1-4.2 3.1-6.1-.1 2 .5 3.1 1.5 3.1 1.1 0 1.6-1.2 1.4-2.4-.2-1.9-.4-3.7.5-5.8Z"/><path d="m5 20 14 0M7.5 18.2l9-4.4M7.5 13.8l9 4.4"/></svg>
       </button>
     </div>
   `;
@@ -3906,8 +3904,11 @@ function renderPartyPlaybackState(state) {
   const playButton = routeLaunchPanel.querySelector("#route-party-play");
   const editButton = routeLaunchPanel.querySelector("#route-party-edit");
   const campButton = routeLaunchPanel.querySelector("#route-party-camp");
+  const shortRestButton = routeLaunchPanel.querySelector("#route-party-short-rest");
+  const campSafetySlider = routeLaunchPanel.querySelector("#route-party-camp-safety-slider");
   if (!pauseButton || !playButton) return;
   const playing = state && state.status === "playing";
+  const paused = Boolean(state && state.status === "paused");
   const campRequired = Boolean(state && state.campRequired);
   if (editButton) editButton.disabled = Boolean(playing);
   pauseButton.classList.toggle("active", !playing);
@@ -3917,9 +3918,18 @@ function renderPartyPlaybackState(state) {
   pauseButton.disabled = !playing;
   playButton.disabled = playing || campRequired || routeMarkerAnimations.length > 0;
   if (campButton) {
-    campButton.disabled = false;
+    campButton.disabled = !paused;
     campButton.classList.toggle("active", campRequired);
     campButton.setAttribute("aria-pressed", campRequired ? "true" : "false");
+    campButton.setAttribute("aria-disabled", campButton.disabled ? "true" : "false");
+  }
+  if (shortRestButton) {
+    shortRestButton.disabled = !paused;
+    shortRestButton.setAttribute("aria-disabled", shortRestButton.disabled ? "true" : "false");
+  }
+  if (campSafetySlider) {
+    campSafetySlider.disabled = !paused;
+    campSafetySlider.setAttribute("aria-disabled", campSafetySlider.disabled ? "true" : "false");
   }
   syncRouteLaunchControls();
 }
