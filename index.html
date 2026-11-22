@@ -647,6 +647,13 @@ let partyIcon = createPartyIcon();
         waitForRouteRevealThenTraceSettlements(data);
       }
       window.updateRouteLine(null);
+      // Состояние движения применяем только после перерисовки новой геометрии
+      // и запуска начального поворота — иначе paused-снимок мгновенно ставит
+      // маркер в целевой угол и уничтожает саму анимацию.
+      if (window.partyPlaybackState && typeof window.applyPartyPlaybackState === "function" &&
+          Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) {
+        window.applyPartyPlaybackState(window.partyPlaybackState);
+      }
     }
 
     onValue(sharedRouteRef, function(snapshot) {
@@ -726,6 +733,8 @@ let partyIcon = createPartyIcon();
         startDistance: Math.max(0, Number(routeData.movementStartDistance) || 0),
         startedAt: null,
         routeStartedAt: sharedStartedAt,
+        campRequired: false,
+        campHoursElapsed: 0,
         updatedAt: window.getRouteSynchronizedNow(),
         updatedBy: window.dndFirebase.uid
       };
@@ -1373,7 +1382,9 @@ function syncRouteLaunchControls() {
   if (!routeLaunchPanel) return;
   const playButton = routeLaunchPanel.querySelector("#route-party-play");
   if (playButton) {
-    playButton.disabled = routeMarkerAnimations.length > 0;
+    const state = window.partyPlaybackState;
+    playButton.disabled = routeMarkerAnimations.length > 0 ||
+      Boolean(state && state.status === "playing") || Boolean(state && state.campRequired);
     playButton.setAttribute("aria-disabled", playButton.disabled ? "true" : "false");
   }
 }
@@ -1789,7 +1800,7 @@ function createRouteLaunchPanel() {
       left: 50%;
       transform: translateX(-50%);
       z-index: 3001;
-      width: 220px;
+      width: 306px;
       max-width: calc(100vw - 24px);
       padding: 10px 12px;
       box-sizing: border-box;
@@ -1807,9 +1818,40 @@ function createRouteLaunchPanel() {
     }
     #party-route-launch-panel .launch-actions {
       display: flex;
+      align-items: flex-start;
       justify-content: center;
-      gap: 8px;
+      gap: 6px;
     }
+    #party-route-launch-panel .camp-control {
+      width: 68px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+      flex: 0 0 68px;
+    }
+    #party-route-launch-panel .camp-control button {
+      width: 44px;
+      height: 42px;
+    }
+    #party-route-launch-panel .camp-safety {
+      width: 68px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 2px;
+      font: 13px/1 Arial, sans-serif;
+    }
+    #party-route-launch-panel .camp-safety input {
+      width: 42px;
+      height: 12px;
+      margin: 0;
+      padding: 0;
+      cursor: pointer;
+    }
+    #party-route-launch-panel .camp-safety[data-safety="unsafe"] input { accent-color: #b4514b; }
+    #party-route-launch-panel .camp-safety[data-safety="safe"] input { accent-color: #e2bd4f; }
+    #party-route-launch-panel .launch-actions > button { flex: 0 0 44px; width: 44px; }
     #party-route-launch-panel button {
       width: 48px;
       height: 42px;
@@ -1848,8 +1890,13 @@ function createRouteLaunchPanel() {
       outline-offset: 2px;
     }
     @media (max-width: 480px) {
-      #party-route-launch-panel { bottom: 12px; width: 196px; padding: 8px 10px; }
-      #party-route-launch-panel button { width: 44px; height: 39px; }
+      #party-route-launch-panel { bottom: 12px; width: 306px; padding: 8px 8px; }
+      #party-route-launch-panel button { width: 42px; height: 39px; }
+      #party-route-launch-panel .launch-actions { gap: 4px; }
+      #party-route-launch-panel .launch-actions > button { flex-basis: 42px; width: 42px; }
+      #party-route-launch-panel .camp-control { width: 64px; flex-basis: 64px; }
+      #party-route-launch-panel .camp-safety { width: 64px; }
+      #party-route-launch-panel .camp-safety input { width: 38px; }
     }
   `;
   document.head.appendChild(style);
@@ -1862,6 +1909,15 @@ function createRouteLaunchPanel() {
       <button type="button" id="route-party-pause" class="active" aria-label="Пауза" aria-pressed="true">Ⅱ</button>
       <button type="button" id="route-party-play" aria-label="Воспроизвести движение отряда" aria-pressed="false">▶</button>
       <button type="button" id="route-party-edit" aria-label="Редактировать маршрут">⚙</button>
+      <div class="camp-control">
+        <button type="button" id="route-party-camp" aria-label="Разбить лагерь и отдохнуть 8 часов" title="Лагерь — 8 часов">🏕️</button>
+        <div class="camp-safety" id="route-party-camp-safety" data-safety="unsafe">
+          <span aria-hidden="true">⚠️</span>
+          <input type="range" id="route-party-camp-safety-slider" min="0" max="1" step="1" value="0" aria-label="Безопасность лагеря">
+          <span aria-hidden="true">🛡️</span>
+        </div>
+      </div>
+      <button type="button" id="route-party-short-rest" aria-label="Короткий отдых" title="Короткий отдых">☕</button>
     </div>
   `;
   document.body.appendChild(routeLaunchPanel);
@@ -1869,6 +1925,46 @@ function createRouteLaunchPanel() {
   const pauseButton = routeLaunchPanel.querySelector("#route-party-pause");
   const playButton = routeLaunchPanel.querySelector("#route-party-play");
   const editButton = routeLaunchPanel.querySelector("#route-party-edit");
+  const campButton = routeLaunchPanel.querySelector("#route-party-camp");
+  const campSafetySlider = routeLaunchPanel.querySelector("#route-party-camp-safety-slider");
+  const campSafetyControl = routeLaunchPanel.querySelector("#route-party-camp-safety");
+  if (campSafetySlider && campSafetyControl) {
+    campSafetySlider.addEventListener("input", function() {
+      const safe = campSafetySlider.value === "1";
+      campSafetyControl.dataset.safety = safe ? "safe" : "unsafe";
+      campSafetyControl.title = safe ? "Безопасный лагерь" : "Небезопасный лагерь";
+    });
+  }
+  if (campButton) {
+    campButton.addEventListener("click", async function() {
+      const state = window.partyPlaybackState;
+      if (!state || !state.campRequired) return;
+      const campHoursElapsed = Math.max(0, Number(state.campHoursElapsed) || 0) + 8;
+      const campedState = {
+        ...state,
+        status: "paused",
+        startedAt: null,
+        campRequired: false,
+        campHoursElapsed
+      };
+      window.partyPlaybackState = campedState;
+      renderPartyPlaybackState(campedState);
+      try {
+        await window.publishPartyPlaybackState({
+          status: "paused",
+          startDistance: Math.max(0, Number(state.startDistance) || 0),
+          startedAt: null,
+          routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
+          campRequired: false,
+          campHoursElapsed
+        });
+      } catch (error) {
+        window.partyPlaybackState = state;
+        renderPartyPlaybackState(state);
+        console.error("Не удалось сохранить отдых в лагере:", error);
+      }
+    });
+  }
   syncRouteLaunchControls();
 
   pauseButton.addEventListener("click", async function() {
@@ -1880,7 +1976,9 @@ function createRouteLaunchPanel() {
         status: "paused",
         startDistance: distance,
         startedAt: null,
-        routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null
+        routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
+        campRequired: false,
+        campHoursElapsed: Math.max(0, Number(state.campHoursElapsed) || 0)
       });
     } catch (error) {
       console.error("Не удалось приостановить движение отряда:", error);
@@ -1889,6 +1987,7 @@ function createRouteLaunchPanel() {
   playButton.addEventListener("click", async function() {
     if (routeMarkerAnimations.length > 0 || !Array.isArray(routePoints) || routePoints.length < 2) return;
     const current = window.partyPlaybackState;
+    if (current && current.campRequired) return;
     const distance = current ? getPartyPlaybackDistance(current, getSynchronizedRouteNow()) : 0;
     const total = getRouteTravelLength(routePoints);
     if (distance >= total - 0.001) return;
@@ -1899,7 +1998,9 @@ function createRouteLaunchPanel() {
         // Движение начинается сразу после нажатия Play: начальный разворот
         // уже запускается параллельно с анимацией раскрытия линии маршрута.
         startedAt: getSynchronizedRouteNow(),
-        routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null
+        routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
+        campRequired: false,
+        campHoursElapsed: Math.max(0, Number(current && current.campHoursElapsed) || 0)
       });
     } catch (error) {
       console.error("Не удалось запустить движение отряда:", error);
@@ -3667,18 +3768,29 @@ function getPartyMarkerInitialTurnAngle(now = getSynchronizedRouteNow()) {
   return from + (to - from) * progress;
 }
 
+function getPartyMarkerRenderedAngle(artwork) {
+  if (!artwork) return Number(partyMarker && partyMarker._partyBearing) || 0;
+  const transform = getComputedStyle(artwork).transform;
+  if (transform && transform !== "none") {
+    const values = transform.match(/matrix\(([^)]+)\)/);
+    if (values) {
+      const parts = values[1].split(",").map(Number);
+      if (parts.length >= 2 && parts.slice(0, 2).every(Number.isFinite)) {
+        return Math.atan2(parts[1], parts[0]) * 180 / Math.PI;
+      }
+    }
+  }
+  return Number(partyMarker && partyMarker._partyBearing) || 0;
+}
+
 function setPartyMarkerBearingForDistance(distance, initialTurn = false, preserveInitialTurn = false, immediate = false) {
   if (!partyMarker || !partyMarker._icon || !map || routePoints.length < 2) return;
   const total = getRouteTravelLength(routePoints);
   if (!(total > 0)) return;
 
-  // Направление рассчитывается по непрерывной экранной геометрии всей линии,
-  // а не по отдельным коротким SVG-штрихам: это не даёт маркеру вилять
-  // на мелких изгибах, которые при текущем масштабе визуально неразличимы.
+  // Направление берём по фактически отображаемой геометрии маршрута.
   let bearing = getPartyRenderedRouteBearing(Number(distance) || 0);
   if (!bearing) {
-    // Резервный вариант на случай, если экранная геометрия ещё не готова:
-    // направление берётся с той же визуальной геометрии маршрута.
     const displayPoints = Array.isArray(window.partyVisualRoutePoints) &&
       window.partyVisualRoutePoints.length >= 2
         ? window.partyVisualRoutePoints
@@ -3690,65 +3802,67 @@ function setPartyMarkerBearingForDistance(distance, initialTurn = false, preserv
     const before = getRoutePointAtDistance(displayPoints, Math.max(0, displayDistance - 6));
     const after = getRoutePointAtDistance(displayPoints, Math.min(displayLength, displayDistance + 6));
     if (!before || !after) return;
-    bearing = {
-      from: map.latLngToContainerPoint(before),
-      to: map.latLngToContainerPoint(after)
-    };
+    bearing = { from: map.latLngToContainerPoint(before), to: map.latLngToContainerPoint(after) };
   }
 
   const dx = bearing.to.x - bearing.from.x;
   const dy = bearing.to.y - bearing.from.y;
   if (Math.hypot(dx, dy) < 0.01) return;
 
-  // Нулевой угол соответствует направлению вверх (на север) у значка.
   let angle = Math.atan2(dx, -dy) * 180 / Math.PI;
-  const previousBearing = Number(partyMarker._partyBearing);
-  if (Number.isFinite(previousBearing)) {
-    while (angle - previousBearing > 180) angle -= 360;
-    while (angle - previousBearing < -180) angle += 360;
-  }
-  partyMarker._partyBearing = angle;
   const artwork = partyMarker._icon.querySelector("img");
   if (!artwork) return;
   const now = getSynchronizedRouteNow();
+  const renderedAngle = getPartyMarkerRenderedAngle(artwork);
+  const referenceAngle = initialTurn ? renderedAngle : Number(partyMarker._partyBearing);
+  if (Number.isFinite(referenceAngle)) {
+    while (angle - referenceAngle > 180) angle -= 360;
+    while (angle - referenceAngle < -180) angle += 360;
+  }
+
   if (initialTurn) {
-    // Начальный разворот длится ровно три секунды и запускается вместе
-    // с анимацией линии. Сохраняем его временную шкалу для восстановления
-    // после setIcon(), который Leaflet вызывает при смене масштаба.
+    // Чистый запуск: фиксируем реальный текущий угол, затем одним CSS-переходом
+    // поворачиваем жетон к касательной нового маршрута ровно за 3000 мс.
+    const fromAngle = renderedAngle;
     partyMarker._partyInitialTurnStarted = true;
     partyMarker._partyInitialTurnDistance = Number(distance) || 0;
-    partyMarker._partyInitialTurnFrom = Number.isFinite(previousBearing) ? previousBearing : 0;
+    partyMarker._partyInitialTurnFrom = fromAngle;
     partyMarker._partyInitialTurnTo = angle;
     partyMarker._partyInitialTurnStartedAt = now;
     partyMarker._partyInitialTurnUntil = now + 3000;
-    // Сбрасываем прежний переход, фиксируем исходный угол, а затем в том же
-    // вызове включаем трёхсекундный переход к направлению маршрута. Не
-    // откладываем целевой transform в requestAnimationFrame: setIcon()/снимок
-    // Firebase могли заменить img до выполнения отложенного callback.
-    if (partyMarker._partyInitialTurnFrame) {
-      cancelAnimationFrame(partyMarker._partyInitialTurnFrame);
-      partyMarker._partyInitialTurnFrame = null;
-    }
-    artwork.style.transition = "none";
-    artwork.style.transform = `rotate(${partyMarker._partyInitialTurnFrom}deg)`;
+    artwork.style.transitionDuration = "0ms";
+    artwork.style.transform = `rotate(${fromAngle}deg)`;
     void artwork.getBoundingClientRect();
-    artwork.style.transition = "transform 3000ms linear";
+    artwork.style.transitionDuration = "3000ms";
     artwork.style.transform = `rotate(${angle}deg)`;
   } else if (!preserveInitialTurn && Number(partyMarker._partyInitialTurnUntil) > now) {
-    // Обычные тики движения не должны перебивать начальную CSS-анимацию.
+    // Не позволяем обычным обновлениям перебивать трёхсекундный поворот.
     return;
   } else if (preserveInitialTurn && Number(partyMarker._partyInitialTurnUntil) > now) {
     const remaining = Number(partyMarker._partyInitialTurnUntil) - now;
-    // Если геометрия линии после zoomend немного изменилась, продолжаем
-    // оставшуюся часть разворота от текущего визуального угла к новой касательной.
     partyMarker._partyInitialTurnFrom = getPartyMarkerInitialTurnAngle(now);
     partyMarker._partyInitialTurnTo = angle;
     partyMarker._partyInitialTurnStartedAt = now;
     artwork.style.transitionDuration = `${Math.max(1, remaining)}ms`;
+    artwork.style.transform = `rotate(${angle}deg)`;
   } else {
     artwork.style.transitionDuration = immediate ? "0ms" : "180ms";
+    artwork.style.transform = `rotate(${angle}deg)`;
   }
-  artwork.style.transform = `rotate(${angle}deg)`;
+  partyMarker._partyBearing = angle;
+}
+
+function startPartyInitialTurnAfterRouteRedraw() {
+  if (!partyMarker || !partyMarker._icon || routePoints.length < 2 ||
+      !window.routeAnimationPublished || !window.routePlaybackRouteStartedAt) return;
+  const routeStartedAt = Number(window.routePlaybackRouteStartedAt);
+  if (Number(partyMarker._partyInitialTurnRouteStartedAt) === routeStartedAt) return;
+  const movement = window.partyPlaybackState;
+  const movementStart = movement && Number(movement.routeStartedAt) === routeStartedAt
+    ? Math.max(0, Number(movement.startDistance) || 0)
+    : Math.max(0, Number(window.routePlaybackAnimationStartDistance) || 0);
+  setPartyMarkerBearingForDistance(movementStart, true);
+  partyMarker._partyInitialTurnRouteStartedAt = routeStartedAt;
 }
 
 function renderPartyPlaybackState(state) {
@@ -3756,15 +3870,25 @@ function renderPartyPlaybackState(state) {
   const pauseButton = routeLaunchPanel.querySelector("#route-party-pause");
   const playButton = routeLaunchPanel.querySelector("#route-party-play");
   const editButton = routeLaunchPanel.querySelector("#route-party-edit");
+  const campButton = routeLaunchPanel.querySelector("#route-party-camp");
   if (!pauseButton || !playButton) return;
   const playing = state && state.status === "playing";
+  const campRequired = Boolean(state && state.campRequired);
   if (editButton) editButton.disabled = Boolean(playing);
   pauseButton.classList.toggle("active", !playing);
   pauseButton.setAttribute("aria-pressed", !playing ? "true" : "false");
   playButton.classList.toggle("active", playing);
   playButton.setAttribute("aria-pressed", playing ? "true" : "false");
   pauseButton.disabled = !playing;
-  playButton.disabled = playing || routeMarkerAnimations.length > 0;
+  playButton.disabled = playing || campRequired || routeMarkerAnimations.length > 0;
+  if (campButton) {
+    campButton.disabled = !campRequired;
+    campButton.classList.toggle("active", campRequired);
+    campButton.setAttribute("aria-pressed", campRequired ? "true" : "false");
+    campButton.title = campRequired
+      ? "Разбить лагерь: отдых 8 часов — после этого можно продолжить путь"
+      : "Лагерь — 8 часов (станет доступен после дневного перехода)";
+  }
   syncRouteLaunchControls();
 }
 
@@ -3834,7 +3958,9 @@ function tickPartyPlayback() {
       status: "paused",
       startDistance: nextRestStop,
       startedAt: null,
-      routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null
+      routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
+      campRequired: true,
+      campHoursElapsed: Math.max(0, Number(state.campHoursElapsed) || 0)
     };
     window.partyPlaybackState = pausedState;
     renderPartyPlaybackState(pausedState);
@@ -3845,7 +3971,9 @@ function tickPartyPlayback() {
         status: "paused",
         startDistance: nextRestStop,
         startedAt: null,
-        routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null
+        routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
+        campRequired: true,
+        campHoursElapsed: Math.max(0, Number(state.campHoursElapsed) || 0)
       }).catch(error => console.error("Не удалось автоматически остановить отряд на привале:", error));
     }
     return;
@@ -5566,6 +5694,9 @@ function updateRouteLine(cursorPosition = null) {
       getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
     );
   }
+  // Геометрия текущего маршрута и SVG-штрихи уже созданы — теперь касательная
+  // вычисляется по правильной линии и запускается единственный начальный поворот.
+  startPartyInitialTurnAfterRouteRedraw();
 
   console.log("Длина маршрута:", Math.round(totalLength));
 }
@@ -5610,6 +5741,7 @@ window.applySynchronizedPartyRoute = function(data) {
   window.routeEditingConfirmedRoute = false;
   window.routeAnimationPublished = true;
   window.routePlaybackRouteStartedAt = Number(data.startedAt) || null;
+  window.routePlaybackAnimationStartDistance = 0;
   window.routePendingConfirmation = false;
   window.routeDestinationCityId = data.destinationSettlementId || null;
   window.routeDestinationBoundaryPoint = data.destinationBoundaryPoint
@@ -5649,22 +5781,9 @@ window.applySynchronizedPartyRoute = function(data) {
       Number(data.durationMs) > 0 ? Number(data.durationMs) : null
     );
   }
-  // Разворачиваем жетон одновременно с началом анимации линии, а не после
-  // нажатия Play. Поэтому к моменту доступности Play дополнительной паузы нет.
-  if (partyMarker) {
-    const movementStart = window.partyPlaybackState &&
-      Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)
-        ? Math.max(0, Number(window.partyPlaybackState.startDistance) || 0)
-        : animationStartDistance;
-    setPartyMarkerBearingForDistance(movementStart, true);
-  }
-  // Снимок движения мог прийти раньше снимка маршрута при подключении.
-  // Применяем его после запуска начального разворота, чтобы paused-снимок
-  // не выставил целевой угол раньше времени и не уничтожил саму анимацию.
-  if (window.partyPlaybackState && typeof window.applyPartyPlaybackState === "function" &&
-      Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) {
-    window.applyPartyPlaybackState(window.partyPlaybackState);
-  }
+  // Начальный разворот запускается после updateRouteLine(): только тогда
+  // экранная геометрия уже принадлежит новому маршруту, а не предыдущему.
+  window.routePlaybackAnimationStartDistance = animationStartDistance;
   lastConfirmedRoutePointSnapshot = routePoints.map((point, index) => ({
     lat: Number(point.lat),
     lng: Number(point.lng),
@@ -5688,6 +5807,10 @@ if (window.pendingSharedRouteData) {
     waitForRouteRevealThenTraceSettlements(pendingData);
   }
   window.updateRouteLine(null);
+  if (window.partyPlaybackState && typeof window.applyPartyPlaybackState === "function" &&
+      Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) {
+    window.applyPartyPlaybackState(window.partyPlaybackState);
+  }
 }
 
 // =====================================
@@ -6142,6 +6265,24 @@ map.on("zoomend", function() {
       setPartyMarkerBearingForDistance(bearingDistance, false, false, true);
     }
   }
+  // После смены масштаба SVG иногда пересчитывает экранные координаты
+  // маски на кадр позже, чем Leaflet пересоздаёт путь. Повторно накладываем
+  // маску после двух кадров, чтобы на паузе не мигал отдельный участок линии.
+  if (window.partyPlaybackState && routePoints.length >= 2) {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const state = window.partyPlaybackState;
+      if (!state || Number(state.routeStartedAt) !== Number(window.routePlaybackRouteStartedAt)) return;
+      const distance = state.status === "playing"
+        ? getPartyPlaybackDistance(state, getSynchronizedRouteNow())
+        : Math.max(0, Number(state.startDistance) || 0);
+      partyPlaybackDistance = distance;
+      const position = getPartyPlaybackDisplayPosition(distance);
+      if (position) setPartyMarkerPlaybackPosition(position);
+      updatePartyPlaybackRouteLine(distance);
+      updatePartyPlaybackRouteTokens(distance);
+    }));
+  }
+
 });
 
         } else {
@@ -6164,6 +6305,9 @@ map.on("zoomend", function() {
           }
         }
 
+        // Маркер иногда создаётся позже снимка маршрута. В таком случае
+        // запускаем разворот сразу после добавления его иконки на карту.
+        startPartyInitialTurnAfterRouteRedraw();
         console.log("Положение отряда:", coordinates);
       });
 
