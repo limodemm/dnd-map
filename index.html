@@ -744,7 +744,17 @@ let partyIcon = createPartyIcon();
           eventTimestamp >= pageStartedAtServer - 1000;
 
         if (!wasPublishedThisSession) {
+          // После перезагрузки нельзя отбрасывать подтверждённую геометрию:
+          // по ней вычисляется реальное положение отряда из сохранённого
+          // movement.startDistance/startedAt. Восстанавливаем маршрут сразу,
+          // но считаем линию уже полностью раскрытой, чтобы не проигрывать
+          // построение заново и не возвращать жетон к стартовым координатам.
           lastSharedRouteEventId = data.eventId || null;
+          applySharedRouteData({
+            ...data,
+            animationStartIndex: Array.isArray(data.points) ? data.points.length : 0,
+            animationStartDistance: Number.POSITIVE_INFINITY
+          });
           return;
         }
       }
@@ -815,14 +825,26 @@ let partyIcon = createPartyIcon();
         const position = snapshot.val();
 
         if (!position) return;
-        // Во время общего движения координату задаёт party/movement.
-        if (window.partyPlaybackState && window.routePlaybackRouteStartedAt &&
-            Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) return;
+        // Во время общего движения координату задаёт party/route/movement.
+        // Если геометрия и движение уже восстановлены, не перезаписываем
+        // позицию старой стартовой координатой из party/state. Если маркер
+        // ещё не создан, создаём его сразу в вычисленной позиции движения.
+        const hasMatchingPlaybackRoute = Boolean(
+          window.partyPlaybackState && window.routePlaybackRouteStartedAt &&
+          Number(window.partyPlaybackState.routeStartedAt) === Number(window.routePlaybackRouteStartedAt) &&
+          Array.isArray(routePoints) && routePoints.length >= 2
+        );
+        if (hasMatchingPlaybackRoute && partyMarker) return;
 
-        const coordinates = [
-          position.lat,
-          position.lng
-        ];
+        const playbackDistance = hasMatchingPlaybackRoute
+          ? getPartyPlaybackDistance(window.partyPlaybackState, getSynchronizedRouteNow())
+          : null;
+        const playbackPosition = hasMatchingPlaybackRoute
+          ? getPartyPlaybackDisplayPosition(playbackDistance)
+          : null;
+        const coordinates = playbackPosition
+          ? [playbackPosition.lat, playbackPosition.lng]
+          : [position.lat, position.lng];
 
         // Если маркера ещё нет — создаём его
         if (!partyMarker) {
@@ -1134,7 +1156,7 @@ function ensurePartyActionConfirmationDialog() {
         }
         const accepted = await window.resolvePartyActionConfirmation(requestId, answer);
         if (accepted && answer === "yes") {
-          await performPartyRest(actionType === "camp" ? 8 : 1);
+          await performPartyRest(actionType);
         }
       } catch (error) {
         console.error("Не удалось обработать подтверждение отдыха:", error);
@@ -1206,17 +1228,21 @@ async function requestPartyActionConfirmation(action) {
   }
 }
 
-async function performPartyRest(hours) {
+async function performPartyRest(action) {
   const state = window.partyPlaybackState;
-  if (!state || state.status !== "paused") return;
+  if (!state || state.status !== "paused" || !["camp", "fire"].includes(action)) return;
+  const hours = action === "camp" ? 8 : 1;
   const currentDistance = Math.max(0, Number(state.startDistance) || 0);
   const campHoursElapsed = Math.max(0, Number(state.campHoursElapsed) || 0) + hours;
+  // Короткий отдых у костра только добавляет час. Обязательный привал
+  // снимается исключительно полноценным разбитием лагеря.
+  const campRequired = action === "camp" ? false : Boolean(state.campRequired);
   const restedState = {
     ...state,
     status: "paused",
     startDistance: currentDistance,
     startedAt: null,
-    campRequired: false,
+    campRequired,
     campHoursElapsed
   };
   window.partyPlaybackState = restedState;
@@ -1227,7 +1253,7 @@ async function performPartyRest(hours) {
       startDistance: currentDistance,
       startedAt: null,
       routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
-      campRequired: false,
+      campRequired,
       campHoursElapsed
     });
   } catch (error) {
@@ -3195,6 +3221,20 @@ window.routePendingConfirmation = false;
     const checkpoints = [];
     let rests = getNormalRestDistances(totalLength, dailyLimit, routePoints);
 
+    // Если конец маршрута совпадает с обязательным привалом после
+    // завершённого форсированного марша, этот привал не является отдельной
+    // точкой возврата: «Вернуть» должно отменить весь форсированный участок
+    // и вернуть маршрут к последнему обычному привалу перед разделителем.
+    if (!routeForcedMarch && routeForcedSegments.length) {
+      const lastForced = routeForcedSegments
+        .map(segment => getForcedSegmentDistances(segment))
+        .sort((a, b) => a.end - b.end)
+        .slice(-1)[0];
+      if (lastForced && Math.abs(lastForced.end - totalLength) <= 0.05) {
+        rests = rests.filter(distance => distance < lastForced.end - 0.05);
+      }
+    }
+
     // Если маршрут завершён флажком во время активного форсированного марша,
     // обычный расчёт дневных привалов может принять разделитель в начале
     // марша и промежуточные крестики истощения за точки отмены. Для «Вернуть»
@@ -4473,10 +4513,8 @@ function getNormalRestDistances(totalLength, dailyLimit, routeGeometry = routePo
       );
       const firstBoundaryUnits = 1 - carryAtForcedStart;
       if (forcedTravelUnits >= firstBoundaryUnits - 0.000001) {
-        const boundaryDistance = getRouteDistanceAtElapsedTime(
-          routeGeometry, forcedStart, firstBoundaryUnits, forcedEnd
-        );
-        addRest(boundaryDistance, intervalEnd);
+        // Разделительная черта — только визуальная отметка смены режима,
+        // не привал: для неё не создаём круг и не останавливаем отряд.
         pendingCarryUnits = 0;
 
         // Завершённый форсированный марш заканчивается обязательным привалом.
