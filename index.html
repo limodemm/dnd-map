@@ -3024,6 +3024,13 @@ window.routePendingConfirmation = false;
       if (lastCheckpoint.type === "settlement") {
         targetSettlementIndex = lastCheckpoint.index;
       }
+      // Возврат к уже достигнутому привалу (или в центр поселения)
+      // завершает предыдущий отрезок пути. Накопленное до этой точки время
+      // больше не должно переноситься на следующий марш: иначе при включении
+      // форсированного марша остаток старого дня учитывается повторно.
+      if (lastCheckpoint.type === "rest" || lastCheckpoint.type === "settlement") {
+        routeRestElapsedCarryUnits = 0;
+      }
     }
 
     // Если контрольная точка — город, обрезаем маршрут по индексу,
