@@ -2719,7 +2719,6 @@ forcedMarchButton.addEventListener("click", function() {
   if (routeFinished || window.routePendingConfirmation) return;
 
   const fixedLength = getRouteTravelLength(routePoints);
-  const dailyLimit = routePaceLimits[routePace] * (routeSpeedReduced ? 0.5 : 1);
   lastCursorPosition = null;
 
   if (!routeForcedMarch) {
@@ -2739,21 +2738,18 @@ forcedMarchButton.addEventListener("click", function() {
     }
 
     const epochStart = getLastSettlementTransitEndDistance(routePoints);
-    const previousRests = getNormalRestDistances(fixedLength, dailyLimit, routePoints)
-      .filter(distance => distance >= epochStart - 0.001);
-    const lastRestDistance = previousRests.length
-      ? previousRests[previousRests.length - 1]
-      : epochStart;
-
-    routePoints = getRoutePointsUpToDistance(routePoints, lastRestDistance);
-    routeForcedSegments = routeForcedSegments.filter(segment => {
-      const recalculated = getForcedSegmentDistances(segment);
-      return recalculated.end <= lastRestDistance + 0.001;
-    });
+    // Форсированный марш начинается там, где пользователь включил тумблер.
+    // Не откатываем маршрут к предыдущему привалу: обычный участок от него
+    // до текущей точки уже пройден и должен остаться обычным маршем.
+    // Сохраняем также фактически накопленное время с последнего привала,
+    // рассчитанное по темпу каждого пройденного сегмента.
+    const elapsedSinceLastRest = getRouteElapsedUnitsSinceLastRest(
+      routePoints, fixedLength, routeRestElapsedCarryUnits
+    );
 
     routeForcedMarchEpochStartDistance = epochStart;
-    routeForcedMarchStartDistance = lastRestDistance;
-    routeForcedMarchStartUnits = 0;
+    routeForcedMarchStartDistance = fixedLength;
+    routeForcedMarchStartUnits = elapsedSinceLastRest;
     routeForcedMarchPendingExit = false;
     routeForcedMarch = true;
     this.classList.add("active");
@@ -3023,13 +3019,6 @@ window.routePendingConfirmation = false;
       targetDistance = lastCheckpoint.distance;
       if (lastCheckpoint.type === "settlement") {
         targetSettlementIndex = lastCheckpoint.index;
-      }
-      // Возврат к уже достигнутому привалу (или в центр поселения)
-      // завершает предыдущий отрезок пути. Накопленное до этой точки время
-      // больше не должно переноситься на следующий марш: иначе при включении
-      // форсированного марша остаток старого дня учитывается повторно.
-      if (lastCheckpoint.type === "rest" || lastCheckpoint.type === "settlement") {
-        routeRestElapsedCarryUnits = 0;
       }
     }
 
