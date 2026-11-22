@@ -3541,7 +3541,72 @@ function getPartyPlaybackDisplayPosition(distance) {
   return getRoutePointAtDistance(displayPoints, progress * displayLength);
 }
 
-function setPartyMarkerBearingForDistance(distance, initialTurn = false) {
+let partyBearingGeometryCache = null;
+
+// Leaflet упрощает координаты Polyline перед отрисовкой с тем же tolerance,
+// что и smoothFactor (по умолчанию 1px). Для направления используем такую же
+// упрощённую геометрию: тогда на дальнем зуме маркер не реагирует на изгибы,
+// которые сам Leaflet уже убрал с экрана.
+function getPartyVisibleBearingGeometry(displayPoints) {
+  const zoom = map.getZoom();
+  if (partyBearingGeometryCache &&
+      partyBearingGeometryCache.points === displayPoints &&
+      partyBearingGeometryCache.zoom === zoom) {
+    return partyBearingGeometryCache.vertices;
+  }
+
+  const projected = [];
+  const pointIndexes = new Map();
+  const cumulative = new Array(displayPoints.length).fill(0);
+  for (let i = 0; i < displayPoints.length; i++) {
+    const point = map.latLngToLayerPoint(displayPoints[i]);
+    projected.push(point);
+    pointIndexes.set(point, i);
+    if (i > 0) {
+      cumulative[i] = cumulative[i - 1] +
+        getRouteTravelLength([displayPoints[i - 1], displayPoints[i]]);
+    }
+  }
+
+  const simplified = L.LineUtil && typeof L.LineUtil.simplify === "function"
+    ? L.LineUtil.simplify(projected, 1)
+    : projected;
+  const vertices = simplified.map(point => {
+    const index = pointIndexes.get(point);
+    return index === undefined ? null : {
+      point,
+      distance: cumulative[index]
+    };
+  }).filter(Boolean);
+
+  partyBearingGeometryCache = { points: displayPoints, zoom, vertices };
+  return vertices;
+}
+
+function getPartyVisibleBearingPoint(vertices, distance) {
+  if (!vertices.length) return null;
+  if (distance <= vertices[0].distance) return vertices[0].point;
+  const last = vertices[vertices.length - 1];
+  if (distance >= last.distance) return last.point;
+
+  let low = 1;
+  let high = vertices.length - 1;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (vertices[middle].distance < distance) low = middle + 1;
+    else high = middle;
+  }
+  const a = vertices[low - 1];
+  const b = vertices[low];
+  const span = b.distance - a.distance;
+  const t = span > 0.000001 ? (distance - a.distance) / span : 0;
+  return L.point(
+    a.point.x + (b.point.x - a.point.x) * t,
+    a.point.y + (b.point.y - a.point.y) * t
+  );
+}
+
+function setPartyMarkerBearingForDistance(distance, initialTurn = false, preserveInitialTurn = false) {
   if (!partyMarker || !partyMarker._icon || !map || routePoints.length < 2) return;
   const total = getRouteTravelLength(routePoints);
   const displayPoints = Array.isArray(window.partyVisualRoutePoints) &&
@@ -3553,27 +3618,19 @@ function setPartyMarkerBearingForDistance(distance, initialTurn = false) {
 
   const progress = Math.max(0, Math.min(1, Number(distance) / total));
   const displayDistance = progress * displayLength;
-  // База сглаживания задаётся в масштабе максимального зума. При отдалении
-  // камеры тот же географический отрезок занимает меньше экранных пикселей,
-  // поэтому увеличиваем базу пропорционально уменьшению масштаба. Это
-  // сохраняет примерно одинаковую экранную длину выборки и не даёт углу
-  // реагировать на микронеровности, которые на дальнем зуме сжимаются в пиксель.
-  const baseSample = Math.max(3, Math.min(6, displayLength * 0.003));
-  const maxZoom = typeof map.getMaxZoom === "function" ? map.getMaxZoom() : map.getZoom();
-  const zoomScale = typeof map.getZoomScale === "function"
-    ? map.getZoomScale(maxZoom, map.getZoom())
-    : 1;
-  const sample = baseSample * Math.max(1, Math.min(4, zoomScale || 1));
-  const fromDistance = Math.max(0, displayDistance - sample);
-  const toDistance = Math.min(displayLength, displayDistance + sample);
-  const from = getRoutePointAtDistance(displayPoints, fromDistance);
-  const to = getRoutePointAtDistance(displayPoints, toDistance);
+  const vertices = getPartyVisibleBearingGeometry(displayPoints);
+  if (vertices.length < 2) return;
+
+  // После экранного упрощения Leaflet мелкие изгибы уже исключены из расчёта.
+  // Поэтому сохраняем короткую выборку, хорошо реагирующую на настоящие
+  // короткие повороты, и не увеличиваем её искусственно на дальнем зуме.
+  const sample = Math.max(3, Math.min(6, displayLength * 0.003));
+  const from = getPartyVisibleBearingPoint(vertices, Math.max(0, displayDistance - sample));
+  const to = getPartyVisibleBearingPoint(vertices, Math.min(displayLength, displayDistance + sample));
   if (!from || !to) return;
 
-  const a = map.latLngToLayerPoint(from);
-  const b = map.latLngToLayerPoint(to);
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
   if (Math.hypot(dx, dy) < 0.01) return;
 
   // Нулевой угол соответствует направлению вверх (на север) у значка.
@@ -3589,8 +3646,12 @@ function setPartyMarkerBearingForDistance(distance, initialTurn = false) {
     // Начальный разворот запускается вместе с раскрытием линии маршрута.
     // Его нельзя перезапускать или перебивать обычными обновлениями угла.
     partyMarker._partyInitialTurnStarted = true;
+    partyMarker._partyInitialTurnDistance = Number(distance) || 0;
     partyMarker._partyInitialTurnUntil = getSynchronizedRouteNow() + 3000;
     artwork.style.transitionDuration = "3000ms";
+  } else if (preserveInitialTurn && Number(partyMarker._partyInitialTurnUntil) > getSynchronizedRouteNow()) {
+    const remaining = Number(partyMarker._partyInitialTurnUntil) - getSynchronizedRouteNow();
+    artwork.style.transitionDuration = `${Math.max(1, remaining)}ms`;
   } else {
     artwork.style.transitionDuration = "180ms";
   }
@@ -5795,6 +5856,19 @@ map.on("zoomend", function() {
   }
   if (routePoints.length >= 2 || window.routeMode) {
     updateRouteLine(lastCursorPosition);
+  }
+  // setIcon() создаёт новый img и сбрасывает его CSS-transform. Восстанавливаем
+  // направление уже после пересборки линии, используя её актуальную геометрию.
+  if (partyMarker && routePoints.length >= 2) {
+    const now = getSynchronizedRouteNow();
+    const initialTurnUntil = Number(partyMarker._partyInitialTurnUntil) || 0;
+    let bearingDistance = partyPlaybackDistance;
+    if (now < initialTurnUntil) {
+      bearingDistance = Number(partyMarker._partyInitialTurnDistance) || 0;
+    } else if (window.partyPlaybackState && window.partyPlaybackState.status === "playing") {
+      bearingDistance = getPartyPlaybackDistance(window.partyPlaybackState, now);
+    }
+    setPartyMarkerBearingForDistance(bearingDistance, false, true);
   }
 });
 
