@@ -470,7 +470,7 @@ document.addEventListener("keydown", function(e) {
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js";
   import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-auth.js";
-  import { getDatabase, ref, set, get, update, onValue, serverTimestamp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-database.js";
+  import { getDatabase, ref, set, get, update, onValue, runTransaction, serverTimestamp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-database.js";
 
   // Настройки Firebase
   const firebaseConfig = {
@@ -625,6 +625,58 @@ let partyIcon = createPartyIcon();
       });
     };
 
+    const actionConfirmationRef = ref(database, "party/route/actionConfirmation");
+    window.publishPartyActionConfirmation = async function(action) {
+      if (!window.dndFirebase || !window.dndFirebase.ready || !window.dndFirebase.uid) {
+        throw new Error("Firebase ещё не готов");
+      }
+      if (!["camp", "fire"].includes(action)) throw new Error("Неизвестное действие отдыха");
+      await firebaseServerTimeOffsetPromise;
+      const now = window.getRouteSynchronizedNow();
+      const request = {
+        id: String(now) + "_" + window.dndFirebase.uid,
+        action,
+        status: "pending",
+        createdAt: now,
+        createdBy: window.dndFirebase.uid
+      };
+      const result = await runTransaction(actionConfirmationRef, current => {
+        if (current && current.status === "pending" &&
+            now - (Number(current.createdAt) || 0) < 120000) return;
+        return request;
+      });
+      if (!result.committed && result.snapshot.exists()) {
+        // Если другой игрок уже открыл подтверждение, показываем всем именно его.
+        if (typeof window.applyPartyActionConfirmation === "function") {
+          window.applyPartyActionConfirmation(result.snapshot.val());
+        }
+      }
+      return result.committed;
+    };
+
+    window.resolvePartyActionConfirmation = async function(requestId, answer) {
+      if (!window.dndFirebase || !window.dndFirebase.ready || !window.dndFirebase.uid) {
+        throw new Error("Firebase ещё не готов");
+      }
+      if (!["yes", "no"].includes(answer)) return false;
+      await firebaseServerTimeOffsetPromise;
+      const resolvedAt = window.getRouteSynchronizedNow();
+      const result = await runTransaction(actionConfirmationRef, current => {
+        if (!current || String(current.id) !== String(requestId) || current.status !== "pending") return;
+        return {
+          ...current,
+          status: "resolved",
+          answer,
+          resolvedAt,
+          resolvedBy: window.dndFirebase.uid
+        };
+      });
+      return Boolean(result.committed && result.snapshot.exists() &&
+        String(result.snapshot.val().id) === String(requestId) &&
+        result.snapshot.val().answer === answer &&
+        result.snapshot.val().resolvedBy === window.dndFirebase.uid);
+    };
+
     let firstSharedRouteSnapshot = true;
     let lastSharedRouteEventId = null;
     // Firebase может вызвать обработчик несколько раз, пока часы ещё
@@ -662,6 +714,10 @@ let partyIcon = createPartyIcon();
       // поправку серверного времени, иначе можно ошибочно отбросить событие.
       await firebaseServerTimeOffsetPromise;
       const data = snapshot.val();
+
+      if (typeof window.applyPartyActionConfirmation === "function") {
+        window.applyPartyActionConfirmation(data && data.actionConfirmation ? data.actionConfirmation : null);
+      }
 
       // Обновления движения могут приходить для того же маршрута, поэтому
       // применяем их до проверки eventId (сам маршрут при этом не переигрываем).
@@ -983,6 +1039,203 @@ Object.defineProperties(window, {
 const KM_PER_PIXEL = 38.6 / 300;
 let routePanel = null;
 let routeLaunchPanel = null;
+let partyActionConfirmationOverlay = null;
+let partyActionConfirmationId = null;
+let partyActionConfirmationType = null;
+let partyActionConfirmationSubmitting = false;
+let partyActionConfirmationExpiryTimer = null;
+
+function ensurePartyActionConfirmationDialog() {
+  if (partyActionConfirmationOverlay) return partyActionConfirmationOverlay;
+
+  const style = document.createElement("style");
+  style.textContent = `
+    #party-action-confirmation-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 12000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      box-sizing: border-box;
+      background: rgba(0, 0, 0, 0.72);
+      backdrop-filter: blur(2px);
+      -webkit-backdrop-filter: blur(2px);
+    }
+    #party-action-confirmation-dialog {
+      width: min(330px, calc(100vw - 40px));
+      box-sizing: border-box;
+      padding: 19px 20px 17px;
+      color: #eee2c8;
+      background: #211b16;
+      border: 2px solid #d6b46a;
+      border-radius: 9px;
+      box-shadow: 0 8px 28px #000d, inset 0 1px 0 #ffffff12;
+      font-family: Georgia, serif;
+      text-align: center;
+    }
+    #party-action-confirmation-text {
+      margin: 0 0 18px;
+      font-size: 17px;
+      line-height: 1.4;
+    }
+    #party-action-confirmation-buttons {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+    }
+    #party-action-confirmation-buttons button {
+      min-width: 92px;
+      padding: 9px 16px;
+      color: #eee2c8;
+      background: #393027;
+      border: 1px solid #92764e;
+      border-radius: 6px;
+      font: 15px Georgia, serif;
+      cursor: pointer;
+    }
+    #party-action-confirmation-buttons button[data-answer="yes"] {
+      background: #385b37;
+      border-color: #78936a;
+    }
+    #party-action-confirmation-buttons button:disabled {
+      opacity: .5;
+      cursor: wait;
+    }
+  `;
+  document.head.appendChild(style);
+
+  const overlay = document.createElement("div");
+  overlay.id = "party-action-confirmation-overlay";
+  overlay.innerHTML = `
+    <div id="party-action-confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="party-action-confirmation-text">
+      <div id="party-action-confirmation-text"></div>
+      <div id="party-action-confirmation-buttons">
+        <button type="button" data-answer="yes">Да</button>
+        <button type="button" data-answer="no">Нет</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  partyActionConfirmationOverlay = overlay;
+
+  overlay.querySelectorAll("button[data-answer]").forEach(button => {
+    button.addEventListener("click", async function() {
+      if (partyActionConfirmationSubmitting || !partyActionConfirmationId) return;
+      const requestId = partyActionConfirmationId;
+      const actionType = partyActionConfirmationType;
+      const answer = button.dataset.answer;
+      partyActionConfirmationSubmitting = true;
+      overlay.querySelectorAll("button").forEach(item => { item.disabled = true; });
+      try {
+        if (typeof window.resolvePartyActionConfirmation !== "function") {
+          throw new Error("Синхронизация подтверждения ещё не готова");
+        }
+        const accepted = await window.resolvePartyActionConfirmation(requestId, answer);
+        if (accepted && answer === "yes") {
+          await performPartyRest(actionType === "camp" ? 8 : 1);
+        }
+      } catch (error) {
+        console.error("Не удалось обработать подтверждение отдыха:", error);
+        partyActionConfirmationSubmitting = false;
+        overlay.querySelectorAll("button").forEach(item => { item.disabled = false; });
+      }
+    });
+  });
+
+  return overlay;
+}
+
+function closePartyActionConfirmation() {
+  if (partyActionConfirmationExpiryTimer) {
+    clearTimeout(partyActionConfirmationExpiryTimer);
+    partyActionConfirmationExpiryTimer = null;
+  }
+  if (partyActionConfirmationOverlay) partyActionConfirmationOverlay.style.display = "none";
+  partyActionConfirmationId = null;
+  partyActionConfirmationType = null;
+  partyActionConfirmationSubmitting = false;
+  if (partyActionConfirmationOverlay) {
+    partyActionConfirmationOverlay.querySelectorAll("button").forEach(button => { button.disabled = false; });
+  }
+  syncRouteLaunchControls();
+}
+
+window.applyPartyActionConfirmation = function(confirmation) {
+  if (!confirmation || confirmation.status !== "pending") {
+    if (!confirmation || (partyActionConfirmationId && confirmation.id === partyActionConfirmationId)) {
+      closePartyActionConfirmation();
+    }
+    return;
+  }
+
+  const createdAt = Number(confirmation.createdAt) || 0;
+  const remaining = 120000 - (getSynchronizedRouteNow() - createdAt);
+  if (!confirmation.id || !["camp", "fire"].includes(confirmation.action) || remaining <= 0) {
+    closePartyActionConfirmation();
+    return;
+  }
+
+  const overlay = ensurePartyActionConfirmationDialog();
+  partyActionConfirmationId = String(confirmation.id);
+  partyActionConfirmationType = confirmation.action;
+  const message = overlay.querySelector("#party-action-confirmation-text");
+  message.textContent = confirmation.action === "camp"
+    ? "Разбить лагерь здесь?"
+    : "Остановиться отдохнуть здесь?";
+  overlay.style.display = "flex";
+  overlay.querySelectorAll("button").forEach(button => { button.disabled = false; });
+  if (partyActionConfirmationExpiryTimer) clearTimeout(partyActionConfirmationExpiryTimer);
+  partyActionConfirmationExpiryTimer = setTimeout(function() {
+    if (partyActionConfirmationId === String(confirmation.id)) closePartyActionConfirmation();
+  }, remaining);
+  syncRouteLaunchControls();
+};
+
+async function requestPartyActionConfirmation(action) {
+  if (partyActionConfirmationSubmitting || partyActionConfirmationId) return;
+  if (typeof window.publishPartyActionConfirmation !== "function") {
+    console.error("Синхронизация подтверждения отдыха ещё не готова");
+    return;
+  }
+  try {
+    await window.publishPartyActionConfirmation(action);
+  } catch (error) {
+    console.error("Не удалось запросить подтверждение отдыха:", error);
+  }
+}
+
+async function performPartyRest(hours) {
+  const state = window.partyPlaybackState;
+  if (!state || state.status !== "paused") return;
+  const currentDistance = Math.max(0, Number(state.startDistance) || 0);
+  const campHoursElapsed = Math.max(0, Number(state.campHoursElapsed) || 0) + hours;
+  const restedState = {
+    ...state,
+    status: "paused",
+    startDistance: currentDistance,
+    startedAt: null,
+    campRequired: false,
+    campHoursElapsed
+  };
+  window.partyPlaybackState = restedState;
+  renderPartyPlaybackState(restedState);
+  try {
+    await window.publishPartyPlaybackState({
+      status: "paused",
+      startDistance: currentDistance,
+      startedAt: null,
+      routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
+      campRequired: false,
+      campHoursElapsed
+    });
+  } catch (error) {
+    window.partyPlaybackState = state;
+    renderPartyPlaybackState(state);
+    console.error("Не удалось сохранить отдых:", error);
+  }
+}
 let routeStatus = null;
 let routeConfirmButton = null;
 // Последняя опубликованная геометрия нужна, чтобы при повторном подтверждении
@@ -1400,8 +1653,9 @@ function syncRouteLaunchControls() {
   // Во время раскрытия маршрута все действия, кроме кнопки паузы,
   // заблокированы до полного завершения анимации.
   if (editButton) editButton.disabled = animationRunning || playing;
-  if (campButton) campButton.disabled = animationRunning || !paused;
-  if (shortRestButton) shortRestButton.disabled = animationRunning || !paused;
+  const confirmationOpen = Boolean(partyActionConfirmationId || partyActionConfirmationSubmitting);
+  if (campButton) campButton.disabled = animationRunning || !paused || confirmationOpen;
+  if (shortRestButton) shortRestButton.disabled = animationRunning || !paused || confirmationOpen;
   if (safetySlider) safetySlider.disabled = animationRunning || !paused;
 }
 
@@ -1997,37 +2251,16 @@ function createRouteLaunchPanel() {
     });
   }
   if (campButton) {
-    campButton.addEventListener("click", async function() {
-      const state = window.partyPlaybackState;
-      if (!state) return;
-      const currentDistance = state.status === "playing"
-        ? getPartyPlaybackDistance(state, getSynchronizedRouteNow())
-        : Math.max(0, Number(state.startDistance) || 0);
-      const campHoursElapsed = Math.max(0, Number(state.campHoursElapsed) || 0) + 8;
-      const campedState = {
-        ...state,
-        status: "paused",
-        startDistance: currentDistance,
-        startedAt: null,
-        campRequired: false,
-        campHoursElapsed
-      };
-      window.partyPlaybackState = campedState;
-      renderPartyPlaybackState(campedState);
-      try {
-        await window.publishPartyPlaybackState({
-          status: "paused",
-          startDistance: currentDistance,
-          startedAt: null,
-          routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
-          campRequired: false,
-          campHoursElapsed
-        });
-      } catch (error) {
-        window.partyPlaybackState = state;
-        renderPartyPlaybackState(state);
-        console.error("Не удалось сохранить отдых в лагере:", error);
-      }
+    campButton.addEventListener("click", function() {
+      if (campButton.disabled) return;
+      requestPartyActionConfirmation("camp");
+    });
+  }
+  const shortRestButton = routeLaunchPanel.querySelector("#route-party-short-rest");
+  if (shortRestButton) {
+    shortRestButton.addEventListener("click", function() {
+      if (shortRestButton.disabled) return;
+      requestPartyActionConfirmation("fire");
     });
   }
   syncRouteLaunchControls();
@@ -4007,14 +4240,15 @@ function renderPartyPlaybackState(state) {
   playButton.setAttribute("aria-pressed", playing ? "true" : "false");
   pauseButton.disabled = !playing;
   playButton.disabled = playing || campRequired || routeMarkerAnimations.length > 0;
+  const confirmationOpen = Boolean(partyActionConfirmationId || partyActionConfirmationSubmitting);
   if (campButton) {
-    campButton.disabled = !paused;
+    campButton.disabled = !paused || confirmationOpen;
     campButton.classList.toggle("active", campRequired);
     campButton.setAttribute("aria-pressed", campRequired ? "true" : "false");
     campButton.setAttribute("aria-disabled", campButton.disabled ? "true" : "false");
   }
   if (shortRestButton) {
-    shortRestButton.disabled = !paused;
+    shortRestButton.disabled = !paused || confirmationOpen;
     shortRestButton.setAttribute("aria-disabled", shortRestButton.disabled ? "true" : "false");
   }
   if (campSafetySlider) {
@@ -4993,7 +5227,7 @@ function updateRouteLine(cursorPosition = null) {
   const restGeometry = routeForcedMarch
     ? getRoutePointsUpToDistance(pointsToDraw, restCalculationLength)
     : pointsToDraw;
-  const restDistancesToDraw = getNormalRestDistances(
+  let restDistancesToDraw = getNormalRestDistances(
     restCalculationLength,
     dailyLimit,
     restGeometry
@@ -5061,6 +5295,14 @@ function updateRouteLine(cursorPosition = null) {
         carryPending = false;
       });
   }
+
+  // Разделительная черта обозначает суточную границу форсированного марша,
+  // но не является самостоятельным привалом: не рисуем на ней круг и не
+  // создаём playback-rest-stop, который автоматически ставил бы отряд на паузу.
+  const forcedDividerDistances = forcedVisualSegments.map(segment => segment.boundaryDistance);
+  restDistancesToDraw = restDistancesToDraw.filter(distance =>
+    !forcedDividerDistances.some(boundary => Math.abs(distance - boundary) <= 0.05)
+  );
 
   const terrainIntervals = getTerrainTravelIntervals(pointsToDraw);
   const protectedDistances = [...restDistancesToDraw];
