@@ -1289,6 +1289,8 @@ async function performPartyRest(action) {
   const previousRestResetDistances = routeRestResetDistances.slice();
   const previousRestElapsedCarryUnits = routeRestElapsedCarryUnits;
   const previousForcedSegments = routeForcedSegments.map(segment => ({ ...segment }));
+  const previousForcedMarch = routeForcedMarch;
+  const previousForcedMarchPendingExit = routeForcedMarchPendingExit;
   const previousForcedMarchStartDistance = routeForcedMarchStartDistance;
   const previousForcedMarchStartUnits = routeForcedMarchStartUnits;
   const previousForcedMarchEpochStartDistance = routeForcedMarchEpochStartDistance;
@@ -1396,12 +1398,50 @@ async function performPartyRest(action) {
     // отсчёт заново от лагеря, не создавая отдельного жетона в этой точке.
     if (routeForcedMarch) {
       if (currentDistance >= routeForcedMarchStartDistance - 0.02) {
+        // Лагерь разбит уже внутри активного форсированного марша:
+        // его начало переносится прямо в точку отряда.
         routeForcedMarchStartDistance = currentDistance;
         routeForcedMarchEpochStartDistance = currentDistance;
+      } else {
+        // Лагерь разбит ДО начала активного форсированного марша,
+        // который заканчивается конечным флажком, а не жетоном привала.
+        // Сдвигаем начало так же, как начало завершённого участка:
+        // учитываем и оставшееся время до старой границы, и уже пройденное
+        // от предыдущего привала время до лагеря. Конечный флажок остаётся
+        // на месте, поэтому меняется только длина оставшегося форсированного
+        // отрезка.
+        const timeToOldForcedStart = getRouteTravelTimeUnitsBetweenDistances(
+          routePoints, currentDistance, routeForcedMarchStartDistance
+        );
+        const shiftedStartUnits = timeToOldForcedStart + elapsedUnitsBeforeCamp;
+        const shiftedStart = elapsedUnitsBeforeCamp > 0.000001
+          ? getRouteDistanceAtElapsedTime(
+              routePoints, currentDistance, shiftedStartUnits, routeLength
+            )
+          : routeForcedMarchStartDistance;
+        routeForcedMarchStartDistance = Math.max(
+          currentDistance, Math.min(routeLength, shiftedStart)
+        );
+        routeForcedMarchEpochStartDistance = routeForcedMarchStartDistance;
       }
-      // Если активный форсированный участок ещё впереди, он начнётся
-      // уже после нового лагеря и не наследует старый дневной carry.
+
+      // Новый лагерь обнуляет дневной carry и для активного участка.
       routeForcedMarchStartUnits = 0;
+
+      // Если новая граница начала оказалась у самого флажка, активного
+      // форсированного отрезка больше нет — выключаем его без лишней метки.
+      if (routeForcedMarchStartDistance >= routeLength - 0.001) {
+        routeForcedMarch = false;
+        routeForcedMarchPendingExit = false;
+        routeForcedMarchStartDistance = 0;
+        routeForcedMarchStartUnits = 0;
+        routeForcedMarchEpochStartDistance = 0;
+        const forcedButton = document.getElementById("route-forced-march");
+        if (forcedButton) {
+          forcedButton.classList.remove("active");
+          forcedButton.setAttribute("aria-pressed", "false");
+        }
+      }
     }
   }
 
@@ -1444,6 +1484,8 @@ async function performPartyRest(action) {
     routeRestResetDistances = previousRestResetDistances;
     routeRestElapsedCarryUnits = previousRestElapsedCarryUnits;
     routeForcedSegments = previousForcedSegments;
+    routeForcedMarch = previousForcedMarch;
+    routeForcedMarchPendingExit = previousForcedMarchPendingExit;
     routeForcedMarchStartDistance = previousForcedMarchStartDistance;
     routeForcedMarchStartUnits = previousForcedMarchStartUnits;
     routeForcedMarchEpochStartDistance = previousForcedMarchEpochStartDistance;
