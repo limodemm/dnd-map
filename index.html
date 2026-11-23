@@ -341,6 +341,9 @@ map.on('click', function(e) {
     }
     return;
   }
+  if (!window.settlementDrawingActive && !settlementJustDrew &&
+      typeof window.handleTerminalSettlementMapClick === "function" &&
+      window.handleTerminalSettlementMapClick(e.latlng)) return;
   if (popupJustClosed || window.settlementDrawingActive || settlementJustDrew) return;
 
   if (window.routeMode) {
@@ -875,11 +878,15 @@ let partyIcon = createPartyIcon();
   interactive: true,
   zIndexOffset: 2000
 }).addTo(map);
+if (window.partyMarkerHiddenForSettlementExit) setPartyMarkerVisible(false);
 
 partyMarker.on("click", function() {
 
   // Если маршрут уже прокладывается, повторный клик ничего не делает
   if (window.routeMode) return;
+
+  const previousTerminalCityId = isTerminalSettlementPaused(window.partyPlaybackState)
+    ? String(window.routeDestinationCityId) : null;
 
   // Перед началом новой геометрии переносим накопленное время пути
   // от последнего привала из предыдущего подтверждённого маршрута.
@@ -900,6 +907,8 @@ partyMarker.on("click", function() {
     );
   }
 
+if (!previousTerminalCityId) setPartyMarkerVisible(true);
+
 window.routeMode = true;
 window.routeAnimationPublished = false;
 window.routeEditingConfirmedRoute = false;
@@ -911,7 +920,7 @@ routeFinished = false;
 window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
 window.routeDestinationApproachPoint = null;
-window.routeIntermediateCityIds = [];
+window.routeIntermediateCityIds = previousTerminalCityId ? [previousTerminalCityId] : [];
 window.routeIntermediateSettlementUndoSnapshots = [];
 clearRouteIntermediateCityOutlines();
 // Сбрасываем также обводку конечного города, если предыдущий маршрут
@@ -949,6 +958,18 @@ routePoints = [partyMarker.getLatLng()];
   updateRouteLine();
   console.log("Режим прокладки маршрута включён");
 });
+
+window.handleTerminalSettlementMapClick = function(latlng) {
+  const state = window.partyPlaybackState;
+  if (!isTerminalSettlementPaused(state) || !latlng || !partyMarker) return false;
+  const destination = getTerminalDestinationSettlement();
+  if (!destination) return false;
+  const visualPolygon = getSettlementBrushErasePolygon(destination.area, 4);
+  if (!Array.isArray(visualPolygon) || visualPolygon.length < 3 ||
+      !pointInSettlement(latlng, visualPolygon)) return false;
+  partyMarker.fire("click");
+  return true;
+};
 // =====================================
 // ПОСТРОЕНИЕ МАРШРУТА
 // =====================================
@@ -1906,18 +1927,19 @@ function syncRouteLaunchControls() {
   const playing = Boolean(state && state.status === "playing");
   const paused = Boolean(state && state.status === "paused");
   const campRequired = Boolean(state && state.campRequired);
+  const terminalCityPaused = isTerminalSettlementPaused(state);
   const playButton = routeLaunchPanel.querySelector("#route-party-play");
   const editButton = routeLaunchPanel.querySelector("#route-party-edit");
   const campButton = routeLaunchPanel.querySelector("#route-party-camp");
   const shortRestButton = routeLaunchPanel.querySelector("#route-party-short-rest");
   const safetySlider = routeLaunchPanel.querySelector("#route-party-camp-safety-slider");
   if (playButton) {
-    playButton.disabled = animationRunning || playing || campRequired;
+    playButton.disabled = animationRunning || playing || campRequired || terminalCityPaused;
     playButton.setAttribute("aria-disabled", playButton.disabled ? "true" : "false");
   }
   // Во время раскрытия маршрута все действия, кроме кнопки паузы,
   // заблокированы до полного завершения анимации.
-  if (editButton) editButton.disabled = animationRunning || playing;
+  if (editButton) editButton.disabled = animationRunning || playing || terminalCityPaused;
   const confirmationOpen = Boolean(partyActionConfirmationId || partyActionConfirmationSubmitting);
   if (campButton) campButton.disabled = animationRunning || !paused || confirmationOpen;
   if (shortRestButton) shortRestButton.disabled = animationRunning || !paused || confirmationOpen;
@@ -4552,6 +4574,58 @@ window.startPartyInitialTurnAfterRouteRedraw = function() {
   partyMarker._partyInitialTurnRouteStartedAt = routeStartedAt;
 };
 
+function getTerminalDestinationSettlement() {
+  if (!window.routeDestinationCityId) return null;
+  const area = (Array.isArray(window.settlementAreas) ? window.settlementAreas : [])
+    .find(item => String(item.id) === String(window.routeDestinationCityId));
+  if (!area || !area.center) return null;
+  const total = getRouteTravelLength(routePoints);
+  const transit = getRouteSettlementTransitIntervals(routePoints)
+    .find(interval => String(interval.settlementId || '') === String(window.routeDestinationCityId));
+  if (!transit) return null;
+  return { area, total, transit };
+}
+
+function isTerminalSettlementPaused(state) {
+  if (!state || state.status !== "paused") return false;
+  const destination = getTerminalDestinationSettlement();
+  return Boolean(destination && Number(state.startDistance) >= destination.total - 0.001);
+}
+
+function isPartyMarkerInsideSettlementTransit(distance) {
+  const currentDistance = Math.max(0, Number(distance) || 0);
+  const intervals = getRouteSettlementTransitIntervals(routePoints);
+  const startTransit = intervals.find(interval =>
+    Number(interval.start) <= 0.001 && Number(interval.end) > 0.001 && interval.settlementId
+  );
+  if (startTransit && currentDistance < Number(startTransit.end) - 0.001) return true;
+  const destination = getTerminalDestinationSettlement();
+  if (destination && currentDistance >= Number(destination.transit.start) - 0.001) return true;
+  return false;
+}
+
+function setPartyMarkerVisible(visible) {
+  window.partyMarkerHiddenForSettlementExit = !visible;
+  if (!partyMarker || !partyMarker._icon) return;
+  partyMarker._icon.style.opacity = visible ? "1" : "0";
+  partyMarker._icon.style.pointerEvents = visible ? "auto" : "none";
+}
+
+function getPartyPlaybackPositionForDistance(distance) {
+  const currentDistance = Math.max(0, Number(distance) || 0);
+  const intervals = getRouteSettlementTransitIntervals(routePoints);
+  const startTransit = intervals.find(interval =>
+    Number(interval.start) <= 0.001 && Number(interval.end) > 0.001 && interval.settlementId
+  );
+  const destination = getTerminalDestinationSettlement();
+  const relevantTransit = [startTransit, destination && destination.transit].filter(Boolean)
+    .find(interval => currentDistance >= Number(interval.start) - 0.001 &&
+      currentDistance <= Number(interval.end) + 0.001);
+  return relevantTransit
+    ? getRoutePointAtDistance(routePoints, currentDistance)
+    : getPartyPlaybackDisplayPosition(currentDistance);
+}
+
 function renderPartyPlaybackState(state) {
   if (!routeLaunchPanel) return;
   const pauseButton = routeLaunchPanel.querySelector("#route-party-pause");
@@ -4564,13 +4638,14 @@ function renderPartyPlaybackState(state) {
   const playing = state && state.status === "playing";
   const paused = Boolean(state && state.status === "paused");
   const campRequired = Boolean(state && state.campRequired);
-  if (editButton) editButton.disabled = Boolean(playing);
+  const terminalCityPaused = isTerminalSettlementPaused(state);
+  if (editButton) editButton.disabled = Boolean(playing || terminalCityPaused);
   pauseButton.classList.toggle("active", !playing);
   pauseButton.setAttribute("aria-pressed", !playing ? "true" : "false");
   playButton.classList.toggle("active", playing);
   playButton.setAttribute("aria-pressed", playing ? "true" : "false");
   pauseButton.disabled = !playing;
-  playButton.disabled = playing || campRequired || routeMarkerAnimations.length > 0;
+  playButton.disabled = playing || campRequired || terminalCityPaused || routeMarkerAnimations.length > 0;
   const confirmationOpen = Boolean(partyActionConfirmationId || partyActionConfirmationSubmitting);
   if (campButton) {
     campButton.disabled = !paused || confirmationOpen;
@@ -4641,11 +4716,23 @@ function tickPartyPlayback() {
   const reachedRestStop = Number.isFinite(nextRestStop);
   if (reachedRestStop) distance = nextRestStop;
   partyPlaybackDistance = distance;
-  const position = window.getPartyPlaybackDisplayPosition(distance);
+  const destination = getTerminalDestinationSettlement();
+  const markerWasHidden = Boolean(window.partyMarkerHiddenForSettlementExit);
+  const markerShouldBeHidden = isPartyMarkerInsideSettlementTransit(distance);
+  setPartyMarkerVisible(!markerShouldBeHidden);
+  const position = getPartyPlaybackPositionForDistance(distance);
   if (position && partyMarker) window.setPartyMarkerPlaybackPosition(position);
+  const markerJustAppeared = markerWasHidden && !markerShouldBeHidden && Boolean(partyMarker);
+  if (markerJustAppeared) {
+    // На выходе из города не показываем жетон с устаревшим углом,
+    // оставшимся от центра: сразу направляем его по касательной новой линии.
+    partyMarker._partyInitialTurnUntil = 0;
+    window.setPartyMarkerBearingForDistance(distance, false, false, true);
+  }
   // Обычное сопровождение направления включается после завершения
   // начального трёхсекундного разворота, не задерживая само движение.
-  if (now >= Math.max(Number(state.startedAt || 0), Number(partyMarker && partyMarker._partyInitialTurnUntil) || 0)) {
+  if (!markerJustAppeared &&
+      now >= Math.max(Number(state.startedAt || 0), Number(partyMarker && partyMarker._partyInitialTurnUntil) || 0)) {
     window.setPartyMarkerBearingForDistance(distance, false);
   }
   updatePartyPlaybackRouteLine(distance);
@@ -4678,11 +4765,37 @@ function tickPartyPlayback() {
     return;
   }
   if (distance >= total - 0.001) {
-    window.partyPlaybackState = { ...state, status: "paused", startDistance: total, startedAt: null };
+    const terminalArea = destination && destination.area;
+    if (terminalArea && terminalArea.center && partyMarker) {
+      if (typeof window.completeRouteSettlementOutline === "function") {
+        window.completeRouteSettlementOutline(terminalArea);
+      }
+      window.setPartyMarkerPlaybackPosition(terminalArea.center);
+      setPartyMarkerVisible(false);
+      // Убираем все маршрутные артефакты, сохраняя геометрию маршрута
+      // в памяти для последующего редактирования/выхода из города.
+      clearRouteDrawing();
+    }
+    const pausedState = {
+      ...state, status: "paused", startDistance: total, startedAt: null,
+      campRequired: false,
+      terminalSettlementReached: Boolean(terminalArea)
+    };
+    window.partyPlaybackState = pausedState;
     partyPlaybackDistance = total;
-    renderPartyPlaybackState(window.partyPlaybackState);
+    renderPartyPlaybackState(pausedState);
     stopPartyPlaybackFrame();
     setPartyMarkerPlaybackSmoothing(false);
+    if (typeof window.publishPartyPlaybackState === "function") {
+      window.publishPartyPlaybackState({
+        status: "paused", startDistance: total, startedAt: null,
+        routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
+        campRequired: false,
+        terminalSettlementReached: Boolean(terminalArea),
+        campHoursElapsed: Math.max(0, Number(state.campHoursElapsed) || 0),
+        restResetDistances: routeRestResetDistances.slice()
+      }).catch(error => console.error("Не удалось сохранить прибытие в конечный город:", error));
+    }
     return;
   }
   partyPlaybackFrame = requestAnimationFrame(tickPartyPlayback);
@@ -4755,15 +4868,27 @@ window.applyPartyPlaybackState = function(state) {
   } else {
     stopPartyPlaybackFrame();
     setPartyMarkerPlaybackSmoothing(false);
-    const position = window.getPartyPlaybackDisplayPosition(partyPlaybackDistance);
+    const terminalDestination = isTerminalSettlementPaused(state)
+      ? getTerminalDestinationSettlement() : null;
+    const position = terminalDestination
+      ? terminalDestination.area.center
+      : getPartyPlaybackPositionForDistance(partyPlaybackDistance);
     if (position && partyMarker) window.setPartyMarkerPlaybackPosition(position);
+    if (terminalDestination) {
+      setPartyMarkerVisible(false);
+      clearRouteDrawing();
+    } else {
+      setPartyMarkerVisible(!isPartyMarkerInsideSettlementTransit(partyPlaybackDistance));
+    }
     const initialTurnActive = Boolean(partyMarker &&
       Number(partyMarker._partyInitialTurnUntil) > window.getSynchronizedRouteNow());
     if (!initialTurnActive) {
       window.setPartyMarkerBearingForDistance(partyPlaybackDistance, false);
     }
-    updatePartyPlaybackRouteLine(partyPlaybackDistance);
-    updatePartyPlaybackRouteTokens(partyPlaybackDistance);
+    if (!terminalDestination) {
+      updatePartyPlaybackRouteLine(partyPlaybackDistance);
+      updatePartyPlaybackRouteTokens(partyPlaybackDistance);
+    }
   }
   if ((restResetDistancesChanged || forcedRouteStateChanged) && routeFinished &&
       typeof window.updateRouteLine === "function") {
@@ -5024,6 +5149,7 @@ function cancelPartyRoute() {
 
   stopRouteMarkerAnimation();
   clearRouteDrawing();
+  setPartyMarkerVisible(true);
   if (window.clearSettlementOutline) window.clearSettlementOutline();
 
   const forcedButton = document.getElementById("route-forced-march");
@@ -5371,6 +5497,10 @@ function getPartyPathDistanceAtScreenPoint(path, screenPoint) {
 }
 
 function updatePartyPlaybackRouteTokens(distance) {
+  if (isTerminalSettlementPaused(window.partyPlaybackState)) {
+    clearRouteDrawing();
+    return;
+  }
   const passedDistance = Number(distance) || 0;
   const layers = Array.isArray(window.routeRestMarkers)
     ? [...window.routeRestMarkers] : [];
@@ -5386,6 +5516,10 @@ function updatePartyPlaybackRouteTokens(distance) {
 }
 
 function updatePartyPlaybackRouteLine(distance) {
+  if (isTerminalSettlementPaused(window.partyPlaybackState)) {
+    clearRouteDrawing();
+    return;
+  }
   // Пока строится маршрут, его прозрачные штрихи принадлежат анимации
   // появления. Маска движения не должна менять их opacity или скрывать их.
   // После завершения построения updateRouteLine создаст обычные слои, и тогда
@@ -5519,6 +5653,11 @@ function updatePartyPlaybackRouteLine(distance) {
 }
 
 function updateRouteLine(cursorPosition = null) {
+  if (isTerminalSettlementPaused(window.partyPlaybackState) && !window.routeMode &&
+      !window.routePendingConfirmation && !window.routeEditingConfirmedRoute) {
+    clearRouteDrawing();
+    return;
+  }
   // Перерисовка карты не отменяет и не перезапускает анимацию жетонов.
   // Время анимации учитывается при создании каждого нового DOM-элемента.
   ensureRouteMarkerPanes();
@@ -6642,6 +6781,7 @@ window.applySynchronizedPartyRoute = function(data) {
     ? L.latLng(data.destinationApproachPoint.lat, data.destinationApproachPoint.lng) : null;
   window.routeIntermediateCityIds = Array.isArray(data.intermediateSettlementIds)
     ? data.intermediateSettlementIds.map(id => String(id)) : [];
+  if (partyMarker) setPartyMarkerVisible(!isPartyMarkerInsideSettlementTransit(0));
   // Убираем статичные обводки выбранных промежуточных городов.
   // Они должны появляться только как анимация, когда линия маршрута
   // действительно доходит до соответствующей точки входа.
@@ -6993,6 +7133,40 @@ window.handlePartyRouteClick = function(latlng) {
           window.routeDestinationBoundaryPoint = boundary.point;
           window.routeDestinationApproachPoint = approachPoint;
 
+          // Конечный город получает тот же трёхэтапный хвост, что и
+          // промежуточный: подход до внешней кисти, скрытый переход до
+          // фактической границы и нулевая контрольная точка в центре.
+          const visualContact = getVisualBrushContact(clickedArea, approachPoint, boundary.point);
+          const visualEntryPoint = visualContact
+            ? visualContact.routePoint
+            : findNearestRoutePointOnSettlementBrush(approachPoint, clickedArea);
+          if (visualEntryPoint && clickedArea.center &&
+              Number.isFinite(Number(clickedArea.center.lat)) &&
+              Number.isFinite(Number(clickedArea.center.lng))) {
+            const approachPath = getRouteSegmentAroundIntermediateCities(
+              routePoints[routePoints.length - 1], visualEntryPoint
+            );
+            if (approachPath && approachPath.length >= 2) {
+              approachPath.slice(1).forEach(point => {
+                routePoints.push(window.applyRouteTravelSettings(point, clickPace, clickSpeedReduced));
+              });
+              const outerEntry = routePoints[routePoints.length - 1];
+              const transitStart = window.copyRoutePointMetadata(
+                outerEntry, L.latLng(outerEntry.lat, outerEntry.lng)
+              );
+              window.setRouteSegmentMode(transitStart, "settlement-count-only", clickedArea.id);
+              routePoints.push(window.applyRouteTravelSettings(transitStart, clickPace, clickSpeedReduced));
+              routePoints.push(window.applyRouteTravelSettings(window.setRouteSegmentMode(
+                L.latLng(boundary.point.lat, boundary.point.lng),
+                "settlement-count-only", clickedArea.id
+              ), clickPace, clickSpeedReduced));
+              routePoints.push(window.applyRouteTravelSettings(window.setRouteSegmentMode(
+                L.latLng(Number(clickedArea.center.lat), Number(clickedArea.center.lng)),
+                "settlement-zero", clickedArea.id
+              ), clickPace, clickSpeedReduced));
+            }
+          }
+
           try {
             if (window.showSettlementOutline) {
               window.showSettlementOutline(clickedArea, 1);
@@ -7001,7 +7175,8 @@ window.handlePartyRouteClick = function(latlng) {
             console.error("Ошибка отображения обводки поселения:", outlineError);
           }
 
-          finishPartyRoute(boundary.point);
+          const finalRoutePoint = routePoints[routePoints.length - 1];
+          finishPartyRoute(finalRoutePoint || boundary.point);
           console.log("Маршрут завершён у поселения:", clickedArea.type, clickedArea.id);
           return;
         }
@@ -7103,7 +7278,7 @@ function refreshPartyPlaybackDuringMapMove() {
   partyPlaybackDistance = distance;
   // Сначала обновляем сам жетон по текущему времени и новой позиции карты,
   // затем режем линию точно под его фактическим экранным положением.
-  const position = window.getPartyPlaybackDisplayPosition(distance);
+  const position = getPartyPlaybackPositionForDistance(distance);
   if (position) window.setPartyMarkerPlaybackPosition(position);
   updatePartyPlaybackRouteLine(distance);
 }
@@ -7124,6 +7299,13 @@ map.on("zoomend", function() {
   if (partyMarker) {
     partyIcon = createPartyIcon();
     partyMarker.setIcon(partyIcon);
+    if (partyMarker._icon) {
+      const hiddenByTerminalState = Boolean(window.partyMarkerHiddenForSettlementExit) ||
+        isTerminalSettlementPaused(window.partyPlaybackState) ||
+        (window.partyPlaybackState && window.partyPlaybackState.status === "playing" &&
+          isPartyMarkerInsideSettlementTransit(partyPlaybackDistance));
+      if (hiddenByTerminalState) setPartyMarkerVisible(false);
+    }
     if (Number.isFinite(preservedPreviewAngle) && partyMarker._icon) {
       const newArtwork = partyMarker._icon.querySelector("img");
       if (newArtwork) {
@@ -9167,6 +9349,40 @@ map.on("zoomend", function() {
     }
   };
 
+  // При фактическом прибытии в конечный город гарантируем, что пауза
+  // оставит на карте полностью завершённую обводку, даже если её анимация
+  // ещё не успела закончиться во время короткого скрытого перехода.
+  window.completeRouteSettlementOutline = function(area) {
+    if (!area || area.id == null) return;
+    const key = String(area.id);
+    const brushState = activeSettlementBrushTraces.get(key);
+    if (brushState) {
+      applySettlementBrushTraceProgress(brushState, brushState.completionProgress || 1);
+      activeSettlementBrushTraces.delete(key);
+      pausedSettlementBrushTraces.delete(key);
+      return;
+    }
+    if (activeSettlementTrace && String(activeSettlementTrace.areaId) === key) {
+      const active = activeSettlementTrace;
+      if (active.area && Array.isArray(active.contour) && active.contour.length >= 2) {
+        const completeLayer = makeTaperedSettlementPolygon(
+          active.contour, SETTLEMENT_TRACE_BASE_WIDTH, 1
+        );
+        if (completeLayer) {
+          removeSettlementLayer(active.layer);
+          completeLayer.addTo(map);
+          settlementTraceLayers.set(key, completeLayer);
+          settlementTracePaths.set(key, active.contour.slice());
+        }
+      }
+      activeSettlementTrace = null;
+      return;
+    }
+    if (!settlementBrushTraceLayers.has(key) && !settlementTraceLayers.has(key)) {
+      showSettlementOutline(area, 0.96);
+    }
+  };
+
   function waitForRouteRevealThenTraceSettlements(routeData) {
     settlementTraceWaitTimers.forEach(timer => clearTimeout(timer));
     settlementTraceWaitTimers = [];
@@ -9363,6 +9579,10 @@ map.on("zoomend", function() {
     targets.forEach(target => {
       function check() {
         if (waitToken !== settlementTraceWaitToken) return;
+        if (target.id === destinationId && isTerminalSettlementPaused(window.partyPlaybackState)) {
+          window.completeRouteSettlementOutline(target.area);
+          return;
+        }
         const restartInterruptedTrace = interruptedSettlementTraceIds.has(String(target.id));
         const delay = restartInterruptedTrace
           ? null
