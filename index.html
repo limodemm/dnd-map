@@ -4679,9 +4679,10 @@ window.debugPartyMarkerVisibility = function(stage, details = {}) {
     timestamp: new Date(now).toISOString(),
     playbackStatus: window.partyPlaybackState && window.partyPlaybackState.status,
     routeDestinationCityId: window.routeDestinationCityId ?? null,
-    routeTerminalMarkerHideDistance: window.routeTerminalMarkerHideDistance != null &&
-      Number.isFinite(Number(window.routeTerminalMarkerHideDistance))
-      ? Number(window.routeTerminalMarkerHideDistance) : null,
+    routeTerminalMarkerHideDistance: window.routeTerminalMarkerHideDistance == null
+      ? null
+      : (Number.isFinite(Number(window.routeTerminalMarkerHideDistance))
+        ? Number(window.routeTerminalMarkerHideDistance) : null),
     markerHiddenFlag: Boolean(window.partyMarkerHiddenForSettlementExit),
     markerExists: Boolean(partyMarker),
     markerIconExists: Boolean(icon),
@@ -4734,8 +4735,7 @@ function isPartyMarkerInsideSettlementTransit(distance) {
       outerEntryDistance = Number(matchingTransit.start);
     }
     const rawVisualHideDistance = window.routeTerminalMarkerHideDistance;
-    const visualHideDistance = rawVisualHideDistance == null
-      ? NaN : Number(rawVisualHideDistance);
+    const visualHideDistance = rawVisualHideDistance == null ? NaN : Number(rawVisualHideDistance);
     if (Number.isFinite(visualHideDistance) && visualHideDistance >= 0) {
       outerEntryDistance = outerEntryDistance === null
         ? visualHideDistance : Math.min(outerEntryDistance, visualHideDistance);
@@ -4761,10 +4761,6 @@ function setPartyMarkerVisible(visible) {
   partyMarker._icon.style.pointerEvents = visible ? "auto" : "none";
   window.debugPartyMarkerVisibility('setPartyMarkerVisible:after', { requestedVisible: Boolean(visible) });
 }
-// Порог конечного поселения рассчитывается внутри initializeParty(),
-// поэтому предоставляем ему безопасный мост к функции управления жетоном.
-// Сама функция сохраняет замыкание на partyMarker и остальные локальные данные.
-window.setPartyMarkerVisible = setPartyMarkerVisible;
 
 function getPartyPlaybackPositionForDistance(distance) {
   const currentDistance = Math.max(0, Number(distance) || 0);
@@ -9564,92 +9560,6 @@ map.on("zoomend", function() {
   // исходного полигона поселения.
   let settlementTraceWaitTimers = [];
   let settlementTraceWaitToken = 0;
-  // Данные последнего маршрута нужны для повторного расчёта порога скрытия
-  // после асинхронной загрузки областей поселений и зон местности.
-  let pendingTerminalMarkerHideRouteData = null;
-
-  function updateTerminalMarkerHideDistance(routeData) {
-    if (!routeData || !routeData.destinationSettlementId) return false;
-    const destinationId = String(routeData.destinationSettlementId);
-    if (String(window.routeDestinationCityId || '') !== destinationId) return false;
-    const route = Array.isArray(window.routePoints) ? window.routePoints.slice() : [];
-    if (route.length < 2) return false;
-
-    let boundaryIndex = -1;
-    let boundaryPoint = null;
-    let approachPoint = null;
-    for (let i = 1; i < route.length; i++) {
-      if (String(route[i]._routeSettlementId || '') === destinationId &&
-          getRouteSegmentMode(route[i]) === 'settlement-count-only') {
-        boundaryIndex = i;
-        boundaryPoint = route[i];
-        approachPoint = route[i - 1];
-        break;
-      }
-    }
-
-    // Поддержка старых сохранённых маршрутов без отдельной метки внешнего входа.
-    if (boundaryIndex < 1 && routeData.destinationBoundaryPoint) {
-      const targetPoint = L.latLng(
-        Number(routeData.destinationBoundaryPoint.lat),
-        Number(routeData.destinationBoundaryPoint.lng)
-      );
-      let nearestDistance = Infinity;
-      for (let i = 1; i < route.length; i++) {
-        const candidateDistance = map.latLngToLayerPoint(route[i]).distanceTo(
-          map.latLngToLayerPoint(targetPoint)
-        );
-        if (candidateDistance < nearestDistance) {
-          nearestDistance = candidateDistance;
-          boundaryIndex = i;
-        }
-      }
-      if (boundaryIndex >= 1) {
-        boundaryPoint = targetPoint;
-        approachPoint = route[boundaryIndex - 1] || (routeData.destinationApproachPoint
-          ? L.latLng(Number(routeData.destinationApproachPoint.lat), Number(routeData.destinationApproachPoint.lng))
-          : null);
-      }
-    }
-    if (boundaryIndex < 1 || !boundaryPoint || !approachPoint) return false;
-
-    const area = (window.settlementAreas || []).find(item => String(item.id) === destinationId);
-    if (!area) return false;
-
-    let distance = window.getRouteTravelLength(route.slice(0, boundaryIndex + 1));
-    const visualContact = getVisualBrushContact(area, approachPoint, boundaryPoint);
-    if (visualContact) {
-      distance = window.getRouteTravelLength(route.slice(0, boundaryIndex)) +
-        window.getRouteTravelLength([approachPoint, visualContact.routePoint]);
-    }
-    if (!Number.isFinite(distance) || distance < 0) return false;
-
-    window.routeTerminalMarkerHideDistance = distance;
-    // Если данные пришли уже во время воспроизведения или паузы, сразу
-    // применяем новый порог к текущей позиции, не ожидая следующего запуска.
-    const playbackState = window.partyPlaybackState;
-    if (partyMarker && playbackState && ["playing", "paused"].includes(playbackState.status) &&
-        typeof window.getPartyPlaybackDistance === 'function') {
-      const now = typeof window.getSynchronizedRouteNow === 'function'
-        ? window.getSynchronizedRouteNow() : Date.now();
-      const currentDistance = window.getPartyPlaybackDistance(playbackState, now);
-      if (typeof window.setPartyMarkerVisible === 'function') {
-        window.setPartyMarkerVisible(!isPartyMarkerInsideSettlementTransit(currentDistance));
-      }
-    }
-    window.debugPartyMarkerVisibility('terminal-hide-distance-calculated', {
-      cityId: destinationId,
-      hideDistance: distance,
-      boundaryIndex,
-      approachPoint: [Number(approachPoint.lat), Number(approachPoint.lng)],
-      boundaryPoint: [Number((visualContact && visualContact.boundaryPoint || boundaryPoint).lat),
-        Number((visualContact && visualContact.boundaryPoint || boundaryPoint).lng)],
-      visualContactFound: Boolean(visualContact),
-      routePointCount: route.length,
-      recalculatedAfterDataLoad: true
-    });
-    return true;
-  }
   // Поселения, чья обводка была прервана открытием редактора.
   // При следующем подтверждении их анимация запускается заново,
   // даже если маршрутная линия уже прошла соответствующую границу.
@@ -9760,17 +9670,77 @@ map.on("zoomend", function() {
     }
   };
 
-  function waitForRouteRevealThenTraceSettlements(routeData) {
-    pendingTerminalMarkerHideRouteData = routeData && routeData.destinationSettlementId
-      ? routeData : null;
-    if (pendingTerminalMarkerHideRouteData) {
-      updateTerminalMarkerHideDistance(pendingTerminalMarkerHideRouteData);
+  // Рассчитывает порог скрытия жетона отдельно от анимации обводки.
+  // Функция объявлена внутри initializeParty: здесь доступны локальные
+  // setPartyMarkerVisible / isPartyMarkerInsideSettlementTransit и расчёты маршрута.
+  window.updateTerminalMarkerHideDistance = function(routeData = null) {
+    const data = routeData || window._pendingTerminalMarkerRouteData || {};
+    const route = Array.isArray(window.routePoints) ? window.routePoints : [];
+    const destinationId = data.destinationSettlementId != null
+      ? String(data.destinationSettlementId)
+      : (window.routeDestinationCityId != null ? String(window.routeDestinationCityId) : null);
+    if (!destinationId || route.length < 2) return false;
+
+    let boundaryIndex = -1;
+    let boundaryPoint = null;
+    let approachPoint = null;
+    for (let i = 1; i < route.length; i++) {
+      if (String(route[i]._routeSettlementId || '') === destinationId &&
+          (getRouteSegmentMode(route[i]) === 'settlement-count-only' ||
+           getRouteSegmentMode(route[i]) === 'settlement-zero')) {
+        boundaryIndex = i;
+        boundaryPoint = route[i];
+        approachPoint = route[i - 1];
+        break;
+      }
     }
+    if (boundaryIndex < 1 && data.destinationBoundaryPoint) {
+      const target = L.latLng(Number(data.destinationBoundaryPoint.lat), Number(data.destinationBoundaryPoint.lng));
+      let nearest = Infinity;
+      for (let i = 1; i < route.length; i++) {
+        const d = map.latLngToLayerPoint(route[i]).distanceTo(map.latLngToLayerPoint(target));
+        if (d < nearest) {
+          nearest = d;
+          boundaryIndex = i;
+          boundaryPoint = target;
+          approachPoint = route[i - 1];
+        }
+      }
+    }
+    if (boundaryIndex < 1 || !boundaryPoint || !approachPoint) return false;
+
+    const area = (window.settlementAreas || []).find(item => String(item.id) === destinationId);
+    if (!area) return false;
+
+    let distance = window.getRouteTravelLength(route.slice(0, boundaryIndex + 1));
+    const visualContact = getVisualBrushContact(area, approachPoint, boundaryPoint);
+    if (visualContact) {
+      distance = window.getRouteTravelLength(route.slice(0, boundaryIndex)) +
+        window.getRouteTravelLength([approachPoint, visualContact.routePoint]);
+    }
+    if (!Number.isFinite(distance) || distance < 0) return false;
+
+    window.routeTerminalMarkerHideDistance = distance;
+    // Обновляем состояние сразу, в том числе если маршрут сейчас на паузе.
+    setPartyMarkerVisible(!isPartyMarkerInsideSettlementTransit(partyPlaybackDistance));
+    window.debugPartyMarkerVisibility('terminal-hide-distance-calculated', {
+      cityId: destinationId,
+      hideDistance: distance,
+      boundaryIndex,
+      visualContactFound: Boolean(visualContact),
+      routePointCount: route.length
+    });
+    return true;
+  };
+
+  function waitForRouteRevealThenTraceSettlements(routeData) {
     settlementTraceWaitTimers.forEach(timer => clearTimeout(timer));
     settlementTraceWaitTimers = [];
     const waitToken = ++settlementTraceWaitToken;
     const route = Array.isArray(window.routePoints) ? window.routePoints.slice() : [];
+    window._pendingTerminalMarkerRouteData = routeData || {};
     if (route.length < 2) return;
+    window.updateTerminalMarkerHideDistance(routeData);
     const rawChangedFromIndex = Number(routeData.animationStartIndex);
     const changedFromIndex = Number.isFinite(rawChangedFromIndex)
       ? Math.max(0, Math.floor(rawChangedFromIndex)) : 0;
@@ -10730,10 +10700,10 @@ map.on("zoomend", function() {
       window.settlementAreas = Object.keys(value).map(key => ({
         ...value[key], id: value[key].id || key
       })).filter(area => Array.isArray(area.points) && area.points.length >= 3);
-      if (pendingTerminalMarkerHideRouteData) {
-        updateTerminalMarkerHideDistance(pendingTerminalMarkerHideRouteData);
-      }
       console.log("Области поселений загружены:", window.settlementAreas.length);
+      if (typeof window.updateTerminalMarkerHideDistance === "function") {
+        window.updateTerminalMarkerHideDistance();
+      }
       refreshSettlementContourEditorOptions();
       if (Array.isArray(window.routeIntermediateCityIds) && window.routeIntermediateCityIds.length) {
         refreshRouteIntermediateCityOutlines();
@@ -10768,10 +10738,10 @@ map.on("zoomend", function() {
         }
         return area;
       }).filter(area => area.type === "terrain" && Array.isArray(area.points) && area.points.length >= 3);
-      if (pendingTerminalMarkerHideRouteData) {
-        updateTerminalMarkerHideDistance(pendingTerminalMarkerHideRouteData);
-      }
       console.log("Зоны труднопроходимой местности загружены:", window.terrainAreas.length);
+      if (typeof window.updateTerminalMarkerHideDistance === "function") {
+        window.updateTerminalMarkerHideDistance();
+      }
       refreshSettlementContourEditorOptions();
       if (window.updateRouteLine && Array.isArray(window.routePoints) && window.routePoints.length > 1) {
         window.updateRouteLine(null);
