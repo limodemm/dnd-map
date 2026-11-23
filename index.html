@@ -4671,15 +4671,37 @@ function isPartyMarkerInsideSettlementTransit(distance) {
     Number(interval.start) <= 0.001 && Number(interval.end) > 0.001 && interval.settlementId
   );
   if (startTransit && currentDistance < Number(startTransit.end) - 0.001) return true;
-  const destination = getTerminalDestinationSettlement();
-  if (destination) {
-    // Для конечного города скрываем жетон не на геометрической точке
-    // входа в транзит, а точно при касании видимой сухой кисти.
-    // Это значение рассчитывается модулем анимации обводки для текущего маршрута.
+
+  // Для конечного города определяем внешний вход напрямую по метке
+  // первого транзитного узла маршрута. Не зависим от getTerminalDestinationSettlement():
+  // если объект города/интервал ещё не разрешился, маркер всё равно должен
+  // исчезнуть до того, как пересечёт видимый контур.
+  const destinationId = window.routeDestinationCityId != null
+    ? String(window.routeDestinationCityId) : null;
+  if (destinationId) {
+    let outerEntryDistance = null;
+    for (let i = 1; i < routePoints.length; i++) {
+      const point = routePoints[i];
+      if (String(point._routeSettlementId || '') === destinationId &&
+          (getRouteSegmentMode(point) === 'settlement-count-only' ||
+           getRouteSegmentMode(point) === 'settlement-zero')) {
+        outerEntryDistance = getRouteTravelLength(routePoints.slice(0, i));
+        break;
+      }
+    }
+    const matchingTransit = intervals.find(interval =>
+      String(interval.settlementId || '') === destinationId
+    );
+    if (outerEntryDistance === null && matchingTransit) {
+      outerEntryDistance = Number(matchingTransit.start);
+    }
     const visualHideDistance = Number(window.routeTerminalMarkerHideDistance);
-    const hideDistance = Number.isFinite(visualHideDistance) && visualHideDistance >= 0
-      ? visualHideDistance : Number(destination.transit.start);
-    if (currentDistance >= hideDistance - 0.001) return true;
+    if (Number.isFinite(visualHideDistance) && visualHideDistance >= 0) {
+      outerEntryDistance = outerEntryDistance === null
+        ? visualHideDistance : Math.min(outerEntryDistance, visualHideDistance);
+    }
+    if (Number.isFinite(outerEntryDistance) &&
+        currentDistance >= outerEntryDistance - 0.001) return true;
   }
   return false;
 }
