@@ -873,6 +873,25 @@ partyMarker.on("click", function() {
   // Если маршрут уже прокладывается, повторный клик ничего не делает
   if (window.routeMode) return;
 
+  // Перед началом новой геометрии переносим накопленное время пути
+  // от последнего привала из предыдущего подтверждённого маршрута.
+  // Иначе каждый новый короткий маршрут начинал бы отсчёт заново.
+  const previousPlaybackState = window.partyPlaybackState;
+  const previousRouteStartedAt = Number(window.routePlaybackRouteStartedAt);
+  if (Array.isArray(routePoints) && routePoints.length > 1 &&
+      previousPlaybackState && Number.isFinite(previousRouteStartedAt) &&
+      previousRouteStartedAt > 0 &&
+      Number(previousPlaybackState.routeStartedAt) === previousRouteStartedAt &&
+      typeof window.getPartyPlaybackDistance === "function" &&
+      typeof window.getSynchronizedRouteNow === "function") {
+    const previousDistance = window.getPartyPlaybackDistance(
+      previousPlaybackState, window.getSynchronizedRouteNow()
+    );
+    routeRestElapsedCarryUnits = getRouteElapsedUnitsSinceLastRest(
+      routePoints, previousDistance, routeRestElapsedCarryUnits
+    );
+  }
+
 window.routeMode = true;
 window.routeAnimationPublished = false;
 window.routeEditingConfirmedRoute = false;
@@ -4646,7 +4665,8 @@ function cancelPartyRoute() {
   window.routeAnimationPublished = false;
   pendingRouteResumeState = null;
   pendingRoutePlaybackResumeDistance = null;
-  routeRestElapsedCarryUnits = 0;
+  // Накопленное время от последнего привала сохраняется при отмене
+  // черновика маршрута: отмена прокладки не является самим привалом.
   map.doubleClickZoom.enable();
 
   routeForcedMarch = false;
