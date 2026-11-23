@@ -4761,6 +4761,10 @@ function setPartyMarkerVisible(visible) {
   partyMarker._icon.style.pointerEvents = visible ? "auto" : "none";
   window.debugPartyMarkerVisibility('setPartyMarkerVisible:after', { requestedVisible: Boolean(visible) });
 }
+// Порог конечного поселения рассчитывается внутри initializeParty(),
+// поэтому предоставляем ему безопасный мост к функции управления жетоном.
+// Сама функция сохраняет замыкание на partyMarker и остальные локальные данные.
+window.setPartyMarkerVisible = setPartyMarkerVisible;
 
 function getPartyPlaybackPositionForDistance(distance) {
   const currentDistance = Math.max(0, Number(distance) || 0);
@@ -9629,7 +9633,9 @@ map.on("zoomend", function() {
       const now = typeof window.getSynchronizedRouteNow === 'function'
         ? window.getSynchronizedRouteNow() : Date.now();
       const currentDistance = window.getPartyPlaybackDistance(playbackState, now);
-      setPartyMarkerVisible(!isPartyMarkerInsideSettlementTransit(currentDistance));
+      if (typeof window.setPartyMarkerVisible === 'function') {
+        window.setPartyMarkerVisible(!isPartyMarkerInsideSettlementTransit(currentDistance));
+      }
     }
     window.debugPartyMarkerVisibility('terminal-hide-distance-calculated', {
       cityId: destinationId,
