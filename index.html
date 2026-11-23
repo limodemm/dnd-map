@@ -916,6 +916,7 @@ routeForcedMarchStartUnits = 0;
 routeForcedMarchEpochStartDistance = 0;
 routeForcedMarchPendingExit = false;
 routeForcedSegments = [];
+routeRestResetDistances = [];
 
 const forcedButton = document.getElementById("route-forced-march");
 
@@ -975,6 +976,8 @@ let routeForcedMarch = false;
 let routeForcedSegments = [];
 // Доля игрового дня, уже пройденная от последнего привала до текущего начала маршрута.
 let routeRestElapsedCarryUnits = 0;
+// Точки добровольного лагеря сбрасывают дневной отсчёт, но не создают жетон привала.
+let routeRestResetDistances = [];
 
 // Начало активного форсированного марша — абсолютная точка маршрута;
 // параметры уже пройденных участков не пересчитываются при смене темпа.
@@ -1262,6 +1265,15 @@ async function performPartyRest(action) {
   const hours = action === "camp" ? 8 : 1;
   const currentDistance = Math.max(0, Number(state.startDistance) || 0);
   const campHoursElapsed = Math.max(0, Number(state.campHoursElapsed) || 0) + hours;
+  // Полноценный добровольный лагерь начинает новый игровой день прямо
+  // в точке отряда. Саму точку не добавляем в список видимых жетонов.
+  const previousRestResetDistances = routeRestResetDistances.slice();
+  if (action === "camp" && currentDistance > 0.001) {
+    routeRestResetDistances = routeRestResetDistances
+      .filter(distance => Math.abs(distance - currentDistance) > 0.02);
+    routeRestResetDistances.push(currentDistance);
+    routeRestResetDistances.sort((a, b) => a - b);
+  }
   // Короткий отдых у костра только добавляет час. Обязательный привал
   // снимается исключительно полноценным разбитием лагеря.
   const campRequired = action === "camp" ? false : Boolean(state.campRequired);
@@ -1271,10 +1283,15 @@ async function performPartyRest(action) {
     startDistance: currentDistance,
     startedAt: null,
     campRequired,
-    campHoursElapsed
+    campHoursElapsed,
+    restResetDistances: routeRestResetDistances.slice()
   };
   window.partyPlaybackState = restedState;
   renderPartyPlaybackState(restedState);
+  if (action === "camp" && typeof window.updateRouteLine === "function") {
+    window.updateRouteLine(null);
+    updatePartyPlaybackRouteTokens(currentDistance);
+  }
   try {
     await window.publishPartyPlaybackState({
       status: "paused",
@@ -1282,11 +1299,17 @@ async function performPartyRest(action) {
       startedAt: null,
       routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
       campRequired,
-      campHoursElapsed
+      campHoursElapsed,
+      restResetDistances: routeRestResetDistances.slice()
     });
   } catch (error) {
+    routeRestResetDistances = previousRestResetDistances;
     window.partyPlaybackState = state;
     renderPartyPlaybackState(state);
+    if (action === "camp" && typeof window.updateRouteLine === "function") {
+      window.updateRouteLine(null);
+      updatePartyPlaybackRouteTokens(currentDistance);
+    }
     console.error("Не удалось сохранить отдых:", error);
   }
 }
@@ -2333,7 +2356,8 @@ function createRouteLaunchPanel() {
         startedAt: null,
         routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
         campRequired: false,
-        campHoursElapsed: Math.max(0, Number(state.campHoursElapsed) || 0)
+        campHoursElapsed: Math.max(0, Number(state.campHoursElapsed) || 0),
+        restResetDistances: routeRestResetDistances.slice()
       });
     } catch (error) {
       console.error("Не удалось приостановить движение отряда:", error);
@@ -2355,7 +2379,8 @@ function createRouteLaunchPanel() {
         startedAt: window.getSynchronizedRouteNow(),
         routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
         campRequired: false,
-        campHoursElapsed: Math.max(0, Number(current && current.campHoursElapsed) || 0)
+        campHoursElapsed: Math.max(0, Number(current && current.campHoursElapsed) || 0),
+        restResetDistances: routeRestResetDistances.slice()
       });
     } catch (error) {
       console.error("Не удалось запустить движение отряда:", error);
@@ -2398,21 +2423,21 @@ function createRouteLaunchPanel() {
               Math.min(editOriginDistance, distances.end)
             )
           : 0;
+        const markerInsideSegment = editOriginDistance >= distances.start - 0.001 &&
+          editOriginDistance < distances.end - 0.001;
         return {
           start: Math.max(0, distances.start - editOriginDistance),
           end: distances.end - editOriginDistance,
-          startUnits: distances.startUnits + elapsedBeforeMarker,
+          startUnits: markerInsideSegment
+            ? routeRestElapsedCarryUnits
+            : distances.startUnits + elapsedBeforeMarker,
           fixed: true
         };
       }).filter(segment => segment.end > 0.001);
 
       // Аналогично переносим накопленное время активного форсированного марша.
       if (routeForcedMarch && editOriginDistance > routeForcedMarchStartDistance) {
-        routeForcedMarchStartUnits += getRouteTravelTimeUnitsBetweenDistances(
-          routePoints,
-          routeForcedMarchStartDistance,
-          editOriginDistance
-        );
+        routeForcedMarchStartUnits = routeRestElapsedCarryUnits;
       }
 
       routePoints = getRoutePointsBetweenDistances(
@@ -2423,6 +2448,9 @@ function createRouteLaunchPanel() {
       routeForcedMarchStartDistance = Math.max(0, routeForcedMarchStartDistance - editOriginDistance);
       routeForcedMarchEpochStartDistance = Math.max(0, routeForcedMarchEpochStartDistance - editOriginDistance);
       routeForcedSegments = adjustedForcedSegments;
+      routeRestResetDistances = routeRestResetDistances
+        .map(distance => distance - editOriginDistance)
+        .filter(distance => distance > 0.001);
       lastConfirmedRoutePointSnapshot = routePoints.map((point, index) => ({
         lat: Number(point.lat), lng: Number(point.lng),
         segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
@@ -3090,6 +3118,8 @@ forcedMarchButton.addEventListener("click", function() {
       console.log("Форсированный марш завершён: создан один привал");
     } else if (!routeForcedMarchPendingExit) {
       routePoints = getRoutePointsUpToDistance(routePoints, routeForcedMarchStartDistance);
+      const truncatedLength = getRouteTravelLength(routePoints);
+      routeRestResetDistances = routeRestResetDistances.filter(distance => distance <= truncatedLength + 0.001);
       routeForcedSegments = routeForcedSegments.filter(segment => {
         const recalculated = getForcedSegmentDistances(segment);
         return recalculated.end <= routeForcedMarchStartDistance + 0.001;
@@ -3184,6 +3214,7 @@ window.routePendingConfirmation = false;
       movementCampRequired: pendingRoutePlaybackResumeCampRequired,
       movementCampHoursElapsed: Math.max(0, Number(window.partyPlaybackState && window.partyPlaybackState.campHoursElapsed) || 0),
       restElapsedCarryUnits: Math.max(0, Number(routeRestElapsedCarryUnits) || 0),
+      restResetDistances: routeRestResetDistances.slice(),
       durationMs: typeof window.getRouteRevealDurationForCurrentRoute === "function"
         ? window.getRouteRevealDurationForCurrentRoute(animationStartDistance) : undefined,
       points: routePoints.map((point, index) => ({
@@ -3225,7 +3256,11 @@ window.routePendingConfirmation = false;
     // раскрытие линии не должно автоматически двигать жетон отряда.
     const pauseButton = routeLaunchPanel.querySelector("#route-party-pause");
     const playButton = routeLaunchPanel.querySelector("#route-party-play");
-    renderPartyPlaybackState({ status: "paused", campRequired: Boolean(routePayload.movementCampRequired) });
+    renderPartyPlaybackState({
+      status: "paused",
+      campRequired: Boolean(routePayload.movementCampRequired),
+      restResetDistances: routePayload.restResetDistances.slice()
+    });
     window.confirmedPartyRoute = routePayload.points;
 
     if (!window.publishPartyRoute) {
@@ -3368,6 +3403,8 @@ window.routePendingConfirmation = false;
     } else {
       routePoints = getRoutePointsUpToDistance(routePoints, targetDistance);
     }
+    const rollbackLength = getRouteTravelLength(routePoints);
+    routeRestResetDistances = routeRestResetDistances.filter(distance => distance <= rollbackLength + 0.001);
 
     // «Вернуть» не вводит отдельную точку возобновления: оно лишь
     // ограничивает текущий маршрут. Если исходная анимация уже завершилась
@@ -4449,7 +4486,8 @@ function tickPartyPlayback() {
         startedAt: null,
         routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
         campRequired: true,
-        campHoursElapsed: Math.max(0, Number(state.campHoursElapsed) || 0)
+        campHoursElapsed: Math.max(0, Number(state.campHoursElapsed) || 0),
+        restResetDistances: routeRestResetDistances.slice()
       }).catch(error => console.error("Не удалось автоматически остановить отряд на привале:", error));
     }
     return;
@@ -4467,6 +4505,17 @@ function tickPartyPlayback() {
 
 window.applyPartyPlaybackState = function(state) {
   if (!state || !["playing", "paused"].includes(state.status)) return;
+  let restResetDistancesChanged = false;
+  if (Array.isArray(state.restResetDistances)) {
+    const incomingResets = state.restResetDistances
+      .map(Number)
+      .filter(distance => Number.isFinite(distance) && distance > 0.001)
+      .sort((a, b) => a - b)
+      .filter((distance, index, values) => index === 0 || distance - values[index - 1] > 0.02);
+    restResetDistancesChanged = incomingResets.length !== routeRestResetDistances.length ||
+      incomingResets.some((distance, index) => Math.abs(distance - routeRestResetDistances[index]) > 0.02);
+    if (restResetDistancesChanged) routeRestResetDistances = incomingResets;
+  }
   window.partyPlaybackState = state;
   partyPlaybackDistance = window.getPartyPlaybackDistance(state, window.getSynchronizedRouteNow());
   renderPartyPlaybackState(state);
@@ -4490,6 +4539,10 @@ window.applyPartyPlaybackState = function(state) {
       window.setPartyMarkerBearingForDistance(partyPlaybackDistance, false);
     }
     updatePartyPlaybackRouteLine(partyPlaybackDistance);
+    updatePartyPlaybackRouteTokens(partyPlaybackDistance);
+  }
+  if (restResetDistancesChanged && routeFinished && typeof window.updateRouteLine === "function") {
+    window.updateRouteLine(null);
     updatePartyPlaybackRouteTokens(partyPlaybackDistance);
   }
 };
@@ -4549,7 +4602,20 @@ function getNormalRestDistances(totalLength, dailyLimit, routeGeometry = routePo
     }
   }
 
+  const dayIntervals = [];
   activeIntervals.forEach(interval => {
+    const resetCuts = routeRestResetDistances
+      .filter(distance => distance > interval.start + 0.001 && distance < interval.end - 0.001)
+      .sort((a, b) => a - b);
+    let dayStart = interval.start;
+    resetCuts.forEach(resetDistance => {
+      dayIntervals.push({ start: dayStart, end: resetDistance });
+      dayStart = resetDistance;
+    });
+    dayIntervals.push({ start: dayStart, end: interval.end });
+  });
+
+  dayIntervals.forEach(interval => {
     const intervalStart = interval.start;
     const intervalEnd = interval.end;
     if (intervalEnd <= intervalStart + 0.001) return;
@@ -4605,7 +4671,10 @@ function getNormalRestDistances(totalLength, dailyLimit, routeGeometry = routePo
   // При входе в поселение отдельный привал на внешней границе не нужен.
   const settlementEntryDistances = transitIntervals.map(interval => interval.start);
   return result
-    .filter(distance => !settlementEntryDistances.some(entry => Math.abs(entry - distance) <= 0.05))
+    .filter(distance =>
+      !settlementEntryDistances.some(entry => Math.abs(entry - distance) <= 0.05) &&
+      !routeRestResetDistances.some(reset => Math.abs(reset - distance) <= 0.05)
+    )
     .sort((a, b) => a - b);
 }
 
@@ -4620,6 +4689,9 @@ function getRouteElapsedUnitsSinceLastRest(points, currentDistance, carryInUnits
   const rests = getNormalRestDistances(total, 0, points, carryInUnits)
     .filter(distance => distance <= current + 0.001);
   const lastRest = rests.length ? rests[rests.length - 1] : null;
+  const lastManualReset = routeRestResetDistances
+    .filter(distance => distance <= current + 0.001)
+    .sort((a, b) => b - a)[0];
   const transitIntervals = getRouteSettlementTransitIntervals(points);
   const lastSettlementExit = transitIntervals
     .map(interval => Number(interval.end))
@@ -4628,8 +4700,12 @@ function getRouteElapsedUnitsSinceLastRest(points, currentDistance, carryInUnits
 
   let anchor = 0;
   let elapsed = Math.max(0, Math.min(0.999999, Number(carryInUnits) || 0));
-  if (lastRest !== null) {
+  if (lastRest !== null && lastRest > anchor + 0.001) {
     anchor = lastRest;
+    elapsed = 0;
+  }
+  if (Number.isFinite(lastManualReset) && lastManualReset > anchor + 0.001) {
+    anchor = lastManualReset;
     elapsed = 0;
   }
   if (Number.isFinite(lastSettlementExit) && lastSettlementExit > anchor + 0.001) {
@@ -4703,6 +4779,7 @@ function cancelPartyRoute() {
   routeForcedMarchEpochStartDistance = 0;
   routeForcedMarchPendingExit = false;
   routeForcedSegments = [];
+  routeRestResetDistances = [];
   routePoints = [];
   lastCursorPosition = null;
   if (window.clearRouteDestinationSettlementTrace) {
@@ -5378,12 +5455,26 @@ function updateRouteLine(cursorPosition = null) {
     });
   }
 
+  function addForcedVisualSegmentWithRestResets(start, end, active, initialElapsedUnits) {
+    const resetCuts = routeRestResetDistances
+      .filter(distance => distance > start + 0.001 && distance < end - 0.001)
+      .sort((a, b) => a - b);
+    let pieceStart = start;
+    let carry = initialElapsedUnits;
+    resetCuts.forEach(resetDistance => {
+      addForcedVisualSegment(pieceStart, resetDistance, active, carry);
+      pieceStart = resetDistance;
+      carry = 0;
+    });
+    addForcedVisualSegment(pieceStart, end, active, carry);
+  }
+
   routeForcedSegments
     .map(segment => getForcedSegmentDistances(segment))
     .filter(segment => segment.start < totalLength + 0.01)
     .forEach(segment => {
       clipIntervalToActiveRoute(segment.start, Math.min(segment.end, totalLength), activeRouteIntervals)
-        .forEach(piece => addForcedVisualSegment(
+        .forEach(piece => addForcedVisualSegmentWithRestResets(
           piece.start,
           piece.end,
           false,
@@ -5395,7 +5486,7 @@ function updateRouteLine(cursorPosition = null) {
     let carryPending = true;
     clipIntervalToActiveRoute(routeForcedMarchStartDistance, totalLength, activeRouteIntervals)
       .forEach(piece => {
-        addForcedVisualSegment(
+        addForcedVisualSegmentWithRestResets(
           piece.start,
           piece.end,
           true,
@@ -6292,6 +6383,9 @@ window.applySynchronizedPartyRoute = function(data) {
     return routePoint;
   });
   routeRestElapsedCarryUnits = Math.max(0, Math.min(0.999999, Number(data.restElapsedCarryUnits) || 0));
+  routeRestResetDistances = Array.isArray(data.restResetDistances)
+    ? data.restResetDistances.map(Number).filter(distance => Number.isFinite(distance) && distance > 0.001).sort((a, b) => a - b)
+    : [];
   routeForcedMarch = Boolean(data.forcedMarch);
   routeForcedMarchStartDistance = Number(data.forcedMarchStartDistance) || 0;
   routeForcedMarchStartUnits = Number(data.forcedMarchStartUnits) || 0;
