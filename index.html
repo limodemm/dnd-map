@@ -4664,6 +4664,43 @@ function isTerminalSettlementPaused(state) {
 // где локальные объявления обычного скрипта недоступны напрямую.
 window.isTerminalSettlementPaused = isTerminalSettlementPaused;
 
+// Диагностика скрытия жетона при входе в конечное поселение.
+// Включается в консоли: window.DEBUG_PARTY_MARKER = true
+window.DEBUG_PARTY_MARKER = window.DEBUG_PARTY_MARKER === true;
+window._partyMarkerDebugLastAt = 0;
+window._partyMarkerDebugLastVisibility = null;
+window.debugPartyMarkerVisibility = function(stage, details = {}) {
+  if (!window.DEBUG_PARTY_MARKER) return;
+  const now = Date.now();
+  const icon = partyMarker && partyMarker._icon;
+  const image = icon && icon.querySelector ? icon.querySelector('img') : null;
+  const snapshot = {
+    stage,
+    timestamp: new Date(now).toISOString(),
+    playbackStatus: window.partyPlaybackState && window.partyPlaybackState.status,
+    routeDestinationCityId: window.routeDestinationCityId ?? null,
+    routeTerminalMarkerHideDistance: Number.isFinite(Number(window.routeTerminalMarkerHideDistance))
+      ? Number(window.routeTerminalMarkerHideDistance) : null,
+    markerHiddenFlag: Boolean(window.partyMarkerHiddenForSettlementExit),
+    markerExists: Boolean(partyMarker),
+    markerIconExists: Boolean(icon),
+    markerIconOpacity: icon ? getComputedStyle(icon).opacity : null,
+    markerIconInlineOpacity: icon ? icon.style.opacity : null,
+    markerImageOpacity: image ? getComputedStyle(image).opacity : null,
+    markerIconDisplay: icon ? getComputedStyle(icon).display : null,
+    markerIconVisibility: icon ? getComputedStyle(icon).visibility : null,
+    markerIconClass: icon ? icon.className : null,
+    ...details
+  };
+  const visibility = `${snapshot.markerHiddenFlag}|${snapshot.markerIconInlineOpacity}|${snapshot.markerIconOpacity}`;
+  const changed = visibility !== window._partyMarkerDebugLastVisibility;
+  if (changed || now - window._partyMarkerDebugLastAt >= 500) {
+    console.log('[PARTY-MARKER-DEBUG]', snapshot);
+    window._partyMarkerDebugLastAt = now;
+    window._partyMarkerDebugLastVisibility = visibility;
+  }
+};
+
 function isPartyMarkerInsideSettlementTransit(distance) {
   const currentDistance = Math.max(0, Number(distance) || 0);
   const intervals = getRouteSettlementTransitIntervals(routePoints);
@@ -4708,13 +4745,18 @@ function isPartyMarkerInsideSettlementTransit(distance) {
 
 function setPartyMarkerVisible(visible) {
   window.partyMarkerHiddenForSettlementExit = !visible;
-  if (!partyMarker || !partyMarker._icon) return;
+  window.debugPartyMarkerVisibility('setPartyMarkerVisible:before', { requestedVisible: Boolean(visible) });
+  if (!partyMarker || !partyMarker._icon) {
+    window.debugPartyMarkerVisibility('setPartyMarkerVisible:no-icon', { requestedVisible: Boolean(visible) });
+    return;
+  }
   // Скрываем весь Leaflet-элемент маркера, а не только вложенное изображение:
   // у контейнера могут быть собственные псевдоэлементы и декоративные слои.
   // Именно такой способ использовался в ранней версии, где скрытие работало.
   partyMarker._icon.style.transition = "opacity 520ms ease-in-out";
   partyMarker._icon.style.opacity = visible ? "1" : "0";
   partyMarker._icon.style.pointerEvents = visible ? "auto" : "none";
+  window.debugPartyMarkerVisibility('setPartyMarkerVisible:after', { requestedVisible: Boolean(visible) });
 }
 
 function getPartyPlaybackPositionForDistance(distance) {
@@ -4846,6 +4888,23 @@ function tickPartyPlayback() {
   }
   const markerWasHidden = Boolean(window.partyMarkerHiddenForSettlementExit);
   const markerShouldBeHidden = isPartyMarkerInsideSettlementTransit(distance);
+  window.debugPartyMarkerVisibility('tickPartyPlayback', {
+    playbackDistance: distance,
+    routeTotalDistance: total,
+    markerShouldBeHidden,
+    markerWasHidden,
+    transitIntervals: transitIntervals.map(interval => ({
+      settlementId: interval.settlementId,
+      start: Number(interval.start),
+      end: Number(interval.end)
+    })),
+    routePointCount: routePoints.length,
+    taggedDestinationPoints: routePoints.map((point, index) => ({
+      index,
+      settlementId: point._routeSettlementId || null,
+      segmentMode: getRouteSegmentMode(point)
+    })).filter(point => String(point.settlementId || '') === String(window.routeDestinationCityId || ''))
+  });
   setPartyMarkerVisible(!markerShouldBeHidden);
   const position = getPartyPlaybackPositionForDistance(distance);
   if (position && partyMarker) window.setPartyMarkerPlaybackPosition(position);
@@ -9730,6 +9789,15 @@ map.on("zoomend", function() {
         // Маркер должен исчезнуть в той же точке визуального контакта,
         // а не позже — на внутренней геометрической границе города.
         window.routeTerminalMarkerHideDistance = distance;
+        window.debugPartyMarkerVisibility('terminal-hide-distance-calculated', {
+          cityId: id,
+          hideDistance: distance,
+          boundaryIndex,
+          approachPoint: approachPoint ? [Number(approachPoint.lat), Number(approachPoint.lng)] : null,
+          boundaryPoint: boundaryPoint ? [Number(boundaryPoint.lat), Number(boundaryPoint.lng)] : null,
+          visualContactFound: Boolean(visualContact),
+          routePointCount: route.length
+        });
       }
       // Для промежуточного поселения находим выходную внешнюю границу.
       // Внутренний путь между входом и выходом проходит по транзитным
