@@ -4679,7 +4679,8 @@ window.debugPartyMarkerVisibility = function(stage, details = {}) {
     timestamp: new Date(now).toISOString(),
     playbackStatus: window.partyPlaybackState && window.partyPlaybackState.status,
     routeDestinationCityId: window.routeDestinationCityId ?? null,
-    routeTerminalMarkerHideDistance: Number.isFinite(Number(window.routeTerminalMarkerHideDistance))
+    routeTerminalMarkerHideDistance: window.routeTerminalMarkerHideDistance != null &&
+      Number.isFinite(Number(window.routeTerminalMarkerHideDistance))
       ? Number(window.routeTerminalMarkerHideDistance) : null,
     markerHiddenFlag: Boolean(window.partyMarkerHiddenForSettlementExit),
     markerExists: Boolean(partyMarker),
@@ -4732,7 +4733,9 @@ function isPartyMarkerInsideSettlementTransit(distance) {
     if (outerEntryDistance === null && matchingTransit) {
       outerEntryDistance = Number(matchingTransit.start);
     }
-    const visualHideDistance = Number(window.routeTerminalMarkerHideDistance);
+    const rawVisualHideDistance = window.routeTerminalMarkerHideDistance;
+    const visualHideDistance = rawVisualHideDistance == null
+      ? NaN : Number(rawVisualHideDistance);
     if (Number.isFinite(visualHideDistance) && visualHideDistance >= 0) {
       outerEntryDistance = outerEntryDistance === null
         ? visualHideDistance : Math.min(outerEntryDistance, visualHideDistance);
@@ -9557,6 +9560,90 @@ map.on("zoomend", function() {
   // исходного полигона поселения.
   let settlementTraceWaitTimers = [];
   let settlementTraceWaitToken = 0;
+  // Данные последнего маршрута нужны для повторного расчёта порога скрытия
+  // после асинхронной загрузки областей поселений и зон местности.
+  let pendingTerminalMarkerHideRouteData = null;
+
+  function updateTerminalMarkerHideDistance(routeData) {
+    if (!routeData || !routeData.destinationSettlementId) return false;
+    const destinationId = String(routeData.destinationSettlementId);
+    if (String(window.routeDestinationCityId || '') !== destinationId) return false;
+    const route = Array.isArray(window.routePoints) ? window.routePoints.slice() : [];
+    if (route.length < 2) return false;
+
+    let boundaryIndex = -1;
+    let boundaryPoint = null;
+    let approachPoint = null;
+    for (let i = 1; i < route.length; i++) {
+      if (String(route[i]._routeSettlementId || '') === destinationId &&
+          getRouteSegmentMode(route[i]) === 'settlement-count-only') {
+        boundaryIndex = i;
+        boundaryPoint = route[i];
+        approachPoint = route[i - 1];
+        break;
+      }
+    }
+
+    // Поддержка старых сохранённых маршрутов без отдельной метки внешнего входа.
+    if (boundaryIndex < 1 && routeData.destinationBoundaryPoint) {
+      const targetPoint = L.latLng(
+        Number(routeData.destinationBoundaryPoint.lat),
+        Number(routeData.destinationBoundaryPoint.lng)
+      );
+      let nearestDistance = Infinity;
+      for (let i = 1; i < route.length; i++) {
+        const candidateDistance = map.latLngToLayerPoint(route[i]).distanceTo(
+          map.latLngToLayerPoint(targetPoint)
+        );
+        if (candidateDistance < nearestDistance) {
+          nearestDistance = candidateDistance;
+          boundaryIndex = i;
+        }
+      }
+      if (boundaryIndex >= 1) {
+        boundaryPoint = targetPoint;
+        approachPoint = route[boundaryIndex - 1] || (routeData.destinationApproachPoint
+          ? L.latLng(Number(routeData.destinationApproachPoint.lat), Number(routeData.destinationApproachPoint.lng))
+          : null);
+      }
+    }
+    if (boundaryIndex < 1 || !boundaryPoint || !approachPoint) return false;
+
+    const area = (window.settlementAreas || []).find(item => String(item.id) === destinationId);
+    if (!area) return false;
+
+    let distance = window.getRouteTravelLength(route.slice(0, boundaryIndex + 1));
+    const visualContact = getVisualBrushContact(area, approachPoint, boundaryPoint);
+    if (visualContact) {
+      distance = window.getRouteTravelLength(route.slice(0, boundaryIndex)) +
+        window.getRouteTravelLength([approachPoint, visualContact.routePoint]);
+    }
+    if (!Number.isFinite(distance) || distance < 0) return false;
+
+    window.routeTerminalMarkerHideDistance = distance;
+    // Если данные пришли уже во время воспроизведения или паузы, сразу
+    // применяем новый порог к текущей позиции, не ожидая следующего запуска.
+    const playbackState = window.partyPlaybackState;
+    if (partyMarker && playbackState && ["playing", "paused"].includes(playbackState.status) &&
+        typeof window.getPartyPlaybackDistance === 'function') {
+      const now = typeof window.getSynchronizedRouteNow === 'function'
+        ? window.getSynchronizedRouteNow() : Date.now();
+      const currentDistance = window.getPartyPlaybackDistance(playbackState, now);
+      setPartyMarkerVisible(!isPartyMarkerInsideSettlementTransit(currentDistance));
+    }
+    window.debugPartyMarkerVisibility('terminal-hide-distance-calculated', {
+      cityId: destinationId,
+      hideDistance: distance,
+      boundaryIndex,
+      approachPoint: [Number(approachPoint.lat), Number(approachPoint.lng)],
+      boundaryPoint: [Number((visualContact && visualContact.boundaryPoint || boundaryPoint).lat),
+        Number((visualContact && visualContact.boundaryPoint || boundaryPoint).lng)],
+      visualContactFound: Boolean(visualContact),
+      routePointCount: route.length,
+      recalculatedAfterDataLoad: true
+    });
+    return true;
+  }
   // Поселения, чья обводка была прервана открытием редактора.
   // При следующем подтверждении их анимация запускается заново,
   // даже если маршрутная линия уже прошла соответствующую границу.
@@ -9668,6 +9755,11 @@ map.on("zoomend", function() {
   };
 
   function waitForRouteRevealThenTraceSettlements(routeData) {
+    pendingTerminalMarkerHideRouteData = routeData && routeData.destinationSettlementId
+      ? routeData : null;
+    if (pendingTerminalMarkerHideRouteData) {
+      updateTerminalMarkerHideDistance(pendingTerminalMarkerHideRouteData);
+    }
     settlementTraceWaitTimers.forEach(timer => clearTimeout(timer));
     settlementTraceWaitTimers = [];
     const waitToken = ++settlementTraceWaitToken;
@@ -10632,6 +10724,9 @@ map.on("zoomend", function() {
       window.settlementAreas = Object.keys(value).map(key => ({
         ...value[key], id: value[key].id || key
       })).filter(area => Array.isArray(area.points) && area.points.length >= 3);
+      if (pendingTerminalMarkerHideRouteData) {
+        updateTerminalMarkerHideDistance(pendingTerminalMarkerHideRouteData);
+      }
       console.log("Области поселений загружены:", window.settlementAreas.length);
       refreshSettlementContourEditorOptions();
       if (Array.isArray(window.routeIntermediateCityIds) && window.routeIntermediateCityIds.length) {
@@ -10667,6 +10762,9 @@ map.on("zoomend", function() {
         }
         return area;
       }).filter(area => area.type === "terrain" && Array.isArray(area.points) && area.points.length >= 3);
+      if (pendingTerminalMarkerHideRouteData) {
+        updateTerminalMarkerHideDistance(pendingTerminalMarkerHideRouteData);
+      }
       console.log("Зоны труднопроходимой местности загружены:", window.terrainAreas.length);
       refreshSettlementContourEditorOptions();
       if (window.updateRouteLine && Array.isArray(window.routePoints) && window.routePoints.length > 1) {
