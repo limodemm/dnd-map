@@ -2653,6 +2653,35 @@ function createRouteLaunchPanel() {
       originalRouteLength, pendingRoutePlaybackResumeDistance
     ));
     if (editOriginDistance > 0.001) {
+      // Если маршрут начинался из уже посещённого города, а отряд успел
+      // выйти за его границы, при входе в редактор больше не показываем
+      // обводку этого города. Его ID иначе переживает обрезку маршрута и
+      // refreshRouteIntermediateCityOutlines рисует контур повторно.
+      const routeOrigin = routePoints[0];
+      const editOriginPosition = getPartyPlaybackPositionForDistance(editOriginDistance);
+      const departedStartCityIds = (Array.isArray(window.routeIntermediateCityIds)
+        ? window.routeIntermediateCityIds : []).filter(id => {
+          const area = (window.settlementAreas || []).find(item =>
+            String(item.id) === String(id)
+          );
+          if (!area || !Array.isArray(area.points) || area.points.length < 3 ||
+              !routeOrigin || !editOriginPosition) return false;
+          const routeStartedInside = pointInSettlement(routeOrigin, area.points);
+          const markerStillInside = pointInSettlement(editOriginPosition, area.points);
+          return routeStartedInside && !markerStillInside;
+        }).map(String);
+
+      if (departedStartCityIds.length) {
+        departedStartCityIds.forEach(id => {
+          if (typeof window.clearRouteDestinationSettlementTrace === "function") {
+            window.clearRouteDestinationSettlementTrace(id);
+          }
+        });
+        const departedSet = new Set(departedStartCityIds);
+        window.routeIntermediateCityIds = (window.routeIntermediateCityIds || [])
+          .filter(id => !departedSet.has(String(id)));
+      }
+
       routeRestElapsedCarryUnits = getRouteElapsedUnitsSinceLastRest(
         routePoints, editOriginDistance, routeRestElapsedCarryUnits
       );
