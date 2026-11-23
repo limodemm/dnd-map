@@ -6063,7 +6063,7 @@ function updateRouteLine(cursorPosition = null) {
         className:
           "route-exhaustion-mark" +
           (exhaustionIsPreview ? " route-preview-marker" : ""),
-        html: `<div class="route-token-appear" style="width:${clusterDisplaySize}px;height:${clusterDisplaySize}px;"><div class="route-exhaustion-cluster${cluster.count > 1 ? " route-exhaustion-clustered" : ""}" style="${cluster.count > 1 ? `width:${clusterDisplaySize}px;height:${clusterDisplaySize}px;` : ""}"><span class="route-exhaustion-glyph" style="${cluster.count > 1 ? `font-size:${clusterDisplaySize}px;line-height:${clusterDisplaySize}px;` : ""}">×</span>${countBadge}</div></div>`,
+        html: `<div class="route-token-appear" style="width:${clusterDisplaySize}px;height:${clusterDisplaySize}px;"><div class="route-exhaustion-cluster${cluster.count > 1 ? " route-exhaustion-clustered" : ""}" style="position:relative;display:flex;align-items:center;justify-content:center;width:${clusterDisplaySize}px;height:${clusterDisplaySize}px;"><span class="route-exhaustion-glyph" style="display:inline-block;color:#e18a67;font-size:${cluster.count > 1 ? clusterDisplaySize : 28}px;font-weight:900;line-height:${cluster.count > 1 ? clusterDisplaySize : 28}px;-webkit-text-stroke:1.4px #211b16;paint-order:stroke fill;text-shadow:0px 1px 1px #000,1px 2px 3px #000;">×</span>${countBadge}</div></div>`, 
         iconSize: [clusterDisplaySize, clusterDisplaySize],
         iconAnchor: [clusterDisplaySize / 2, clusterDisplaySize / 2]
       });
