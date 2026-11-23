@@ -4649,7 +4649,13 @@ function getTerminalDestinationSettlement() {
 }
 
 function isTerminalSettlementPaused(state) {
-  if (!state || state.status !== "paused") return false;
+  // Не принимаем за прибытие в конечный город старое состояние паузы,
+  // оставшееся от предыдущего маршрута (например, при выходе из города).
+  // Завершённая пауза должна относиться именно к текущему маршруту.
+  if (!state || state.status !== "paused" || !state.terminalSettlementReached) return false;
+  const currentRouteStartedAt = Number(window.routePlaybackRouteStartedAt);
+  if (!Number.isFinite(currentRouteStartedAt) || currentRouteStartedAt <= 0 ||
+      Number(state.routeStartedAt) !== currentRouteStartedAt) return false;
   const destination = getTerminalDestinationSettlement();
   return Boolean(destination && Number(state.startDistance) >= destination.total - 0.001);
 }
@@ -9593,26 +9599,11 @@ map.on("zoomend", function() {
       if (!id || seenIds.has(id)) return;
       seenIds.add(id);
       const isStartCity = startCityTransitIds.has(String(id));
-      // Стартовый город тоже получает анимацию при подтверждении маршрута.
-      // Его завершённый слой будет удалён только после выхода маркера за кисть.
-      if (isStartCity) {
-        const interval = window.getRouteSettlementTransitIntervals(route)
-          .find(item => String(item.settlementId || '') === id && Number(item.start) <= 0.001);
-        const area = (window.settlementAreas || []).find(item => String(item.id) === id);
-        if (!interval || !area) return;
-        let exitIndex = -1;
-        for (let i = 1; i < route.length; i++) {
-          if (String(route[i]._routeSettlementId || '') === id &&
-              route[i]._routeSegmentMode === 'settlement-count-only') exitIndex = i;
-        }
-        const boundaryPoint = exitIndex >= 1 ? route[exitIndex] : route[route.length - 1];
-        const approachPoint = exitIndex >= 1 ? route[exitIndex - 1] : route[0];
-        targets.push({
-          id, area, distance: 0, pauseDistance: Number(interval.end),
-          boundaryPoint, approachPoint, isStartCity: true
-        });
-        return;
-      }
+      // Стартовый город уже обведён до открытия редактора. При выходе
+      // из него сохраняем этот завершённый контур статичным: не добавляем
+      // город в очередь анимаций и не удаляем его слой. Сам слой снимет
+      // tickPartyPlayback только после пересечения внешней границы.
+      if (isStartCity) return;
       let boundaryIndex = -1;
       let boundaryPoint = null;
       let approachPoint = null;
@@ -9793,7 +9784,7 @@ map.on("zoomend", function() {
           return;
         }
         const restartInterruptedTrace = interruptedSettlementTraceIds.has(String(target.id));
-        const delay = (restartInterruptedTrace || target.isStartCity)
+        const delay = restartInterruptedTrace
           ? null
           : (typeof window.getRouteBoundaryArrivalDelay === 'function'
             ? window.getRouteBoundaryArrivalDelay(target.distance) : null);
@@ -9814,11 +9805,6 @@ map.on("zoomend", function() {
         // Убираем только его статичный слой, чтобы анимация была видна ровно
         // тогда, когда маршрут дошёл до его границы.
         removeRouteIntermediateCityOutline(target.id);
-        // Сбрасываем прежнюю статичную обводку стартового города: ниже
-        // она появится заново плавной анимацией и останется до выхода отряда.
-        if (target.isStartCity && typeof window.clearRouteDestinationSettlementTrace === 'function') {
-          window.clearRouteDestinationSettlementTrace(target.id);
-        }
         // Убираем отметку до запуска: новая анимация уже отвечает за город.
         interruptedSettlementTraceIds.delete(String(target.id));
         animateSettlementTrace(target.area, target.boundaryPoint, target.approachPoint);
