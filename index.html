@@ -4761,6 +4761,10 @@ function tickPartyPlayback() {
     };
     window.partyPlaybackState = pausedState;
     setPartyMarkerTransitVisibility(false, true);
+    if (!hasFurtherRoute) {
+      hideRouteArtifactsForTerminalCity();
+      restorePausedSettlementOutline(pausedState);
+    }
     renderPartyPlaybackState(pausedState);
     stopPartyPlaybackFrame();
     setPartyMarkerPlaybackSmoothing(false);
@@ -4841,6 +4845,22 @@ function tickPartyPlayback() {
   partyPlaybackFrame = requestAnimationFrame(tickPartyPlayback);
 }
 
+function hideRouteArtifactsForTerminalCity() {
+  // В конечном городе оставляем только обводку: ни маркер, ни маршрутные
+  // штрихи, жетоны привалов и финишный флажок не должны быть видны.
+  (Array.isArray(partyPlaybackRouteLineLayers) ? partyPlaybackRouteLineLayers : []).forEach(layer => {
+    if (layer && layer._path) {
+      layer._path.removeAttribute("mask");
+      layer._path.style.opacity = "0";
+    }
+  });
+  (Array.isArray(window.routeRestMarkers) ? window.routeRestMarkers : []).forEach(layer => {
+    if (layer && map && map.hasLayer(layer)) map.removeLayer(layer);
+  });
+  if (routeEndMarker && map && map.hasLayer(routeEndMarker)) map.removeLayer(routeEndMarker);
+  if (partyMarker && partyMarker._icon) partyMarker._icon.style.opacity = "0";
+}
+
 window.applyPartyPlaybackState = function(state) {
   if (!state || !["playing", "paused"].includes(state.status)) return;
   let restResetDistancesChanged = false;
@@ -4907,10 +4927,29 @@ window.applyPartyPlaybackState = function(state) {
   window._lastRenderedPartyPlaybackState = state;
   renderPartyPlaybackState(state);
   if (state.status === "paused" && state.markerHidden) {
+    const terminalCityPause = state.resumeDistance === null || state.resumeDistance === undefined ||
+      !Number.isFinite(Number(state.resumeDistance));
+    if (terminalCityPause) hideRouteArtifactsForTerminalCity();
     restorePausedSettlementOutline(state);
   } else if (state.status === "playing" && !state.settlementTransitId &&
       typeof window.clearSettlementOutline === "function") {
     window.clearSettlementOutline();
+    // clearSettlementOutline восстанавливает сохранённую геометрию маршрута.
+    // Сразу возвращаем городские вырезы до первого кадра движения, чтобы
+    // линия ни на мгновение не вспыхивала внутри визуальной обводки.
+    const intervals = Array.isArray(window.routeSettlementPlaybackIntervals) &&
+      window.routeSettlementPlaybackIntervals.length
+        ? window.routeSettlementPlaybackIntervals
+        : getRouteSettlementTransitIntervals(routePoints);
+    intervals.forEach(interval => {
+      if (!interval || !interval.settlementId) return;
+      const area = (window.settlementAreas || []).find(item =>
+        String(item.id) === String(interval.settlementId)
+      );
+      if (area && typeof window.hideRouteDashesInsideSettlement === "function") {
+        window.hideRouteDashesInsideSettlement(area, true);
+      }
+    });
   }
   if (state.status === "playing") {
     // Если разворот уже начался при раскрытии линии, не перезапускаем его
@@ -5557,10 +5596,27 @@ function updatePartyPlaybackRouteTokens(distance) {
 function updatePartyPlaybackRouteLine(distance) {
   // Пока строится маршрут, его прозрачные штрихи принадлежат анимации
   // появления. Маска движения не должна менять их opacity или скрывать их.
-  // После завершения построения updateRouteLine создаст обычные слои, и тогда
-  // можно безопасно применять обрезание пройденной части.
   if (routeMarkerAnimations.length > 0) return;
   if (!Array.isArray(partyPlaybackRouteLineLayers)) return;
+
+  // Сначала физически вырезаем из SVG-геометрии все городские кисти.
+  // Затем ниже накладывается маска пройденной дистанции. Такой порядок важен:
+  // иначе при старте/перестроении playback-mask может снова показать штрихи
+  // внутри города, хотя обычная линия маршрута там скрыта.
+  const transitIntervals = Array.isArray(window.routeSettlementPlaybackIntervals) &&
+    window.routeSettlementPlaybackIntervals.length
+      ? window.routeSettlementPlaybackIntervals
+      : getRouteSettlementTransitIntervals(routePoints);
+  transitIntervals.forEach(interval => {
+    if (!interval || !interval.settlementId) return;
+    const area = (window.settlementAreas || []).find(item =>
+      String(item.id) === String(interval.settlementId)
+    );
+    if (area && typeof window.hideRouteDashesInsideSettlement === "function") {
+      window.hideRouteDashesInsideSettlement(area, true);
+    }
+  });
+
   const markerScreenCenter = getPartyPlaybackMarkerScreenCenter();
   partyPlaybackRouteLineLayers.forEach(layer => {
     const path = layer && layer._path;
@@ -10298,10 +10354,16 @@ map.on("zoomend", function() {
           if (!state || state.status !== "paused" || !state.markerHidden ||
               state.resumeDistance !== null && state.resumeDistance !== undefined ||
               window.routeMode || !event || !event.latlng || !partyMarker) return;
-          const city = (window.settlementAreas || []).find(area =>
-            area.type === "city" && pointInSettlement(event.latlng,
-              getSettlementMarkerMaskPolygon(area))
-          );
+          const city = (window.settlementAreas || []).find(area => {
+            if (area.type !== "city") return false;
+            // Клик принимается по фактической внешней геометрии кисти,
+            // а не по более широкой внутренней маске для жетонов.
+            const visibleBoundary = typeof getSettlementBrushErasePolygon === "function"
+              ? getSettlementBrushErasePolygon(area, 0)
+              : getSettlementMarkerMaskPolygon(area);
+            return Array.isArray(visibleBoundary) && visibleBoundary.length >= 3 &&
+              pointInSettlement(event.latlng, visibleBoundary);
+          });
           if (city) partyMarker.fire("click");
         });
       }
