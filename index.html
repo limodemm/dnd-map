@@ -1925,7 +1925,7 @@ function syncRouteLaunchControls() {
   }
   // Во время раскрытия маршрута все действия, кроме кнопки паузы,
   // заблокированы до полного завершения анимации.
-  if (editButton) editButton.disabled = animationRunning || playing;
+  if (editButton) editButton.disabled = animationRunning || playing || routeComplete;
   const confirmationOpen = Boolean(partyActionConfirmationId || partyActionConfirmationSubmitting);
   if (campButton) campButton.disabled = animationRunning || !paused || confirmationOpen;
   if (shortRestButton) shortRestButton.disabled = animationRunning || !paused || confirmationOpen;
@@ -2581,6 +2581,7 @@ function createRouteLaunchPanel() {
         startDistance: distance,
         resumeDistance: null,
         markerHidden: false,
+        settlementTransitId: hasSettlementResume ? (current.settlementTransitId || null) : null,
         // Движение начинается сразу после нажатия Play: начальный разворот
         // уже запускается параллельно с анимацией раскрытия линии маршрута.
         startedAt: window.getSynchronizedRouteNow(),
@@ -4588,7 +4589,7 @@ function renderPartyPlaybackState(state) {
   const playing = state && state.status === "playing";
   const paused = Boolean(state && state.status === "paused");
   const campRequired = Boolean(state && state.campRequired);
-  if (editButton) editButton.disabled = Boolean(playing);
+  if (editButton) editButton.disabled = Boolean(playing || (state && state.routeComplete));
   pauseButton.classList.toggle("active", !playing);
   pauseButton.setAttribute("aria-pressed", !playing ? "true" : "false");
   playButton.classList.toggle("active", playing);
@@ -4734,31 +4735,17 @@ function tickPartyPlayback() {
   }
   updatePartyPlaybackRouteLine(distance);
   updatePartyPlaybackRouteTokens(distance);
-  if (reachedSettlement) {
-    // На границе города не должно оставаться даже коротких хвостов пунктира:
-    // скрываем все SVG-сегменты, чья дистанция заканчивается у точки входа.
-    partyPlaybackRouteLineLayers.forEach(layer => {
-      const end = Number(layer && layer._partyPlaybackEndDistance);
-      const path = layer && layer._path;
-      if (path && Number.isFinite(end) && end <= distance + 0.75) {
-        path.removeAttribute("mask");
-        path.style.opacity = "0";
-      }
-    });
-    (window.routeRestMarkers || []).forEach(marker => {
-      const tokenDistance = Number(marker && marker._partyPlaybackTokenDistance);
-      if (marker && Number.isFinite(tokenDistance) && tokenDistance <= distance + 0.75 && map.hasLayer(marker)) {
-        map.removeLayer(marker);
-        marker._partyPlaybackTokenRemoved = true;
-      }
-    });
-    if (routeEndMarker) {
-      const endDistance = Number(routeEndMarker._partyPlaybackTokenDistance);
-      if (Number.isFinite(endDistance) && endDistance <= distance + 0.75 && map.hasLayer(routeEndMarker)) {
-        map.removeLayer(routeEndMarker);
-        routeEndMarker._partyPlaybackTokenRemoved = true;
-      }
+  if (state.settlementTransitId) {
+    const resumedInterval = settlementPlaybackIntervals.find(interval =>
+      String(interval.settlementId || "") === String(state.settlementTransitId) &&
+      distance >= Number(interval.end) - 0.02
+    );
+    if (resumedInterval && typeof window.clearSettlementOutline === "function") {
+      window.clearSettlementOutline();
+      state.settlementTransitId = null;
     }
+  }
+  if (reachedSettlement) {
     const exitDistance = Math.max(distance, Number(nextSettlementTransit.end) || distance);
     const hasFurtherRoute = exitDistance < total - 0.02;
     const pausedState = {
@@ -4767,6 +4754,7 @@ function tickPartyPlayback() {
       startDistance: distance,
       resumeDistance: hasFurtherRoute ? exitDistance : null,
       markerHidden: true,
+      settlementTransitId: nextSettlementTransit.settlementId || null,
       startedAt: null,
       routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
       campRequired: false
@@ -4782,6 +4770,7 @@ function tickPartyPlayback() {
         startDistance: distance,
         resumeDistance: hasFurtherRoute ? exitDistance : null,
         markerHidden: true,
+        settlementTransitId: nextSettlementTransit.settlementId || null,
         startedAt: null,
         routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
         campRequired: false,
@@ -4907,12 +4896,20 @@ window.applyPartyPlaybackState = function(state) {
   window.partyPlaybackState = state;
   partyPlaybackDistance = window.getPartyPlaybackDistance(state, window.getSynchronizedRouteNow());
   if (typeof window.setPartyMarkerTransitVisibility === "function") {
-    window.setPartyMarkerTransitVisibility(!state.markerHidden, true);
+    const previousState = window._lastRenderedPartyPlaybackState;
+    const isCityVisibilityTransition = Boolean(previousState &&
+      Boolean(previousState.markerHidden) !== Boolean(state.markerHidden) &&
+      (previousState.markerHidden || state.markerHidden));
+    // При восстановлении страницы и обычных привалах маркер появляется сразу.
+    // Плавность оставляем только для перехода видимости на границе города.
+    window.setPartyMarkerTransitVisibility(!state.markerHidden, isCityVisibilityTransition);
   }
+  window._lastRenderedPartyPlaybackState = state;
   renderPartyPlaybackState(state);
   if (state.status === "paused" && state.markerHidden) {
     restorePausedSettlementOutline(state);
-  } else if (state.status === "playing" && typeof window.clearSettlementOutline === "function") {
+  } else if (state.status === "playing" && !state.settlementTransitId &&
+      typeof window.clearSettlementOutline === "function") {
     window.clearSettlementOutline();
   }
   if (state.status === "playing") {
@@ -6804,6 +6801,13 @@ window.applySynchronizedPartyRoute = function(data) {
   window.routeAnimationPublished = true;
   window.routePlaybackRouteStartedAt = Number(data.startedAt) || null;
   window.routePlaybackAnimationStartDistance = 0;
+  // Возвращаем плавный поворот маркера к направлению нового маршрута;
+  // opacity-анимация при обычном старте при этом не используется.
+  requestAnimationFrame(() => {
+    if (typeof window.startPartyInitialTurnAfterRouteRedraw === "function") {
+      window.startPartyInitialTurnAfterRouteRedraw();
+    }
+  });
   window.routePendingConfirmation = false;
   window.routeDestinationCityId = data.destinationSettlementId || null;
   window.routeDestinationBoundaryPoint = data.destinationBoundaryPoint
@@ -10287,9 +10291,29 @@ map.on("zoomend", function() {
         ...value[key], id: value[key].id || key
       })).filter(area => Array.isArray(area.points) && area.points.length >= 3);
       console.log("Области поселений загружены:", window.settlementAreas.length);
+      if (!window._terminalCityClickHandlerInstalled && map) {
+        window._terminalCityClickHandlerInstalled = true;
+        map.on("click", function(event) {
+          const state = window.partyPlaybackState;
+          if (!state || state.status !== "paused" || !state.markerHidden ||
+              state.resumeDistance !== null && state.resumeDistance !== undefined ||
+              window.routeMode || !event || !event.latlng || !partyMarker) return;
+          const city = (window.settlementAreas || []).find(area =>
+            area.type === "city" && pointInSettlement(event.latlng,
+              getSettlementMarkerMaskPolygon(area))
+          );
+          if (city) partyMarker.fire("click");
+        });
+      }
       refreshSettlementContourEditorOptions();
       if (window.partyPlaybackState && window.partyPlaybackState.status === "paused" && window.partyPlaybackState.markerHidden) {
         restorePausedSettlementOutline(window.partyPlaybackState);
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const playback = window.partyPlaybackState;
+          if (playback && playback.status === "paused" && playback.markerHidden) {
+            restorePausedSettlementOutline(playback);
+          }
+        }));
       }
       if (Array.isArray(window.routeIntermediateCityIds) && window.routeIntermediateCityIds.length) {
         refreshRouteIntermediateCityOutlines();
