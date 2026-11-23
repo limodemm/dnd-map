@@ -2385,6 +2385,36 @@ function createRouteLaunchPanel() {
       routeRestElapsedCarryUnits = getRouteElapsedUnitsSinceLastRest(
         routePoints, editOriginDistance, routeRestElapsedCarryUnits
       );
+
+      // До обрезки сохраняем уже пройденное время внутри каждого форсированного
+      // участка. После переноса начала маршрута к маркеру оно становится
+      // начальным накопленным временем нового локального участка.
+      const adjustedForcedSegments = routeForcedSegments.map(segment => {
+        const distances = getForcedSegmentDistances(segment);
+        const elapsedBeforeMarker = editOriginDistance > distances.start
+          ? getRouteTravelTimeUnitsBetweenDistances(
+              routePoints,
+              distances.start,
+              Math.min(editOriginDistance, distances.end)
+            )
+          : 0;
+        return {
+          start: Math.max(0, distances.start - editOriginDistance),
+          end: distances.end - editOriginDistance,
+          startUnits: distances.startUnits + elapsedBeforeMarker,
+          fixed: true
+        };
+      }).filter(segment => segment.end > 0.001);
+
+      // Аналогично переносим накопленное время активного форсированного марша.
+      if (routeForcedMarch && editOriginDistance > routeForcedMarchStartDistance) {
+        routeForcedMarchStartUnits += getRouteTravelTimeUnitsBetweenDistances(
+          routePoints,
+          routeForcedMarchStartDistance,
+          editOriginDistance
+        );
+      }
+
       routePoints = getRoutePointsBetweenDistances(
         routePoints, editOriginDistance, originalRouteLength
       );
@@ -2392,9 +2422,7 @@ function createRouteLaunchPanel() {
       pendingRoutePlaybackResumeDistance = 0;
       routeForcedMarchStartDistance = Math.max(0, routeForcedMarchStartDistance - editOriginDistance);
       routeForcedMarchEpochStartDistance = Math.max(0, routeForcedMarchEpochStartDistance - editOriginDistance);
-      routeForcedSegments = routeForcedSegments
-        .map(segment => ({ ...segment, start: Math.max(0, segment.start - editOriginDistance), end: segment.end - editOriginDistance }))
-        .filter(segment => segment.end > 0.001);
+      routeForcedSegments = adjustedForcedSegments;
       lastConfirmedRoutePointSnapshot = routePoints.map((point, index) => ({
         lat: Number(point.lat), lng: Number(point.lng),
         segmentMode: index > 0 ? getRouteSegmentMode(point) : "normal",
