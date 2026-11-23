@@ -6053,7 +6053,7 @@ function updateRouteLine(cursorPosition = null) {
       const exhaustionShouldAnimate = exhaustionAnimationDelay !== null;
 
       const countBadge = cluster.count > 1
-        ? `<span class="route-exhaustion-count"${map.getZoom() <= -1.5 ? ' style="min-width:13px;height:13px;padding:0 1px;font-size:8px;line-height:11px;"' : ""}>${cluster.count}</span>`
+        ? `<span class="route-exhaustion-count" style="position:absolute;left:50%;top:50%;min-width:${map.getZoom() <= -1.5 ? 13 : 14}px;height:${map.getZoom() <= -1.5 ? 13 : 14}px;padding:0 ${map.getZoom() <= -1.5 ? 1 : 2}px;box-sizing:border-box;border:1px solid #211b16;border-radius:8px;background:#e6c77d;color:#211b16;font:900 ${map.getZoom() <= -1.5 ? 8 : 9}px/${map.getZoom() <= -1.5 ? 11 : 12}px Arial,sans-serif;text-align:center;white-space:nowrap;box-shadow:0 1px 3px #000;transform:translate(-50%,-50%);">${cluster.count}</span>`
         : "";
 
       const clusterDisplaySize = cluster.count > 1
