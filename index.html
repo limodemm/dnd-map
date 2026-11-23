@@ -721,6 +721,13 @@ let partyIcon = createPartyIcon();
         window.applyPartyPlaybackState(movementToRestore);
         window.pendingSharedPartyMovement = null;
       }
+      if (data.restoreStaticSettlementOutlines) {
+        requestAnimationFrame(() => {
+          if (typeof window.restoreStaticSettlementOutlinesAfterReload === "function") {
+            window.restoreStaticSettlementOutlinesAfterReload(movementToRestore);
+          }
+        });
+      }
     }
 
     onValue(sharedRouteRef, function(snapshot) {
@@ -773,7 +780,8 @@ let partyIcon = createPartyIcon();
           applySharedRouteData({
             ...data,
             animationStartIndex: Array.isArray(data.points) ? data.points.length : 0,
-            animationStartDistance: Number.POSITIVE_INFINITY
+            animationStartDistance: Number.POSITIVE_INFINITY,
+            restoreStaticSettlementOutlines: true
           });
           return;
         }
@@ -878,7 +886,7 @@ let partyIcon = createPartyIcon();
   interactive: true,
   zIndexOffset: 2000
 }).addTo(map);
-if (window.partyMarkerHiddenForSettlementExit) setPartyMarkerVisible(false);
+if (window.partyMarkerHiddenForSettlementExit) setPartyMarkerVisibleImmediately(false);
 
 partyMarker.on("click", function() {
 
@@ -4725,6 +4733,16 @@ function setPartyMarkerVisible(visible) {
   partyMarker._icon.style.pointerEvents = visible ? "auto" : "none";
 }
 
+// При восстановлении страницы маркер внутри поселения должен быть скрыт
+// сразу, без проигрывания обычного перехода прозрачности.
+function setPartyMarkerVisibleImmediately(visible) {
+  window.partyMarkerHiddenForSettlementExit = !visible;
+  if (!partyMarker || !partyMarker._icon) return;
+  partyMarker._icon.style.transition = "none";
+  partyMarker._icon.style.opacity = visible ? "1" : "0";
+  partyMarker._icon.style.pointerEvents = visible ? "auto" : "none";
+}
+
 function getPartyPlaybackPositionForDistance(distance) {
   const currentDistance = Math.max(0, Number(distance) || 0);
   const intervals = getRouteSettlementTransitIntervals(routePoints);
@@ -7050,6 +7068,13 @@ if (window.pendingSharedRouteData) {
       Number(movementToRestore.routeStartedAt) === Number(window.routePlaybackRouteStartedAt)) {
     window.applyPartyPlaybackState(movementToRestore);
     window.pendingSharedPartyMovement = null;
+  }
+  if (pendingData.restoreStaticSettlementOutlines) {
+    requestAnimationFrame(() => {
+      if (typeof window.restoreStaticSettlementOutlinesAfterReload === "function") {
+        window.restoreStaticSettlementOutlinesAfterReload(movementToRestore);
+      }
+    });
   }
 }
 
@@ -9637,6 +9662,51 @@ map.on("zoomend", function() {
     }
   };
 
+  // После перезагрузки восстанавливаем только обводку поселения,
+  // внутри которого отряд находится в данный момент. Ранее пройденные
+  // поселения повторно не создаём.
+  window.restoreStaticSettlementOutlinesAfterReload = function(state = null) {
+    if (!Array.isArray(routePoints) || routePoints.length < 2) return;
+    const movement = state || window.partyPlaybackState;
+    const distance = movement && typeof window.getPartyPlaybackDistance === "function"
+      ? window.getPartyPlaybackDistance(movement, window.getSynchronizedRouteNow())
+      : Math.max(0, Number(partyPlaybackDistance) || 0);
+    const intervals = getRouteSettlementTransitIntervals(routePoints);
+    let currentInterval = intervals.find(interval => {
+      const start = Math.max(0, Number(interval.start) || 0);
+      const end = Math.max(start, Number(interval.end) || start);
+      return distance >= start - 0.001 && distance <= end + 0.001;
+    }) || null;
+
+    // При терминальной паузе считаем текущим именно конечное поселение,
+    // даже если округление расстояния вывело его за край интервала.
+    const terminalPaused = movement && typeof window.isTerminalSettlementPaused === "function" &&
+      window.isTerminalSettlementPaused(movement);
+    if (terminalPaused) {
+      const destination = getTerminalDestinationSettlement();
+      if (destination) currentInterval = destination.transit;
+    }
+
+    let markerInsideSettlement = false;
+    let missingCurrentArea = false;
+    const currentId = currentInterval && currentInterval.settlementId != null
+      ? String(currentInterval.settlementId) : null;
+
+    if (currentId) {
+      const area = (window.settlementAreas || []).find(item => String(item.id) === currentId);
+      if (area && typeof window.completeRouteSettlementOutline === "function") {
+        window.completeRouteSettlementOutline(area);
+      } else {
+        missingCurrentArea = true;
+      }
+      markerInsideSettlement = true;
+    }
+
+    if (terminalPaused) markerInsideSettlement = true;
+    if (markerInsideSettlement) setPartyMarkerVisibleImmediately(false);
+    window._restoreStaticSettlementOutlinesPending = missingCurrentArea;
+  };
+
   // Рассчитывает порог скрытия жетона отдельно от анимации обводки.
   // Повторный расчёт нужен после асинхронной загрузки областей и при восстановлении маршрута.
   window.updateTerminalMarkerHideDistance = function(routeData = null) {
@@ -10678,6 +10748,10 @@ map.on("zoomend", function() {
       console.log("Области поселений загружены:", window.settlementAreas.length);
       if (typeof window.updateTerminalMarkerHideDistance === "function") {
         window.updateTerminalMarkerHideDistance();
+      }
+      if (window._restoreStaticSettlementOutlinesPending &&
+          typeof window.restoreStaticSettlementOutlinesAfterReload === "function") {
+        window.restoreStaticSettlementOutlinesAfterReload(window.partyPlaybackState);
       }
       refreshSettlementContourEditorOptions();
       if (Array.isArray(window.routeIntermediateCityIds) && window.routeIntermediateCityIds.length) {
