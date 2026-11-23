@@ -9682,9 +9682,12 @@ map.on("zoomend", function() {
     // даже если округление расстояния вывело его за край интервала.
     const terminalPaused = movement && typeof window.isTerminalSettlementPaused === "function" &&
       window.isTerminalSettlementPaused(movement);
-    if (terminalPaused) {
-      const destination = getTerminalDestinationSettlement();
-      if (destination) currentInterval = destination.transit;
+    if (terminalPaused && window.routeDestinationCityId != null) {
+      const destinationId = String(window.routeDestinationCityId);
+      const destinationTransit = intervals.find(interval =>
+        String(interval.settlementId || '') === destinationId
+      );
+      if (destinationTransit) currentInterval = destinationTransit;
     }
 
     let markerInsideSettlement = false;
