@@ -4672,7 +4672,15 @@ function isPartyMarkerInsideSettlementTransit(distance) {
   );
   if (startTransit && currentDistance < Number(startTransit.end) - 0.001) return true;
   const destination = getTerminalDestinationSettlement();
-  if (destination && currentDistance >= Number(destination.transit.start) - 0.001) return true;
+  if (destination) {
+    // Для конечного города скрываем жетон не на геометрической точке
+    // входа в транзит, а точно при касании видимой сухой кисти.
+    // Это значение рассчитывается модулем анимации обводки для текущего маршрута.
+    const visualHideDistance = Number(window.routeTerminalMarkerHideDistance);
+    const hideDistance = Number.isFinite(visualHideDistance) && visualHideDistance >= 0
+      ? visualHideDistance : Number(destination.transit.start);
+    if (currentDistance >= hideDistance - 0.001) return true;
+  }
   return false;
 }
 
@@ -6927,6 +6935,9 @@ window.applySynchronizedPartyRoute = function(data) {
   window.routePlaybackAnimationStartDistance = 0;
   window.routePendingConfirmation = false;
   window.routeDestinationCityId = data.destinationSettlementId || null;
+  // Сбрасываем порог прошлого маршрута; новый точный порог будет рассчитан
+  // ниже по фактической точке контакта с видимой кистью.
+  window.routeTerminalMarkerHideDistance = null;
   window.routeDestinationBoundaryPoint = data.destinationBoundaryPoint
     ? L.latLng(data.destinationBoundaryPoint.lat, data.destinationBoundaryPoint.lng) : null;
   window.routeDestinationApproachPoint = data.destinationApproachPoint
@@ -9695,6 +9706,11 @@ map.on("zoomend", function() {
         distance = window.getRouteTravelLength(route.slice(0, boundaryIndex)) +
           window.getRouteTravelLength([approachPoint, visualContact.routePoint]);
         boundaryPoint = visualContact.boundaryPoint;
+      }
+      if (id === destinationId) {
+        // Маркер должен исчезнуть в той же точке визуального контакта,
+        // а не позже — на внутренней геометрической границе города.
+        window.routeTerminalMarkerHideDistance = distance;
       }
       // Для промежуточного поселения находим выходную внешнюю границу.
       // Внутренний путь между входом и выходом проходит по транзитным
