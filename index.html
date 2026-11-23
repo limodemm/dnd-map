@@ -4664,107 +4664,65 @@ function isTerminalSettlementPaused(state) {
 // где локальные объявления обычного скрипта недоступны напрямую.
 window.isTerminalSettlementPaused = isTerminalSettlementPaused;
 
-// Диагностика скрытия жетона при входе в конечное поселение.
-// Включается в консоли: window.DEBUG_PARTY_MARKER = true
-window.DEBUG_PARTY_MARKER = window.DEBUG_PARTY_MARKER === true;
-window._partyMarkerDebugLastAt = 0;
-window._partyMarkerDebugLastVisibility = null;
-window.debugPartyMarkerVisibility = function(stage, details = {}) {
-  if (!window.DEBUG_PARTY_MARKER) return;
-  const now = Date.now();
-  const icon = partyMarker && partyMarker._icon;
-  const image = icon && icon.querySelector ? icon.querySelector('img') : null;
-  const snapshot = {
-    stage,
-    timestamp: new Date(now).toISOString(),
-    playbackStatus: window.partyPlaybackState && window.partyPlaybackState.status,
-    routeDestinationCityId: window.routeDestinationCityId ?? null,
-    routeTerminalMarkerHideDistance: window.routeTerminalMarkerHideDistance == null
-      ? null
-      : (Number.isFinite(Number(window.routeTerminalMarkerHideDistance))
-        ? Number(window.routeTerminalMarkerHideDistance) : null),
-    markerHiddenFlag: Boolean(window.partyMarkerHiddenForSettlementExit),
-    markerExists: Boolean(partyMarker),
-    markerIconExists: Boolean(icon),
-    markerIconOpacity: icon ? getComputedStyle(icon).opacity : null,
-    markerIconInlineOpacity: icon ? icon.style.opacity : null,
-    markerImageOpacity: image ? getComputedStyle(image).opacity : null,
-    markerIconDisplay: icon ? getComputedStyle(icon).display : null,
-    markerIconVisibility: icon ? getComputedStyle(icon).visibility : null,
-    markerIconClass: icon ? icon.className : null,
-    ...details
-  };
-  const visibility = `${snapshot.markerHiddenFlag}|${snapshot.markerIconInlineOpacity}|${snapshot.markerIconOpacity}`;
-  const changed = visibility !== window._partyMarkerDebugLastVisibility;
-  if (changed || now - window._partyMarkerDebugLastAt >= 500) {
-    console.log('[PARTY-MARKER-DEBUG]', snapshot);
-    window._partyMarkerDebugLastAt = now;
-    window._partyMarkerDebugLastVisibility = visibility;
-  }
-};
+// Возвращает точное расстояние входа в конечное поселение.
+// Для него используется тот же внешний узел маршрута, что и для маски
+// визуальной кисти; null означает, что порог ещё не рассчитан.
+function getTerminalPartyMarkerHideDistance(routeTransitIntervals = null) {
+  const destinationId = window.routeDestinationCityId != null
+    ? String(window.routeDestinationCityId) : null;
+  if (!destinationId) return null;
 
-function isPartyMarkerInsideSettlementTransit(distance) {
+  let entryDistance = null;
+  for (let i = 1; i < routePoints.length; i++) {
+    const point = routePoints[i];
+    if (String(point._routeSettlementId || '') === destinationId &&
+        (getRouteSegmentMode(point) === 'settlement-count-only' ||
+         getRouteSegmentMode(point) === 'settlement-zero')) {
+      entryDistance = getRouteTravelLength(routePoints.slice(0, i));
+      break;
+    }
+  }
+
+  const intervals = Array.isArray(routeTransitIntervals)
+    ? routeTransitIntervals : getRouteSettlementTransitIntervals(routePoints);
+  const matchingTransit = intervals.find(interval =>
+    String(interval.settlementId || '') === destinationId
+  );
+  if (entryDistance === null && matchingTransit) {
+    entryDistance = Number(matchingTransit.start);
+  }
+
+  const rawVisualHideDistance = window.routeTerminalMarkerHideDistance;
+  const visualHideDistance = rawVisualHideDistance == null ? NaN : Number(rawVisualHideDistance);
+  if (Number.isFinite(visualHideDistance) && visualHideDistance >= 0) {
+    entryDistance = entryDistance === null
+      ? visualHideDistance : Math.min(entryDistance, visualHideDistance);
+  }
+  return Number.isFinite(entryDistance) && entryDistance >= 0 ? entryDistance : null;
+}
+
+function isPartyMarkerInsideSettlementTransit(distance, terminalHideDistance = undefined, routeTransitIntervals = null) {
   const currentDistance = Math.max(0, Number(distance) || 0);
-  const intervals = getRouteSettlementTransitIntervals(routePoints);
+  const intervals = Array.isArray(routeTransitIntervals)
+    ? routeTransitIntervals : getRouteSettlementTransitIntervals(routePoints);
   const startTransit = intervals.find(interval =>
     Number(interval.start) <= 0.001 && Number(interval.end) > 0.001 && interval.settlementId
   );
   if (startTransit && currentDistance < Number(startTransit.end) - 0.001) return true;
 
-  // Для конечного города определяем внешний вход напрямую по метке
-  // первого транзитного узла маршрута. Не зависим от getTerminalDestinationSettlement():
-  // если объект города/интервал ещё не разрешился, маркер всё равно должен
-  // исчезнуть до того, как пересечёт видимый контур.
-  const destinationId = window.routeDestinationCityId != null
-    ? String(window.routeDestinationCityId) : null;
-  if (destinationId) {
-    let outerEntryDistance = null;
-    for (let i = 1; i < routePoints.length; i++) {
-      const point = routePoints[i];
-      if (String(point._routeSettlementId || '') === destinationId &&
-          (getRouteSegmentMode(point) === 'settlement-count-only' ||
-           getRouteSegmentMode(point) === 'settlement-zero')) {
-        outerEntryDistance = getRouteTravelLength(routePoints.slice(0, i));
-        break;
-      }
-    }
-    const matchingTransit = intervals.find(interval =>
-      String(interval.settlementId || '') === destinationId
-    );
-    if (outerEntryDistance === null && matchingTransit) {
-      outerEntryDistance = Number(matchingTransit.start);
-    }
-    const rawVisualHideDistance = window.routeTerminalMarkerHideDistance;
-    const visualHideDistance = rawVisualHideDistance == null ? NaN : Number(rawVisualHideDistance);
-    if (Number.isFinite(visualHideDistance) && visualHideDistance >= 0) {
-      outerEntryDistance = outerEntryDistance === null
-        ? visualHideDistance : Math.min(outerEntryDistance, visualHideDistance);
-    }
-    if (Number.isFinite(outerEntryDistance) &&
-        currentDistance >= outerEntryDistance - 0.001) return true;
+  if (terminalHideDistance === undefined) {
+    terminalHideDistance = getTerminalPartyMarkerHideDistance(intervals);
   }
-  return false;
+  return Number.isFinite(terminalHideDistance) &&
+    currentDistance >= terminalHideDistance - 0.001;
 }
 
 function setPartyMarkerVisible(visible) {
   window.partyMarkerHiddenForSettlementExit = !visible;
-  window.debugPartyMarkerVisibility('setPartyMarkerVisible:before', { requestedVisible: Boolean(visible) });
-  if (!partyMarker || !partyMarker._icon) {
-    window.debugPartyMarkerVisibility('setPartyMarkerVisible:no-icon', { requestedVisible: Boolean(visible) });
-    return;
-  }
-  // Скрываем весь Leaflet-элемент маркера, а не только вложенное изображение:
-  // у контейнера могут быть собственные псевдоэлементы и декоративные слои.
-  // Именно такой способ использовался в ранней версии, где скрытие работало.
+  if (!partyMarker || !partyMarker._icon) return;
   partyMarker._icon.style.transition = "opacity 520ms ease-in-out";
   partyMarker._icon.style.opacity = visible ? "1" : "0";
   partyMarker._icon.style.pointerEvents = visible ? "auto" : "none";
-  // Диагностика раньше неявно заставляла браузер пересчитать стили
-  // через getComputedStyle(). Без неё смена opacity могла откладываться
-  // до следующего кадра и визуально запаздывать относительно границы.
-  // Делаем тот же commit явно, независимо от DEBUG_PARTY_MARKER.
-  void getComputedStyle(partyMarker._icon).opacity;
-  window.debugPartyMarkerVisibility('setPartyMarkerVisible:after', { requestedVisible: Boolean(visible) });
 }
 
 function getPartyPlaybackPositionForDistance(distance) {
@@ -4895,27 +4853,20 @@ function tickPartyPlayback() {
     }
   }
   const markerWasHidden = Boolean(window.partyMarkerHiddenForSettlementExit);
-  const markerShouldBeHidden = isPartyMarkerInsideSettlementTransit(distance);
-  window.debugPartyMarkerVisibility('tickPartyPlayback', {
-    playbackDistance: distance,
-    routeTotalDistance: total,
-    markerShouldBeHidden,
-    markerWasHidden,
-    transitIntervals: transitIntervals.map(interval => ({
-      settlementId: interval.settlementId,
-      start: Number(interval.start),
-      end: Number(interval.end)
-    })),
-    routePointCount: routePoints.length,
-    taggedDestinationPoints: routePoints.map((point, index) => ({
-      index,
-      settlementId: point._routeSettlementId || null,
-      segmentMode: getRouteSegmentMode(point)
-    })).filter(point => String(point.settlementId || '') === String(window.routeDestinationCityId || ''))
-  });
-  setPartyMarkerVisible(!markerShouldBeHidden);
-  const position = getPartyPlaybackPositionForDistance(distance);
+  const terminalHideDistance = getTerminalPartyMarkerHideDistance(transitIntervals);
+  const markerShouldBeHidden = isPartyMarkerInsideSettlementTransit(
+    distance, terminalHideDistance, transitIntervals
+  );
+  // Внутренний переход поселения ускорен в 8 раз, а прозрачность жетона
+  // плавно меняется 520 мс. Если продолжать двигать жетон после начала
+  // исчезновения, он успевает уехать глубоко за видимую кисть. Фиксируем
+  // его на самой точке входа на всё время затухания.
+  const markerPositionDistance = Number.isFinite(terminalHideDistance) &&
+    distance >= terminalHideDistance - 0.001
+      ? terminalHideDistance : distance;
+  const position = getPartyPlaybackPositionForDistance(markerPositionDistance);
   if (position && partyMarker) window.setPartyMarkerPlaybackPosition(position);
+  setPartyMarkerVisible(!markerShouldBeHidden);
   const markerJustAppeared = markerWasHidden && !markerShouldBeHidden && Boolean(partyMarker);
   if (markerJustAppeared) {
     // На выходе из города не показываем жетон с устаревшим углом,
@@ -9506,8 +9457,16 @@ map.on("zoomend", function() {
   // визуальная brushPoints могут отличаться на несколько экранных пикселей.
   function getVisualBrushContact(area, approachPoint, boundaryPoint) {
     if (!area || !approachPoint || !boundaryPoint || !shouldUseSettlementDryBrush(area)) return null;
-    const path = getSettlementDryBrushPath(area);
-    if (path.length < 2) return null;
+    const zoomScale = map.getZoomScale(map.getZoom(), 0);
+    const brushScale = Math.pow(zoomScale, 0.43);
+    // getSettlementDryBrushPath — это ось мазков, а не их внешний край.
+    // Основной мазок имеет ширину до 4.65 * brushScale px, поэтому для
+    // контакта берём его внешнюю кромку, а не заставляем жетон доходить
+    // до середины уже нарисованной кисти.
+    const path = getSettlementBrushErasePolygon(area, 2.4 * brushScale)
+      .map(point => map.latLngToLayerPoint(point));
+    if (path.length < 3) return null;
+    path.push(path[0]);
     const a = map.latLngToLayerPoint(approachPoint);
     const b = map.latLngToLayerPoint(boundaryPoint);
     const dx = b.x - a.x, dy = b.y - a.y;
@@ -9519,7 +9478,10 @@ map.on("zoomend", function() {
       const t = clamp01(routeT);
       const routePoint = L.point(a.x + dx * t, a.y + dy * t);
       const gap = routePoint.distanceTo(contourPoint);
-      if (!best || gap < best.gap) best = { gap, routeT: t, routePoint, contourPoint };
+      if (!best || gap < best.gap - 0.001 ||
+          (Math.abs(gap - best.gap) <= 0.001 && t < best.routeT)) {
+        best = { gap, routeT: t, routePoint, contourPoint };
+      }
     };
     for (let i = 1; i < path.length; i++) {
       const c = path[i - 1], d = path[i];
@@ -9676,8 +9638,7 @@ map.on("zoomend", function() {
   };
 
   // Рассчитывает порог скрытия жетона отдельно от анимации обводки.
-  // Функция объявлена внутри initializeParty: здесь доступны локальные
-  // setPartyMarkerVisible / isPartyMarkerInsideSettlementTransit и расчёты маршрута.
+  // Повторный расчёт нужен после асинхронной загрузки областей и при восстановлении маршрута.
   window.updateTerminalMarkerHideDistance = function(routeData = null) {
     const data = routeData || window._pendingTerminalMarkerRouteData || {};
     const route = Array.isArray(window.routePoints) ? window.routePoints : [];
@@ -9714,13 +9675,26 @@ map.on("zoomend", function() {
     }
     if (boundaryIndex < 1 || !boundaryPoint || !approachPoint) return false;
 
+    let contactSegmentEndIndex = boundaryIndex;
+    // При конечном городе внешняя точка кисти и начало скрытого перехода
+    // сохранены двумя одинаковыми соседними узлами. Для повторного расчёта
+    // берём реальный входящий отрезок перед этой парой, а не нулевой отрезок.
+    if (boundaryIndex >= 2 &&
+        map.latLngToLayerPoint(route[boundaryIndex - 1]).distanceTo(
+          map.latLngToLayerPoint(route[boundaryIndex])
+        ) < 0.01) {
+      approachPoint = route[boundaryIndex - 2];
+      boundaryPoint = route[boundaryIndex - 1];
+      contactSegmentEndIndex = boundaryIndex - 1;
+    }
+
     const area = (window.settlementAreas || []).find(item => String(item.id) === destinationId);
     if (!area) return false;
 
     let distance = window.getRouteTravelLength(route.slice(0, boundaryIndex + 1));
     const visualContact = getVisualBrushContact(area, approachPoint, boundaryPoint);
     if (visualContact) {
-      distance = window.getRouteTravelLength(route.slice(0, boundaryIndex)) +
+      distance = window.getRouteTravelLength(route.slice(0, contactSegmentEndIndex)) +
         window.getRouteTravelLength([approachPoint, visualContact.routePoint]);
     }
     if (!Number.isFinite(distance) || distance < 0) return false;
@@ -9730,13 +9704,6 @@ map.on("zoomend", function() {
     // управления маркером: эта функция может запускаться из обработчика
     // восстановления маршрута, находящегося в другой области видимости.
     // Текущая видимость будет обновлена штатным обработчиком состояния/тика.
-    window.debugPartyMarkerVisibility('terminal-hide-distance-calculated', {
-      cityId: destinationId,
-      hideDistance: distance,
-      boundaryIndex,
-      visualContactFound: Boolean(visualContact),
-      routePointCount: route.length
-    });
     return true;
   };
 
@@ -9836,6 +9803,16 @@ map.on("zoomend", function() {
         }
       }
 
+      let contactSegmentEndIndex = boundaryIndex;
+      if (id === destinationId && boundaryIndex >= 2 &&
+          map.latLngToLayerPoint(route[boundaryIndex - 1]).distanceTo(
+            map.latLngToLayerPoint(route[boundaryIndex])
+          ) < 0.01) {
+        approachPoint = route[boundaryIndex - 2];
+        boundaryPoint = route[boundaryIndex - 1];
+        contactSegmentEndIndex = boundaryIndex - 1;
+      }
+
       if (boundaryIndex < 1 || !boundaryPoint) {
         console.warn('Анимация поселения: не найдена точка входа на маршруте', id);
         return;
@@ -9856,7 +9833,7 @@ map.on("zoomend", function() {
       if (visualContact) {
         // Время остановки линии рассчитывается по месту, где она касается
         // видимого мазка; сама обводка также стартует именно с этой точки.
-        distance = window.getRouteTravelLength(route.slice(0, boundaryIndex)) +
+        distance = window.getRouteTravelLength(route.slice(0, contactSegmentEndIndex)) +
           window.getRouteTravelLength([approachPoint, visualContact.routePoint]);
         boundaryPoint = visualContact.boundaryPoint;
       }
@@ -9864,15 +9841,6 @@ map.on("zoomend", function() {
         // Маркер должен исчезнуть в той же точке визуального контакта,
         // а не позже — на внутренней геометрической границе города.
         window.routeTerminalMarkerHideDistance = distance;
-        window.debugPartyMarkerVisibility('terminal-hide-distance-calculated', {
-          cityId: id,
-          hideDistance: distance,
-          boundaryIndex,
-          approachPoint: approachPoint ? [Number(approachPoint.lat), Number(approachPoint.lng)] : null,
-          boundaryPoint: boundaryPoint ? [Number(boundaryPoint.lat), Number(boundaryPoint.lng)] : null,
-          visualContactFound: Boolean(visualContact),
-          routePointCount: route.length
-        });
       }
       // Для промежуточного поселения находим выходную внешнюю границу.
       // Внутренний путь между входом и выходом проходит по транзитным
