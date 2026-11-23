@@ -875,6 +875,10 @@ let partyIcon = createPartyIcon();
   interactive: true,
   zIndexOffset: 2000
 }).addTo(map);
+if (window.partyPlaybackState && window.partyPlaybackState.markerHidden) {
+  partyMarker._partyTransitVisible = true;
+  window.setPartyMarkerTransitVisibility(false, false);
+}
 
 partyMarker.on("click", function() {
 
@@ -2552,13 +2556,25 @@ function createRouteLaunchPanel() {
     if (routeMarkerAnimations.length > 0 || !Array.isArray(routePoints) || routePoints.length < 2) return;
     const current = window.partyPlaybackState;
     if (current && current.campRequired) return;
-    const distance = current ? window.getPartyPlaybackDistance(current, window.getSynchronizedRouteNow()) : 0;
+    const hasSettlementResume = Boolean(current && current.resumeDistance !== null &&
+      current.resumeDistance !== undefined && Number.isFinite(Number(current.resumeDistance)));
+    const distance = hasSettlementResume
+      ? Math.max(0, Number(current.resumeDistance))
+      : (current ? window.getPartyPlaybackDistance(current, window.getSynchronizedRouteNow()) : 0);
     const total = getRouteTravelLength(routePoints);
+    if (hasSettlementResume) {
+      const resumePosition = window.getPartyPlaybackDisplayPosition(distance);
+      if (resumePosition && partyMarker) window.setPartyMarkerPlaybackPosition(resumePosition);
+      window.setPartyMarkerBearingForDistance(distance, true);
+      setPartyMarkerTransitVisibility(true, true);
+    }
     if (distance >= total - 0.001) return;
     try {
       await window.publishPartyPlaybackState({
         status: "playing",
         startDistance: distance,
+        resumeDistance: null,
+        markerHidden: false,
         // Движение начинается сразу после нажатия Play: начальный разворот
         // уже запускается параллельно с анимацией раскрытия линии маршрута.
         startedAt: window.getSynchronizedRouteNow(),
@@ -3787,6 +3803,8 @@ function getRouteSettlementTransitIntervals(points) {
   return intervals;
 }
 
+window.getRouteSettlementTransitIntervals = getRouteSettlementTransitIntervals;
+
 function getLastSettlementTransitEndDistance(points) {
   const intervals = getRouteSettlementTransitIntervals(points || routePoints);
   return intervals.length ? intervals[intervals.length - 1].end : 0;
@@ -4570,7 +4588,10 @@ function renderPartyPlaybackState(state) {
   playButton.classList.toggle("active", playing);
   playButton.setAttribute("aria-pressed", playing ? "true" : "false");
   pauseButton.disabled = !playing;
-  playButton.disabled = playing || campRequired || routeMarkerAnimations.length > 0;
+  const terminalSettlementPause = Boolean(state && state.markerHidden &&
+    (state.resumeDistance === null || state.resumeDistance === undefined ||
+      !Number.isFinite(Number(state.resumeDistance))));
+  playButton.disabled = playing || campRequired || terminalSettlementPause || routeMarkerAnimations.length > 0;
   const confirmationOpen = Boolean(partyActionConfirmationId || partyActionConfirmationSubmitting);
   if (campButton) {
     campButton.disabled = !paused || confirmationOpen;
@@ -4612,6 +4633,29 @@ function setPartyMarkerPlaybackPosition(position) {
 }
 window.setPartyMarkerPlaybackPosition = setPartyMarkerPlaybackPosition;
 
+// Плавно скрываем/показываем маркер при прохождении через поселение.
+// Длительность совпадает с появлением маршрутных жетонов и штрихов.
+function setPartyMarkerTransitVisibility(visible, animate = true) {
+  if (!partyMarker || !partyMarker._icon) return;
+  const root = partyMarker._icon;
+  const nextVisible = Boolean(visible);
+  if (partyMarker._partyTransitVisible === nextVisible) return;
+  partyMarker._partyTransitVisible = nextVisible;
+  const duration = routeRevealFadeDuration;
+  if (typeof root.getAnimations === "function") {
+    root.getAnimations().forEach(animation => animation.cancel());
+  }
+  if (typeof root.animate === "function" && animate) {
+    root.animate(
+      [{ opacity: nextVisible ? 0 : 1 }, { opacity: nextVisible ? 1 : 0 }],
+      { duration, easing: "ease-in-out", fill: "forwards" }
+    );
+  } else {
+    root.style.opacity = nextVisible ? "1" : "0";
+  }
+}
+window.setPartyMarkerTransitVisibility = setPartyMarkerTransitVisibility;
+
 function stopPartyPlaybackFrame() {
   if (partyPlaybackFrame !== null) cancelAnimationFrame(partyPlaybackFrame);
   partyPlaybackFrame = null;
@@ -4640,6 +4684,25 @@ function tickPartyPlayback() {
     .sort((a, b) => a - b)[0];
   const reachedRestStop = Number.isFinite(nextRestStop);
   if (reachedRestStop) distance = nextRestStop;
+
+  // При первом касании границы поселения автоматически останавливаем
+  // отряд. Для промежуточного города сохраняем выходную дистанцию:
+  // следующий Play перенесёт маркер туда и продолжит путь снаружи.
+  const settlementPlaybackIntervals = Array.isArray(window.routeSettlementPlaybackIntervals) &&
+    window.routeSettlementPlaybackIntervals.length
+      ? window.routeSettlementPlaybackIntervals
+      : (typeof getRouteSettlementTransitIntervals === "function"
+          ? getRouteSettlementTransitIntervals(routePoints) : []);
+  const nextSettlementTransit = settlementPlaybackIntervals
+    .filter(interval => Number(interval.end) > playbackStartDistance + 0.02 &&
+      Number(interval.start) <= distance + 0.02)
+    .sort((a, b) => a.start - b.start)[0];
+  const reachedSettlement = !reachedRestStop && Boolean(nextSettlementTransit);
+  if (reachedSettlement) {
+    // Если движение началось уже внутри области города (например, после
+    // ручной паузы), не возвращаем маркер к входной границе.
+    distance = Math.max(playbackStartDistance, Number(nextSettlementTransit.start) || 0);
+  }
   partyPlaybackDistance = distance;
   const position = window.getPartyPlaybackDisplayPosition(distance);
   if (position && partyMarker) window.setPartyMarkerPlaybackPosition(position);
@@ -4650,6 +4713,39 @@ function tickPartyPlayback() {
   }
   updatePartyPlaybackRouteLine(distance);
   updatePartyPlaybackRouteTokens(distance);
+  if (reachedSettlement) {
+    const exitDistance = Math.max(distance, Number(nextSettlementTransit.end) || distance);
+    const hasFurtherRoute = exitDistance < total - 0.02;
+    const pausedState = {
+      ...state,
+      status: "paused",
+      startDistance: distance,
+      resumeDistance: hasFurtherRoute ? exitDistance : null,
+      markerHidden: true,
+      startedAt: null,
+      routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
+      campRequired: false
+    };
+    window.partyPlaybackState = pausedState;
+    setPartyMarkerTransitVisibility(false, true);
+    renderPartyPlaybackState(pausedState);
+    stopPartyPlaybackFrame();
+    setPartyMarkerPlaybackSmoothing(false);
+    if (typeof window.publishPartyPlaybackState === "function") {
+      window.publishPartyPlaybackState({
+        status: "paused",
+        startDistance: distance,
+        resumeDistance: hasFurtherRoute ? exitDistance : null,
+        markerHidden: true,
+        startedAt: null,
+        routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
+        campRequired: false,
+        campHoursElapsed: Math.max(0, Number(state.campHoursElapsed) || 0),
+        restResetDistances: routeRestResetDistances.slice()
+      }).catch(error => console.error("Не удалось автоматически остановить отряд у поселения:", error));
+    }
+    return;
+  }
   if (reachedRestStop) {
     const pausedState = {
       ...state,
@@ -4742,6 +4838,9 @@ window.applyPartyPlaybackState = function(state) {
   }
   window.partyPlaybackState = state;
   partyPlaybackDistance = window.getPartyPlaybackDistance(state, window.getSynchronizedRouteNow());
+  if (typeof window.setPartyMarkerTransitVisibility === "function") {
+    window.setPartyMarkerTransitVisibility(!state.markerHidden, true);
+  }
   renderPartyPlaybackState(state);
   if (state.status === "playing") {
     // Если разворот уже начался при раскрытии линии, не перезапускаем его
@@ -7124,6 +7223,11 @@ map.on("zoomend", function() {
   if (partyMarker) {
     partyIcon = createPartyIcon();
     partyMarker.setIcon(partyIcon);
+    partyMarker._partyTransitVisible = undefined;
+    if (window.partyPlaybackState && window.partyPlaybackState.markerHidden && partyMarker._icon) {
+      partyMarker._icon.style.opacity = "0";
+      partyMarker._partyTransitVisible = false;
+    }
     if (Number.isFinite(preservedPreviewAngle) && partyMarker._icon) {
       const newArtwork = partyMarker._icon.querySelector("img");
       if (newArtwork) {
@@ -9168,6 +9272,7 @@ map.on("zoomend", function() {
   };
 
   function waitForRouteRevealThenTraceSettlements(routeData) {
+    window.routeSettlementPlaybackIntervals = [];
     settlementTraceWaitTimers.forEach(timer => clearTimeout(timer));
     settlementTraceWaitTimers = [];
     const waitToken = ++settlementTraceWaitToken;
@@ -9276,6 +9381,31 @@ map.on("zoomend", function() {
     });
 
     targets.sort((a, b) => a.distance - b.distance);
+    // Базовые интервалы берём для всех поселений маршрута, включая те,
+    // чья обводка уже была завершена до последнего редактирования.
+    // Для поселений, которые сейчас анимируются, уточняем вход по точке
+    // касания видимого мазка и выход по рассчитанной границе.
+    const playbackIntervals = typeof window.getRouteSettlementTransitIntervals === "function"
+      ? window.getRouteSettlementTransitIntervals(route).map(interval => ({
+          start: Number(interval.start),
+          end: Number(interval.end),
+          settlementId: String(interval.settlementId || "")
+        })) : [];
+    targets.forEach(target => {
+      const preciseInterval = {
+        start: Number(target.distance),
+        end: Number(target.pauseDistance),
+        settlementId: String(target.id)
+      };
+      const existingIndex = playbackIntervals.findIndex(interval =>
+        interval.settlementId === preciseInterval.settlementId
+      );
+      if (existingIndex >= 0) playbackIntervals[existingIndex] = preciseInterval;
+      else playbackIntervals.push(preciseInterval);
+    });
+    window.routeSettlementPlaybackIntervals = playbackIntervals
+      .filter(interval => Number.isFinite(interval.start) && Number.isFinite(interval.end))
+      .sort((a, b) => a.start - b.start);
     if (!targets.length) return;
 
     // Темп росчерка кисти синхронизирован с последним интервалом пунктира.
