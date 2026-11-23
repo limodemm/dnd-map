@@ -9620,34 +9620,51 @@ map.on("zoomend", function() {
         }
       }
 
-      // У конечного города граница передаётся отдельно. Находим её
-      // соответствующую точку в итоговой геометрии маршрута.
-      if (id === destinationId && routeData.destinationBoundaryPoint) {
-        const targetPoint = L.latLng(
-          Number(routeData.destinationBoundaryPoint.lat),
-          Number(routeData.destinationBoundaryPoint.lng)
-        );
-        let nearestDistance = Infinity;
-        let nearestIndex = -1;
+      // Для конечного города запускаем обводку на ВНЕШНЕМ входе
+      // визуальной кисти. В маршруте этот узел явно помечен как
+      // settlement-count-only и расположен перед скрытым переходом
+      // к внутренней границе area.points. Если искать ближайший узел
+      // к destinationBoundaryPoint, мы получим внутреннюю границу:
+      // линия там уже скрыта маской, поэтому визуальный запуск опаздывает.
+      if (id === destinationId) {
+        let outerEntryIndex = -1;
         for (let i = 1; i < route.length; i++) {
-          const distance = map.latLngToLayerPoint(route[i]).distanceTo(
-            map.latLngToLayerPoint(targetPoint)
-          );
-          if (distance < nearestDistance) {
-            nearestDistance = distance;
-            nearestIndex = i;
+          if (String(route[i]._routeSettlementId || '') === id &&
+              route[i]._routeSegmentMode === 'settlement-count-only') {
+            outerEntryIndex = i;
+            break;
           }
         }
-        if (nearestIndex >= 1) {
-          boundaryIndex = nearestIndex;
-          boundaryPoint = targetPoint;
-          // Для расчёта точки касания нужен именно предыдущий узел
-          // фактической геометрии маршрута. destinationApproachPoint — это
-          // начало последнего добавленного участка, а не обязательно его
-          // последний узел (между ними могут быть обходы других городов).
-          approachPoint = route[nearestIndex - 1] || (routeData.destinationApproachPoint
-            ? L.latLng(Number(routeData.destinationApproachPoint.lat), Number(routeData.destinationApproachPoint.lng))
-            : null);
+
+        if (outerEntryIndex >= 1) {
+          boundaryIndex = outerEntryIndex;
+          boundaryPoint = route[outerEntryIndex];
+          approachPoint = route[outerEntryIndex - 1];
+        } else if (routeData.destinationBoundaryPoint) {
+          // Совместимость со старыми маршрутами, в которых внешний вход
+          // ещё не был отдельно размечен.
+          const targetPoint = L.latLng(
+            Number(routeData.destinationBoundaryPoint.lat),
+            Number(routeData.destinationBoundaryPoint.lng)
+          );
+          let nearestDistance = Infinity;
+          let nearestIndex = -1;
+          for (let i = 1; i < route.length; i++) {
+            const distance = map.latLngToLayerPoint(route[i]).distanceTo(
+              map.latLngToLayerPoint(targetPoint)
+            );
+            if (distance < nearestDistance) {
+              nearestDistance = distance;
+              nearestIndex = i;
+            }
+          }
+          if (nearestIndex >= 1) {
+            boundaryIndex = nearestIndex;
+            boundaryPoint = targetPoint;
+            approachPoint = route[nearestIndex - 1] || (routeData.destinationApproachPoint
+              ? L.latLng(Number(routeData.destinationApproachPoint.lat), Number(routeData.destinationApproachPoint.lng))
+              : null);
+          }
         }
       }
 
