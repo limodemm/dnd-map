@@ -5066,7 +5066,10 @@ function ensureRouteMarkerPanes() {
 // действительно пересекаются. Если пересекаются соседние группы, они тоже
 // объединяются: A-B и B-C превращаются в одну группу A-B-C.
 function getExhaustionMarkerClusters(markers, markerSize = 28, routeGeometry = routePoints) {
-  const points = markers.map((item, index) => ({ item, index }));
+  const points = markers.map(item => ({
+    item,
+    point: map.latLngToContainerPoint(item.position)
+  }));
   const parents = points.map((_, index) => index);
 
   function find(index) {
@@ -5080,83 +5083,45 @@ function getExhaustionMarkerClusters(markers, markerSize = 28, routeGeometry = r
   function unite(a, b) {
     const rootA = find(a);
     const rootB = find(b);
-    if (rootA === rootB) return false;
-    parents[rootB] = rootA;
-    return true;
+    if (rootA !== rootB) parents[rootB] = rootA;
   }
 
-  function getGroups() {
-    const groups = new Map();
-    points.forEach((entry, index) => {
-      const root = find(index);
-      if (!groups.has(root)) groups.set(root, []);
-      groups.get(root).push(entry);
-    });
-    return Array.from(groups.values());
-  }
-
-  // Сначала объединяем обычные крестики, затем повторно проверяем уже
-  // увеличенные групповые значки. Это не позволяет крупному значку с
-  // числом перекрыть соседний крестик, который иначе визуально пропадёт.
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const groups = getGroups();
-    const groupMetrics = groups.map(group => {
-      const visible = group.filter(entry => entry.item.visible !== false);
-      const source = visible.length ? visible : group;
-      const centerDistance = source.reduce(
-        (sum, entry) => sum + entry.item.distance, 0
-      ) / source.length;
-      const centerPosition = source.length > 1
-        ? getRoutePointAtDistance(routeGeometry, centerDistance)
-        : source[0].item.position;
-      return {
-        index: group[0].index,
-        size: group.length > 1 ? getExhaustionClusterDisplaySize() : markerSize,
-        point: map.latLngToContainerPoint(centerPosition || source[0].item.position)
-      };
-    });
-    for (let i = 0; i < groupMetrics.length; i++) {
-      for (let j = i + 1; j < groupMetrics.length; j++) {
-        const a = groupMetrics[i];
-        const b = groupMetrics[j];
-        const overlapLimit = (a.size + b.size) / 2;
-        if (Math.abs(a.point.x - b.point.x) < overlapLimit &&
-            Math.abs(a.point.y - b.point.y) < overlapLimit) {
-          // За один проход объединяем все уже обнаруженные пересечения;
-          // затем пересчитываем центры и размеры выросших групп.
-          changed = unite(a.index, b.index) || changed;
-        }
-      }
+  // Для одинаковых квадратных значков пересечение есть, пока разница
+  // по каждой оси меньше размера значка. Касание по краю не объединяем.
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      const dx = Math.abs(points[i].point.x - points[j].point.x);
+      const dy = Math.abs(points[i].point.y - points[j].point.y);
+      if (dx < markerSize && dy < markerSize) unite(i, j);
     }
   }
 
-  return getGroups().map(group => {
+  const groups = new Map();
+  points.forEach((entry, index) => {
+    const root = find(index);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(entry);
+  });
+
+  return Array.from(groups.values()).map(group => {
     const items = group.map(entry => entry.item);
-    const visibleItems = items.filter(item => item.visible !== false);
-    if (!visibleItems.length) {
-      // Крестики внутри маски поселения не рисуются поверх самого поселения.
-      // Они всё равно остаются в группе и учитываются в её количестве,
-      // если группа пересекается хотя бы с одним видимым крестиком.
-      return { hidden: true, count: items.length, distances: items.map(item => item.distance) };
+
+    if (items.length === 1) {
+      return {
+        position: items[0].position,
+        count: 1,
+        distances: [items[0].distance]
+      };
     }
 
-    // Центр выбирается только среди видимых точек группы: так общий значок
-    // не окажется внутри маски поселения из-за скрытого участника группы.
-    const centerDistance = visibleItems.reduce(
-      (sum, item) => sum + item.distance, 0
-    ) / visibleItems.length;
-    const centerPosition = visibleItems.length > 1
-      ? getRoutePointAtDistance(routeGeometry, centerDistance)
-      : visibleItems[0].position;
-    const safeCenterPosition = centerPosition &&
-      !isMarkerInsideSettlementMask(centerPosition, 28)
-      ? centerPosition
-      : visibleItems[Math.floor(visibleItems.length / 2)].position;
+    // Общий крестик ставим в середину группы ПО ДЛИНЕ МАРШРУТА,
+    // а не в центр экранного прямоугольника. Центр прямоугольника
+    // может оказаться за пределами дуги или изгиба маршрута.
+    const centerDistance = items.reduce((sum, item) => sum + item.distance, 0) / items.length;
+    const centerPosition = getRoutePointAtDistance(routeGeometry, centerDistance);
 
     return {
-      position: safeCenterPosition,
+      position: centerPosition || items[Math.floor(items.length / 2)].position,
       count: items.length,
       distances: items.map(item => item.distance)
     };
@@ -6399,17 +6364,11 @@ function updateRouteLine(cursorPosition = null) {
     // Крестики истощения — каждые 1/8 игрового дня после первой суточной
     // границы форсированного марша, с учётом темпа каждого участка.
     const exhaustionPositions = segment.exhaustionDistances
-      .map(distance => {
-        const position = getRoutePointAtDistance(pointsToDraw, distance);
-        return {
-          distance,
-          position,
-          // Не выбрасываем крестик до группировки: если он перекрывается
-          // поселением, его количество должно сохраниться в соседней группе.
-          visible: Boolean(position && !isMarkerInsideSettlementMask(position, 28))
-        };
-      })
-      .filter(item => item.position);
+      .map(distance => ({
+        distance,
+        position: getRoutePointAtDistance(pointsToDraw, distance)
+      }))
+      .filter(item => item.position && !isMarkerInsideSettlementMask(item.position, 28));
 
     // Если при отдалении карты крестики сблизились, объединяем их.
     const exhaustionClusters = getExhaustionMarkerClusters(
@@ -6419,7 +6378,6 @@ function updateRouteLine(cursorPosition = null) {
     );
 
     exhaustionClusters.forEach(cluster => {
-      if (cluster.hidden || !cluster.position) return;
       const exhaustionIsPreview =
         previewIsActive &&
         cluster.distances.some(distance => distance > committedLength + 0.001);
