@@ -618,6 +618,14 @@ let partyIcon = createPartyIcon();
       await firebaseServerTimeOffsetPromise;
       await update(sharedRouteRef, {
         movement: {
+          // Метаданные расчёта привалов должны переживать любые последующие
+          // Play/Pause и автоматические остановки, а не только запись лагеря.
+          restElapsedCarryUnits: Math.max(0, Number(window.routeRestElapsedCarryUnits) || 0),
+          forcedSegments: Array.isArray(window.routeForcedSegments)
+            ? window.routeForcedSegments.map(segment => ({ ...segment })) : [],
+          forcedMarchStartDistance: Math.max(0, Number(window.routeForcedMarchStartDistance) || 0),
+          forcedMarchStartUnits: Math.max(0, Number(window.routeForcedMarchStartUnits) || 0),
+          forcedMarchEpochStartDistance: Math.max(0, Number(window.routeForcedMarchEpochStartDistance) || 0),
           ...movement,
           updatedAt: window.getRouteSynchronizedNow(),
           updatedBy: window.dndFirebase.uid
@@ -1020,6 +1028,11 @@ Object.defineProperties(window, {
     configurable: true,
     get: function() { return routeForcedSegments; },
     set: function(value) { routeForcedSegments = Array.isArray(value) ? value : []; }
+  },
+  routeRestElapsedCarryUnits: {
+    configurable: true,
+    get: function() { return routeRestElapsedCarryUnits; },
+    set: function(value) { routeRestElapsedCarryUnits = Math.max(0, Number(value) || 0); }
   }
 });
 
@@ -1265,15 +1278,88 @@ async function performPartyRest(action) {
   const hours = action === "camp" ? 8 : 1;
   const currentDistance = Math.max(0, Number(state.startDistance) || 0);
   const campHoursElapsed = Math.max(0, Number(state.campHoursElapsed) || 0) + hours;
-  // Полноценный добровольный лагерь начинает новый игровой день прямо
-  // в точке отряда. Саму точку не добавляем в список видимых жетонов.
+
+  // Сохраняем состояние на случай, если запись отдыха в Firebase не удастся.
   const previousRestResetDistances = routeRestResetDistances.slice();
-  if (action === "camp" && currentDistance > 0.001) {
-    routeRestResetDistances = routeRestResetDistances
-      .filter(distance => Math.abs(distance - currentDistance) > 0.02);
-    routeRestResetDistances.push(currentDistance);
-    routeRestResetDistances.sort((a, b) => a - b);
+  const previousRestElapsedCarryUnits = routeRestElapsedCarryUnits;
+  const previousForcedSegments = routeForcedSegments.map(segment => ({ ...segment }));
+  const previousForcedMarchStartDistance = routeForcedMarchStartDistance;
+  const previousForcedMarchStartUnits = routeForcedMarchStartUnits;
+  const previousForcedMarchEpochStartDistance = routeForcedMarchEpochStartDistance;
+
+  if (action === "camp") {
+    // Полноценный лагерь начинает новый игровой день в точке отряда.
+    // Нулевая дистанция тоже является полноценной точкой сброса: это важно
+    // после входа в редактор, где уже пройденная геометрия обрезана до маркера.
+    if (currentDistance > 0.001) {
+      routeRestResetDistances = routeRestResetDistances
+        .filter(distance => Math.abs(distance - currentDistance) > 0.02);
+      routeRestResetDistances.push(currentDistance);
+      routeRestResetDistances.sort((a, b) => a - b);
+    } else {
+      // При нулевой точке отсчёта сбрасываем сохранённый carry-in.
+      routeRestElapsedCarryUnits = 0;
+    }
+
+    const routeLength = getRouteTravelLength(routePoints);
+
+    // Если лагерь разбит внутри уже завершённого форсированного марша,
+    // переносим его остаток целиком вперёд. Сохраняем общую длительность
+    // участка (включая накопленное до его начала время), но начинаем её
+    // заново от текущего маркера. Благодаря этому сдвигается и конечный
+    // жетон обязательного привала, а не только разделитель/крестики.
+    routeForcedSegments = routeForcedSegments.map(segment => {
+      const distances = getForcedSegmentDistances(segment);
+      const containsCampPoint = currentDistance >= distances.start - 0.02 &&
+        currentDistance < distances.end - 0.001;
+      if (!containsCampPoint) {
+        // Форсированные участки, которые ещё не начались, тоже должны
+        // учитывать новый день: прежний carry больше не действует после лагеря.
+        if (distances.start >= currentDistance - 0.02) {
+          return {
+            start: distances.start,
+            end: distances.end,
+            startUnits: 0,
+            fixed: true
+          };
+        }
+        return { ...segment };
+      }
+
+      const previousReset = routeRestResetDistances
+        .filter(distance => distance < currentDistance - 0.02 &&
+          distance > distances.start + 0.001)
+        .sort((a, b) => b - a)[0];
+      const elapsedAnchor = Number.isFinite(previousReset) ? previousReset : distances.start;
+      const carryAtAnchor = Number.isFinite(previousReset) ? 0 : distances.startUnits;
+      const remainingSegmentUnits = getRouteTravelTimeUnitsBetweenDistances(
+        routePoints, elapsedAnchor, distances.end
+      );
+      const preservedSegmentUnits = carryAtAnchor + remainingSegmentUnits;
+      const shiftedEnd = getRouteDistanceAtElapsedTime(
+        routePoints, currentDistance, preservedSegmentUnits, routeLength
+      );
+      return {
+        start: currentDistance,
+        end: Math.max(currentDistance, shiftedEnd),
+        startUnits: 0,
+        fixed: true
+      };
+    });
+
+    // Активный (ещё не завершённый) форсированный марш тоже начинает
+    // отсчёт заново от лагеря, не создавая отдельного жетона в этой точке.
+    if (routeForcedMarch) {
+      if (currentDistance >= routeForcedMarchStartDistance - 0.02) {
+        routeForcedMarchStartDistance = currentDistance;
+        routeForcedMarchEpochStartDistance = currentDistance;
+      }
+      // Если активный форсированный участок ещё впереди, он начнётся
+      // уже после нового лагеря и не наследует старый дневной carry.
+      routeForcedMarchStartUnits = 0;
+    }
   }
+
   // Короткий отдых у костра только добавляет час. Обязательный привал
   // снимается исключительно полноценным разбитием лагеря.
   const campRequired = action === "camp" ? false : Boolean(state.campRequired);
@@ -1300,10 +1386,22 @@ async function performPartyRest(action) {
       routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
       campRequired,
       campHoursElapsed,
-      restResetDistances: routeRestResetDistances.slice()
+      restResetDistances: routeRestResetDistances.slice(),
+      ...(action === "camp" ? {
+        restElapsedCarryUnits: Math.max(0, Number(routeRestElapsedCarryUnits) || 0),
+        forcedSegments: routeForcedSegments.map(segment => ({ ...segment })),
+        forcedMarchStartDistance: Math.max(0, Number(routeForcedMarchStartDistance) || 0),
+        forcedMarchStartUnits: Math.max(0, Number(routeForcedMarchStartUnits) || 0),
+        forcedMarchEpochStartDistance: Math.max(0, Number(routeForcedMarchEpochStartDistance) || 0)
+      } : {})
     });
   } catch (error) {
     routeRestResetDistances = previousRestResetDistances;
+    routeRestElapsedCarryUnits = previousRestElapsedCarryUnits;
+    routeForcedSegments = previousForcedSegments;
+    routeForcedMarchStartDistance = previousForcedMarchStartDistance;
+    routeForcedMarchStartUnits = previousForcedMarchStartUnits;
+    routeForcedMarchEpochStartDistance = previousForcedMarchEpochStartDistance;
     window.partyPlaybackState = state;
     renderPartyPlaybackState(state);
     if (action === "camp" && typeof window.updateRouteLine === "function") {
@@ -4506,6 +4604,45 @@ function tickPartyPlayback() {
 window.applyPartyPlaybackState = function(state) {
   if (!state || !["playing", "paused"].includes(state.status)) return;
   let restResetDistancesChanged = false;
+  let forcedRouteStateChanged = false;
+  if (Array.isArray(state.forcedSegments)) {
+    const incomingForcedSegments = state.forcedSegments
+      .map(segment => ({
+        start: Number(segment && segment.start) || 0,
+        end: Number(segment && segment.end) || 0,
+        startUnits: Math.max(0, Math.min(0.999999, Number(segment && segment.startUnits) || 0)),
+        fixed: true
+      }))
+      .filter(segment => segment.end > segment.start + 0.001);
+    forcedRouteStateChanged = incomingForcedSegments.length !== routeForcedSegments.length ||
+      incomingForcedSegments.some((segment, index) => {
+        const existing = getForcedSegmentDistances(routeForcedSegments[index] || {});
+        return Math.abs(segment.start - existing.start) > 0.02 ||
+          Math.abs(segment.end - existing.end) > 0.02 ||
+          Math.abs(segment.startUnits - existing.startUnits) > 0.001;
+      });
+    if (forcedRouteStateChanged) routeForcedSegments = incomingForcedSegments;
+  }
+  if (Number.isFinite(Number(state.forcedMarchStartDistance))) {
+    const next = Math.max(0, Number(state.forcedMarchStartDistance) || 0);
+    if (Math.abs(next - routeForcedMarchStartDistance) > 0.02) forcedRouteStateChanged = true;
+    routeForcedMarchStartDistance = next;
+  }
+  if (Number.isFinite(Number(state.forcedMarchStartUnits))) {
+    const next = Math.max(0, Number(state.forcedMarchStartUnits) || 0);
+    if (Math.abs(next - routeForcedMarchStartUnits) > 0.001) forcedRouteStateChanged = true;
+    routeForcedMarchStartUnits = next;
+  }
+  if (Number.isFinite(Number(state.forcedMarchEpochStartDistance))) {
+    const next = Math.max(0, Number(state.forcedMarchEpochStartDistance) || 0);
+    if (Math.abs(next - routeForcedMarchEpochStartDistance) > 0.02) forcedRouteStateChanged = true;
+    routeForcedMarchEpochStartDistance = next;
+  }
+  if (Number.isFinite(Number(state.restElapsedCarryUnits))) {
+    const next = Math.max(0, Math.min(0.999999, Number(state.restElapsedCarryUnits) || 0));
+    if (Math.abs(next - routeRestElapsedCarryUnits) > 0.001) forcedRouteStateChanged = true;
+    routeRestElapsedCarryUnits = next;
+  }
   if (Array.isArray(state.restResetDistances)) {
     const incomingResets = state.restResetDistances
       .map(Number)
@@ -4541,7 +4678,8 @@ window.applyPartyPlaybackState = function(state) {
     updatePartyPlaybackRouteLine(partyPlaybackDistance);
     updatePartyPlaybackRouteTokens(partyPlaybackDistance);
   }
-  if (restResetDistancesChanged && routeFinished && typeof window.updateRouteLine === "function") {
+  if ((restResetDistancesChanged || forcedRouteStateChanged) && routeFinished &&
+      typeof window.updateRouteLine === "function") {
     window.updateRouteLine(null);
     updatePartyPlaybackRouteTokens(partyPlaybackDistance);
   }
@@ -4641,7 +4779,8 @@ function getNormalRestDistances(totalLength, dailyLimit, routeGeometry = routePo
       // где суммарное время от предыдущего привала достигает целого дня.
       // Если сегмент начинается после выхода из поселения, прежний carry
       // уже сброшен самим выходом.
-      const carryAtForcedStart = forcedStart <= segment.start + 0.001
+      const carryAtForcedStart = intervalStart <= 0.001 &&
+        forcedStart <= segment.start + 0.001
         ? Math.max(0, Math.min(0.999999, Number(segment.startUnits) || 0))
         : 0;
       const forcedTravelUnits = getRouteTravelTimeUnitsBetweenDistances(
