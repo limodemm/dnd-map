@@ -887,6 +887,12 @@ partyMarker.on("click", function() {
 
   const previousTerminalCityId = isTerminalSettlementPaused(window.partyPlaybackState)
     ? String(window.routeDestinationCityId) : null;
+  if (previousTerminalCityId && typeof window.completeRouteSettlementOutline === "function") {
+    const previousTerminalArea = (window.settlementAreas || []).find(item =>
+      String(item.id) === previousTerminalCityId
+    );
+    if (previousTerminalArea) window.completeRouteSettlementOutline(previousTerminalArea);
+  }
 
   // Перед началом новой геометрии переносим накопленное время пути
   // от последнего привала из предыдущего подтверждённого маршрута.
@@ -3493,6 +3499,14 @@ window.routePendingConfirmation = false;
   // «Вернуть» работает только с двумя типами контрольных точек:
   // обычный привал и центр уже пройденного промежуточного поселения.
   document.getElementById("route-undo").addEventListener("click", function() {
+    // После возврата к стартовой точке (центру города) откатывать больше нечего.
+    // Защита не даёт повторному нажатию снять саму обводку поселения.
+    if (!Array.isArray(routePoints) || routePoints.length <= 1) return;
+    const routeStartSettlementIds = (Array.isArray(window.routeIntermediateCityIds)
+      ? window.routeIntermediateCityIds : []).filter(id => {
+        const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
+        return Boolean(area && routePoints[0] && window.isRouteAtSettlementCenter(routePoints[0], area));
+      }).map(String);
     const intermediateIdsBeforeUndo = (Array.isArray(window.routeIntermediateCityIds)
       ? window.routeIntermediateCityIds : []).map(id => String(id));
     if (window.routeDestinationCityId) {
@@ -3641,21 +3655,25 @@ window.routePendingConfirmation = false;
 
     // Оставляем выделенными только те города, чьи центры реально остались
     // в маршруте. Более поздние поселения снимаются автоматически.
-    window.routeIntermediateCityIds = (Array.isArray(window.routeIntermediateCityIds)
-      ? window.routeIntermediateCityIds : []).filter(id => {
-        const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
-        return !!(area && routePoints.some(point =>
-          String(point._routeSettlementId || "") === String(id) &&
-          getRouteSegmentMode(point) === "settlement-zero" &&
-          window.isRouteAtSettlementCenter(point, area)
-        ));
-      });
+    window.routeIntermediateCityIds = Array.from(new Set([
+      ...routeStartSettlementIds,
+      ...(Array.isArray(window.routeIntermediateCityIds) ? window.routeIntermediateCityIds : [])
+        .filter(id => {
+          const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
+          return !!(area && routePoints.some(point =>
+            String(point._routeSettlementId || "") === String(id) &&
+            getRouteSegmentMode(point) === "settlement-zero" &&
+            window.isRouteAtSettlementCenter(point, area)
+          ));
+        }).map(String)
+    ]));
     window.routeIntermediateSettlementUndoSnapshots = [];
     // Удаляем контуры только тех промежуточных городов, которые возврат
     // исключил из маршрута; сохранённые города остаются нетронутыми.
     const retainedIntermediateIds = new Set((window.routeIntermediateCityIds || []).map(id => String(id)));
     intermediateIdsBeforeUndo.forEach(id => {
-      if (!retainedIntermediateIds.has(id) && window.clearRouteDestinationSettlementTrace) {
+      if (!retainedIntermediateIds.has(id) && !routeStartSettlementIds.includes(id) &&
+          window.clearRouteDestinationSettlementTrace) {
         window.clearRouteDestinationSettlementTrace(id);
       }
     });
@@ -4322,13 +4340,34 @@ function getPartyPlaybackDistance(state, now) {
   const start = Math.max(0, Number(state.startDistance) || 0);
   if (state.status !== "playing") return start;
   // Тестовая скорость: 8 игровых часов пути за 10 секунд реального времени.
-  const elapsedUnits = Math.max(0, now - Number(state.startedAt || now)) / 10000;
-  return getRouteDistanceAtElapsedTime(
-    routePoints,
-    start,
-    elapsedUnits,
-    getRouteTravelLength(routePoints)
-  );
+  // Скрытый переход внутри поселения дополнительно ускорен в 8 раз:
+  // игроку не приходится ждать, пока невидимый маркер пересечёт город.
+  let remainingUnits = Math.max(0, now - Number(state.startedAt || now)) / 10000;
+  const maxDistance = getRouteTravelLength(routePoints);
+  let passed = 0;
+  for (let i = 1; i < routePoints.length; i++) {
+    const point = routePoints[i];
+    const segmentLength = getRouteTravelLength([routePoints[i - 1], point]);
+    const segmentStart = passed;
+    const segmentEnd = segmentStart + segmentLength;
+    const overlapStart = Math.max(start, segmentStart);
+    const overlapEnd = Math.min(maxDistance, segmentEnd);
+    if (overlapEnd > overlapStart + 0.000001) {
+      const transit = getRouteSegmentMode(point) === "settlement-count-only" ||
+        getRouteSegmentMode(point) === "settlement-zero";
+      const dailyLimit = getRouteSegmentDailyLimit(point) * (transit ? 8 : 1);
+      if (dailyLimit > 0) {
+        const availableUnits = (overlapEnd - overlapStart) / dailyLimit;
+        if (remainingUnits <= availableUnits + 0.000001) {
+          return Math.min(overlapEnd, overlapStart + remainingUnits * dailyLimit);
+        }
+        remainingUnits -= availableUnits;
+      }
+    }
+    passed = segmentEnd;
+    if (passed >= maxDistance - 0.000001) break;
+  }
+  return maxDistance;
 }
 
 // Делаем расчётную функцию доступной обработчикам Firebase и маркера,
@@ -6792,6 +6831,12 @@ window.applySynchronizedPartyRoute = function(data) {
   createRouteLaunchPanel();
   routeLaunchPanel.style.display = "block";
   map.doubleClickZoom.enable();
+  if (window.routeDestinationCityId && typeof window.completeRouteSettlementOutline === "function") {
+    const destinationArea = (window.settlementAreas || []).find(item =>
+      String(item.id) === String(window.routeDestinationCityId)
+    );
+    if (destinationArea) window.completeRouteSettlementOutline(destinationArea);
+  }
   if (window.clearSettlementOutline) window.clearSettlementOutline();
 
   const total = getRouteTravelLength(routePoints);
@@ -9378,8 +9423,46 @@ map.on("zoomend", function() {
       activeSettlementTrace = null;
       return;
     }
+    if (settlementBrushSelectedAreaId && String(settlementBrushSelectedAreaId) === key &&
+        settlementBrushSelectedLayers.length) {
+      const completedLayers = settlementBrushSelectedLayers;
+      settlementBrushTraceLayers.set(key, completedLayers);
+      settlementBrushSelectedLayers = [];
+      settlementBrushSelectedArea = null;
+      settlementBrushSelectedAreaId = null;
+      return;
+    }
+    if (settlementSelectedArea && String(settlementSelectedArea.id) === key &&
+        Array.isArray(settlementSelectedPath) && settlementSelectedPath.length >= 2) {
+      const completedLayer = makeTaperedSettlementPolygon(
+        settlementSelectedPath, SETTLEMENT_TRACE_BASE_WIDTH, 1
+      );
+      if (completedLayer) {
+        removeSettlementLayer(settlementSelectedOutline);
+        completedLayer.addTo(map);
+        settlementTraceLayers.set(key, completedLayer);
+        settlementTracePaths.set(key, settlementSelectedPath.slice());
+      }
+      settlementSelectedOutline = null;
+      settlementSelectedPath = null;
+      settlementSelectedArea = null;
+      return;
+    }
     if (!settlementBrushTraceLayers.has(key) && !settlementTraceLayers.has(key)) {
-      showSettlementOutline(area, 0.96);
+      if (shouldUseSettlementDryBrush(area)) {
+        const completedLayers = createSettlementDryBrushLayers(area, 0.96);
+        if (completedLayers.length) settlementBrushTraceLayers.set(key, completedLayers);
+      } else {
+        const start = window.routeDestinationBoundaryPoint || area.points[0];
+        const approach = window.routeDestinationApproachPoint || start;
+        const contour = getSettlementContourVariant(area, start, approach, false);
+        const completedLayer = makeTaperedSettlementPolygon(contour, SETTLEMENT_TRACE_BASE_WIDTH, 1);
+        if (completedLayer) {
+          completedLayer.addTo(map);
+          settlementTraceLayers.set(key, completedLayer);
+          settlementTracePaths.set(key, contour.slice());
+        }
+      }
     }
   };
 
@@ -9401,9 +9484,19 @@ map.on("zoomend", function() {
       ? String(routeData.destinationSettlementId) : null;
     const orderedIds = [...intermediateIds, ...(destinationId ? [destinationId] : [])];
 
+    const startCityTransitIds = new Set(getRouteSettlementTransitIntervals(route)
+      .filter(interval => Number(interval.start) <= 0.001 && interval.settlementId)
+      .map(interval => String(interval.settlementId)));
     orderedIds.forEach(id => {
       if (!id || seenIds.has(id)) return;
       seenIds.add(id);
+      // Город, из которого начинается маршрут, уже обведён. Его обводка
+      // остаётся на карте до выхода маркера и не запускается заново.
+      if (startCityTransitIds.has(String(id))) return;
+      // Если контур конечного города уже был завершён при выборе цели,
+      // анимация линии маршрута не должна стирать и рисовать его повторно.
+      if (String(id) === String(destinationId) &&
+          (settlementBrushTraceLayers.has(String(id)) || settlementTraceLayers.has(String(id)))) return;
       let boundaryIndex = -1;
       let boundaryPoint = null;
       let approachPoint = null;
