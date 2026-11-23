@@ -886,7 +886,11 @@ let partyIcon = createPartyIcon();
   interactive: true,
   zIndexOffset: 2000
 }).addTo(map);
-if (window.partyMarkerHiddenForSettlementExit) setPartyMarkerVisibleImmediately(false);
+if (window.partyMarkerHiddenForSettlementExit) {
+  partyMarker._icon.style.transition = "none";
+  partyMarker._icon.style.opacity = "0";
+  partyMarker._icon.style.pointerEvents = "none";
+}
 
 partyMarker.on("click", function() {
 
@@ -9477,18 +9481,6 @@ map.on("zoomend", function() {
     });
   });
 
-  // Сдвигаем момент исчезновения на 100 мс раньше визуального контакта.
-  // Скорость берём именно у входящего сегмента; скрытые сегменты поселения
-  // ускорены в 8 раз и должны учитывать это при пересчёте дистанции.
-  function getPartyMarkerHideDistanceBeforeVisualContact(distance, boundaryPoint) {
-    const dailyLimit = getRouteSegmentDailyLimit(boundaryPoint);
-    if (!Number.isFinite(distance) || !(dailyLimit > 0)) return distance;
-    const isTransit = getRouteSegmentMode(boundaryPoint) === 'settlement-count-only' ||
-      getRouteSegmentMode(boundaryPoint) === 'settlement-zero';
-    const distancePerSecond = dailyLimit * (isTransit ? 8 : 1) / 10;
-    return Math.max(0, distance - distancePerSecond * 0.1);
-  }
-
   // Находим ближайшую точку ВИДИМОГО контура сухой кисти к последнему
   // участку подхода маршрута. Геометрическая граница area.points и
   // визуальная brushPoints могут отличаться на несколько экранных пикселей.
@@ -9718,7 +9710,16 @@ map.on("zoomend", function() {
     }
 
     if (terminalPaused) markerInsideSettlement = true;
-    if (markerInsideSettlement) setPartyMarkerVisibleImmediately(false);
+    if (markerInsideSettlement) {
+      // Не вызываем локальный helper: восстановление должно быть устойчиво
+      // к порядку и области объявления функций внутри модуля.
+      window.partyMarkerHiddenForSettlementExit = true;
+      if (partyMarker && partyMarker._icon) {
+        partyMarker._icon.style.transition = "none";
+        partyMarker._icon.style.opacity = "0";
+        partyMarker._icon.style.pointerEvents = "none";
+      }
+    }
     window._restoreStaticSettlementOutlinesPending = missingCurrentArea;
   };
 
@@ -9781,7 +9782,6 @@ map.on("zoomend", function() {
     if (visualContact) {
       distance = window.getRouteTravelLength(route.slice(0, contactSegmentEndIndex)) +
         window.getRouteTravelLength([approachPoint, visualContact.routePoint]);
-      distance = getPartyMarkerHideDistanceBeforeVisualContact(distance, boundaryPoint);
     }
     if (!Number.isFinite(distance) || distance < 0) return false;
 
@@ -9921,13 +9921,11 @@ map.on("zoomend", function() {
         // видимого мазка; сама обводка также стартует именно с этой точки.
         distance = window.getRouteTravelLength(route.slice(0, contactSegmentEndIndex)) +
           window.getRouteTravelLength([approachPoint, visualContact.routePoint]);
-        if (id === destinationId) {
-          distance = getPartyMarkerHideDistanceBeforeVisualContact(distance, route[boundaryIndex]);
-        }
         boundaryPoint = visualContact.boundaryPoint;
       }
       if (id === destinationId) {
-        // Начинаем затухание за 100 мс до касания внешнего края видимой кисти.
+        // Маркер должен исчезнуть в той же точке визуального контакта,
+        // а не позже — на внутренней геометрической границе города.
         window.routeTerminalMarkerHideDistance = distance;
       }
       // Для промежуточного поселения находим выходную внешнюю границу.
