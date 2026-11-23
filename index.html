@@ -4660,6 +4660,10 @@ function isTerminalSettlementPaused(state) {
   return Boolean(destination && Number(state.startDistance) >= destination.total - 0.001);
 }
 
+// Эта проверка вызывается также из type="module"-скрипта,
+// где локальные объявления обычного скрипта недоступны напрямую.
+window.isTerminalSettlementPaused = isTerminalSettlementPaused;
+
 function isPartyMarkerInsideSettlementTransit(distance) {
   const currentDistance = Math.max(0, Number(distance) || 0);
   const intervals = getRouteSettlementTransitIntervals(routePoints);
@@ -9796,7 +9800,9 @@ map.on("zoomend", function() {
     targets.forEach(target => {
       function check() {
         if (waitToken !== settlementTraceWaitToken) return;
-        if (target.id === destinationId && isTerminalSettlementPaused(window.partyPlaybackState)) {
+        if (target.id === destinationId &&
+            typeof window.isTerminalSettlementPaused === 'function' &&
+            window.isTerminalSettlementPaused(window.partyPlaybackState)) {
           window.completeRouteSettlementOutline(target.area);
           return;
         }
