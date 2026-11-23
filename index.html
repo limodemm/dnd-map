@@ -1278,6 +1278,12 @@ async function performPartyRest(action) {
   const hours = action === "camp" ? 8 : 1;
   const currentDistance = Math.max(0, Number(state.startDistance) || 0);
   const campHoursElapsed = Math.max(0, Number(state.campHoursElapsed) || 0) + hours;
+  // Фиксируем дневной прогресс ДО добавления новой точки лагеря:
+  // он нужен, чтобы сдвинуть будущие границы форсированного марша
+  // на расстояние, пройденное от предыдущего привала.
+  const elapsedUnitsBeforeCamp = action === "camp"
+    ? getRouteElapsedUnitsSinceLastRest(routePoints, currentDistance, routeRestElapsedCarryUnits)
+    : 0;
 
   // Сохраняем состояние на случай, если запись отдыха в Firebase не удастся.
   const previousRestResetDistances = routeRestResetDistances.slice();
@@ -1308,14 +1314,53 @@ async function performPartyRest(action) {
     // участка (включая накопленное до его начала время), но начинаем её
     // заново от текущего маркера. Благодаря этому сдвигается и конечный
     // жетон обязательного привала, а не только разделитель/крестики.
+    let futureForcedSegmentShifted = false;
     routeForcedSegments = routeForcedSegments.map(segment => {
       const distances = getForcedSegmentDistances(segment);
       const containsCampPoint = currentDistance >= distances.start - 0.02 &&
         currentDistance < distances.end - 0.001;
       if (!containsCampPoint) {
-        // Форсированные участки, которые ещё не начались, тоже должны
-        // учитывать новый день: прежний carry больше не действует после лагеря.
+        // Если лагерь разбит до начала следующего форсированного участка,
+        // его прежняя стартовая точка больше не является дневной границей.
+        // Когда до неё от лагеря ещё не набирается полный день, переносим
+        // весь форсированный участок к новой дневной границе и сохраняем
+        // его исходную продолжительность в игровых днях.
         if (distances.start >= currentDistance - 0.02) {
+          const timeToOldForcedStart = getRouteTravelTimeUnitsBetweenDistances(
+            routePoints, currentDistance, distances.start
+          );
+          if (!futureForcedSegmentShifted) {
+            futureForcedSegmentShifted = true;
+            // После лагеря начало следующего форсированного марша должно
+            // совпасть с ближайшей целой дневной границей от новой точки
+            // отсчёта. Это работает и когда до старого начала меньше дня,
+            // и когда прошло один или несколько полных дней с остатком.
+            const nextDailyBoundaryUnits = Math.ceil(timeToOldForcedStart - 0.000001);
+            const originalForcedDuration = getRouteTravelTimeUnitsBetweenDistances(
+              routePoints, distances.start, distances.end
+            );
+            // Сдвигаем начало форсированного участка на весь прогресс,
+            // который отряд набрал от предыдущего привала до лагеря.
+            // Сумма оставшегося пути до старой границы и уже пройденного
+            // времени даёт новую позицию той же границы относительно лагеря.
+            const shiftedStartUnits = timeToOldForcedStart + elapsedUnitsBeforeCamp;
+            const shiftedStart = elapsedUnitsBeforeCamp > 0.000001
+              ? getRouteDistanceAtElapsedTime(
+                  routePoints, currentDistance, shiftedStartUnits, routeLength
+                )
+              : distances.start;
+            const shiftedEnd = shiftedStart > distances.start + 0.001
+              ? getRouteDistanceAtElapsedTime(
+                  routePoints, shiftedStart, originalForcedDuration, routeLength
+                )
+              : distances.end;
+            return {
+              start: shiftedStart,
+              end: Math.max(shiftedStart, shiftedEnd),
+              startUnits: 0,
+              fixed: true
+            };
+          }
           return {
             start: distances.start,
             end: distances.end,
