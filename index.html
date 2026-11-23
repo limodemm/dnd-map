@@ -4759,6 +4759,11 @@ function setPartyMarkerVisible(visible) {
   partyMarker._icon.style.transition = "opacity 520ms ease-in-out";
   partyMarker._icon.style.opacity = visible ? "1" : "0";
   partyMarker._icon.style.pointerEvents = visible ? "auto" : "none";
+  // Диагностика раньше неявно заставляла браузер пересчитать стили
+  // через getComputedStyle(). Без неё смена opacity могла откладываться
+  // до следующего кадра и визуально запаздывать относительно границы.
+  // Делаем тот же commit явно, независимо от DEBUG_PARTY_MARKER.
+  void getComputedStyle(partyMarker._icon).opacity;
   window.debugPartyMarkerVisibility('setPartyMarkerVisible:after', { requestedVisible: Boolean(visible) });
 }
 
