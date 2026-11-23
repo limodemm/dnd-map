@@ -4709,14 +4709,11 @@ function isPartyMarkerInsideSettlementTransit(distance) {
 function setPartyMarkerVisible(visible) {
   window.partyMarkerHiddenForSettlementExit = !visible;
   if (!partyMarker || !partyMarker._icon) return;
-  const artwork = partyMarker._icon.querySelector("img");
-  const target = artwork || partyMarker._icon;
-  if (artwork) {
-    artwork.style.transition = "transform 250ms linear, opacity 520ms ease-in-out";
-  } else {
-    target.style.transition = "opacity 520ms ease-in-out";
-  }
-  target.style.opacity = visible ? "1" : "0";
+  // Скрываем весь Leaflet-элемент маркера, а не только вложенное изображение:
+  // у контейнера могут быть собственные псевдоэлементы и декоративные слои.
+  // Именно такой способ использовался в ранней версии, где скрытие работало.
+  partyMarker._icon.style.transition = "opacity 520ms ease-in-out";
+  partyMarker._icon.style.opacity = visible ? "1" : "0";
   partyMarker._icon.style.pointerEvents = visible ? "auto" : "none";
 }
 
