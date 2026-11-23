@@ -3826,6 +3826,8 @@ function getRouteSettlementTransitIntervals(points) {
   if (active) intervals.push(active);
   return intervals;
 }
+// Функция используется также из Firebase-модуля, поэтому явно публикуем её.
+window.getRouteSettlementTransitIntervals = getRouteSettlementTransitIntervals;
 
 function getLastSettlementTransitEndDistance(points) {
   const intervals = getRouteSettlementTransitIntervals(points || routePoints);
@@ -9484,7 +9486,7 @@ map.on("zoomend", function() {
       ? String(routeData.destinationSettlementId) : null;
     const orderedIds = [...intermediateIds, ...(destinationId ? [destinationId] : [])];
 
-    const startCityTransitIds = new Set(getRouteSettlementTransitIntervals(route)
+    const startCityTransitIds = new Set(window.getRouteSettlementTransitIntervals(route)
       .filter(interval => Number(interval.start) <= 0.001 && interval.settlementId)
       .map(interval => String(interval.settlementId)));
     orderedIds.forEach(id => {
