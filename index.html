@@ -9721,8 +9721,10 @@ map.on("zoomend", function() {
     if (!Number.isFinite(distance) || distance < 0) return false;
 
     window.routeTerminalMarkerHideDistance = distance;
-    // Обновляем состояние сразу, в том числе если маршрут сейчас на паузе.
-    setPartyMarkerVisible(!isPartyMarkerInsideSettlementTransit(partyPlaybackDistance));
+    // Здесь только рассчитываем порог. Не вызываем локальные функции
+    // управления маркером: эта функция может запускаться из обработчика
+    // восстановления маршрута, находящегося в другой области видимости.
+    // Текущая видимость будет обновлена штатным обработчиком состояния/тика.
     window.debugPartyMarkerVisibility('terminal-hide-distance-calculated', {
       cityId: destinationId,
       hideDistance: distance,
