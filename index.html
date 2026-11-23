@@ -6966,12 +6966,19 @@ function findFirstAutomaticSettlementCrossing(path, excludedSettlementId = null)
     if (rx * rx + ry * ry < 0.0001) continue;
 
     for (const area of areas) {
-      if (pointInSettlement(start, area.points)) continue;
+      // Автоматическое прохождение через город определяется только
+      // пересечением его фактической видимой кисти. area.points — скрытая
+      // внутренняя область и может заметно отличаться от нарисованной границы.
+      const visualPolygon = typeof window.getSettlementBrushErasePolygon === "function"
+        ? window.getSettlementBrushErasePolygon(area, 0) : [];
+      const crossingPolygon = Array.isArray(visualPolygon) && visualPolygon.length >= 3
+        ? visualPolygon : area.points;
+      if (pointInSettlement(start, crossingPolygon)) continue;
       let firstT = Infinity;
       let firstPoint = null;
-      for (let edge = 0; edge < area.points.length; edge++) {
-        const p1 = map.latLngToLayerPoint(area.points[edge]);
-        const p2 = map.latLngToLayerPoint(area.points[(edge + 1) % area.points.length]);
+      for (let edge = 0; edge < crossingPolygon.length; edge++) {
+        const p1 = map.latLngToLayerPoint(crossingPolygon[edge]);
+        const p2 = map.latLngToLayerPoint(crossingPolygon[(edge + 1) % crossingPolygon.length]);
         const sx = p2.x - p1.x;
         const sy = p2.y - p1.y;
         const denominator = rx * sy - ry * sx;
@@ -8016,6 +8023,11 @@ map.on("zoomend", function() {
         item.layer.setStyle(item.style);
       }
     });
+    // Сбрасываем отметки обработки также у слоёв, которые не пересекали
+    // контур: после восстановления/перерисовки их можно проверить заново.
+    (Array.isArray(window.routeRestMarkers) ? window.routeRestMarkers : []).forEach(layer => {
+      if (layer && layer._settlementClipIds instanceof Set) layer._settlementClipIds.clear();
+    });
     hiddenRouteLayers = [];
   }
   window.restoreRouteLayersForSettlement = restoreRouteLayersForSettlement;
@@ -8047,6 +8059,7 @@ map.on("zoomend", function() {
       return map.layerPointToLatLng(L.point(point.x + nx * padding, point.y + ny * padding));
     });
   }
+  window.getSettlementBrushErasePolygon = getSettlementBrushErasePolygon;
 
 
   // Возвращает кратчайший участок между двумя точками, обходящий внешнюю
@@ -8734,7 +8747,7 @@ map.on("zoomend", function() {
       const a = map.latLngToLayerPoint(path[i - 1]);
       const b = map.latLngToLayerPoint(path[i]);
       const distance = a.distanceTo(b);
-      const steps = Math.max(1, Math.ceil(distance / 2));
+      const steps = Math.max(1, Math.ceil(distance / 0.75));
       for (let step = 0; step <= steps; step++) {
         if (i > 1 && step === 0) continue;
         const t = step / steps;
@@ -8763,18 +8776,24 @@ map.on("zoomend", function() {
 
     // Линия обрезается по внешнему краю кисти. Для круглых жетонов
     // добавляем запас по радиусу, чтобы их края тоже не заходили внутрь.
-    const lineErasePolygon = getSettlementBrushErasePolygon(area, 1.5);
+    const lineErasePolygon = getSettlementBrushErasePolygon(area, 5.5);
     const markerErasePolygon = getSettlementMarkerMaskPolygon(area);
     if (lineErasePolygon.length < 3 || markerErasePolygon.length < 3) return;
 
     const routeLayers = Array.isArray(window.routeRestMarkers) ? window.routeRestMarkers : [];
     routeLayers.forEach(function(layer) {
       if (!layer || !map.hasLayer(layer)) return;
+      const areaClipId = String(area.id);
+      if (!(layer._settlementClipIds instanceof Set)) layer._settlementClipIds = new Set();
+      if (layer._settlementClipIds.has(areaClipId)) return;
 
       // Крестики и жетоны-привалы — отдельные маркеры, у них нет getLatLngs.
       if (typeof layer.getLatLng === "function") {
         const position = layer.getLatLng();
-        if (!position || !pointInSettlement(position, markerErasePolygon)) return;
+        if (!position || !pointInSettlement(position, markerErasePolygon)) {
+          layer._settlementClipIds.add(areaClipId);
+          return;
+        }
         if (typeof layer.setOpacity === "function") {
           if (!hiddenRouteLayers.some(item => item.layer === layer)) {
             const markerOpacity = typeof layer.options.opacity === "number" ? layer.options.opacity : 1;
@@ -8791,10 +8810,14 @@ map.on("zoomend", function() {
           }
           layer.setStyle({ opacity: 0, fillOpacity: 0 });
         }
+        layer._settlementClipIds.add(areaClipId);
         return;
       }
 
-      if (typeof layer.getLatLngs !== "function" || typeof layer.setLatLngs !== "function") return;
+      if (typeof layer.getLatLngs !== "function" || typeof layer.setLatLngs !== "function") {
+        layer._settlementClipIds.add(areaClipId);
+        return;
+      }
       const original = layer.getLatLngs();
       const paths = [];
       const collectPaths = value => {
@@ -8806,7 +8829,10 @@ map.on("zoomend", function() {
         }
       };
       collectPaths(original);
-      if (!paths.length) return;
+      if (!paths.length) {
+        layer._settlementClipIds.add(areaClipId);
+        return;
+      }
 
       let changed = false;
       const visiblePaths = [];
@@ -8815,12 +8841,16 @@ map.on("zoomend", function() {
         if (clipped.changed) changed = true;
         visiblePaths.push(...clipped.paths);
       });
-      if (!changed) return;
+      if (!changed) {
+        layer._settlementClipIds.add(areaClipId);
+        return;
+      }
 
       if (!hiddenRouteLayers.some(item => item.layer === layer)) {
         hiddenRouteLayers.push({ layer, latlngs: original });
       }
       layer.setLatLngs(visiblePaths);
+      layer._settlementClipIds.add(areaClipId);
     });
   }
   window.hideRouteDashesInsideSettlement = hideRouteDashesInsideSettlement;
