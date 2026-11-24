@@ -389,6 +389,15 @@ map.on('click', function(e) {
     const terminalDestination = getTerminalDestinationSettlement();
     pausedCityArea = terminalDestination ? terminalDestination.area : null;
   }
+  // Дополнительная страховка для конечного города: состояние паузы иногда
+  // уже обновлено другим обработчиком, но маркер всё ещё скрыт в центре.
+  // В таком случае определяем занятый город по фактической позиции маркера.
+  if (!pausedCityArea && partyMarker && window.partyMarkerHiddenForSettlementExit) {
+    const markerPosition = partyMarker.getLatLng();
+    pausedCityArea = (window.settlementAreas || []).find(area =>
+      isPointInsideSettlementClickPolygon(markerPosition, getSettlementClickPolygon(area, 4))
+    ) || null;
+  }
   if (pausedCityArea) {
     const cityPolygon = getSettlementClickPolygon(pausedCityArea, 4);
     if (isPointInsideSettlementClickPolygon(e.latlng, cityPolygon)) {
@@ -964,6 +973,28 @@ partyMarker.on("click", function() {
   const previousIntermediateArea = previousIntermediateCityId
     ? (window.settlementAreas || []).find(item => String(item.id) === previousIntermediateCityId)
     : null;
+  // Прямой двойной клик по городу должен отменяться так же безопасно,
+  // как редактирование через шестерёнку: запоминаем занятый город как
+  // источник редактора, чтобы отмена не показывала маркер и не стирала контур.
+  window.routeEditorOriginIntermediateSnapshot = previousIntermediateCityId ? {
+    cityId: previousIntermediateCityId
+  } : null;
+  // При запуске нового маршрута убираем обводки только тех городов,
+  // которые в старом маршруте расположены ПОСЛЕ текущего города.
+  // Уже пройденные поселения и обводку занятого города сохраняем.
+  if (previousIntermediateCityId && Array.isArray(window.routeIntermediateCityIds)) {
+    const oldCityIds = window.routeIntermediateCityIds.map(id => String(id));
+    const currentIndex = oldCityIds.indexOf(previousIntermediateCityId);
+    const futureCityIds = currentIndex >= 0 ? oldCityIds.slice(currentIndex + 1) : [];
+    if (typeof window.cancelPendingRouteSettlementTraces === "function") {
+      window.cancelPendingRouteSettlementTraces();
+    }
+    futureCityIds.forEach(id => {
+      if (typeof window.clearRouteDestinationSettlementTrace === "function") {
+        window.clearRouteDestinationSettlementTrace(id);
+      }
+    });
+  }
   window.routeEditorOriginTerminalSnapshot = previousTerminalCityId ? {
     cityId: previousTerminalCityId,
     routePoints: Array.isArray(routePoints) ? routePoints.map(point => {
