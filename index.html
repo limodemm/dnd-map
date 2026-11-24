@@ -2676,6 +2676,37 @@ function createRouteLaunchPanel() {
   if (window.partyPlaybackState) renderPartyPlaybackState(window.partyPlaybackState);
   editButton.addEventListener("click", function() {
     if (window.partyPlaybackState && window.partyPlaybackState.status === "playing") return;
+    const pausedIntermediateCityId = window.partyPlaybackState &&
+      window.partyPlaybackState.status === "paused" &&
+      window.partyPlaybackState.intermediateSettlementReached &&
+      window.partyPlaybackState.intermediateSettlementId != null
+        ? String(window.partyPlaybackState.intermediateSettlementId) : null;
+    window.routeEditorOriginIntermediateSnapshot = pausedIntermediateCityId ? {
+      cityId: pausedIntermediateCityId,
+      routePoints: Array.isArray(routePoints) ? routePoints.map(point => {
+        const copy = L.latLng(Number(point.lat), Number(point.lng));
+        return copyRoutePointMetadata(point, copy);
+      }) : [],
+      playbackState: { ...window.partyPlaybackState },
+      routeStartedAt: window.routePlaybackRouteStartedAt || null,
+      destinationCityId: window.routeDestinationCityId || null,
+      destinationBoundaryPoint: window.routeDestinationBoundaryPoint
+        ? L.latLng(window.routeDestinationBoundaryPoint.lat, window.routeDestinationBoundaryPoint.lng) : null,
+      destinationApproachPoint: window.routeDestinationApproachPoint
+        ? L.latLng(window.routeDestinationApproachPoint.lat, window.routeDestinationApproachPoint.lng) : null,
+      intermediateCityIds: Array.isArray(window.routeIntermediateCityIds)
+        ? window.routeIntermediateCityIds.slice() : [],
+      restResetDistances: routeRestResetDistances.slice(),
+      forcedSegments: routeForcedSegments.map(segment => ({ ...segment })),
+      forcedMarch: routeForcedMarch,
+      forcedMarchStartDistance: routeForcedMarchStartDistance,
+      forcedMarchStartUnits: routeForcedMarchStartUnits,
+      forcedMarchEpochStartDistance: routeForcedMarchEpochStartDistance,
+      forcedMarchPendingExit: routeForcedMarchPendingExit,
+      pace: routePace,
+      speedReduced: routeSpeedReduced,
+      restElapsedCarryUnits: routeRestElapsedCarryUnits
+    } : null;
     // Завершённые обводки сохраняются при входе в редактор.
     // Повторное подтверждение неизменённого маршрута оставляет контур статичным.
 
@@ -3610,9 +3641,10 @@ window.routePendingConfirmation = false;
   // «Вернуть» работает только с двумя типами контрольных точек:
   // обычный привал и центр уже пройденного промежуточного поселения.
   document.getElementById("route-undo").addEventListener("click", function() {
-    // После возврата к стартовой точке (центру города) откатывать больше нечего.
-    // Защита не даёт повторному нажатию снять саму обводку поселения.
-    if (!Array.isArray(routePoints) || routePoints.length <= 1) return;
+    // После возврата к центру города, в котором отряд уже находится,
+    // дальнейший откат запрещён: иначе город исчезнет из маршрута.
+    if (!Array.isArray(routePoints) || routePoints.length <= 1 ||
+        isRouteAtPausedIntermediateCityCenter()) return;
     const routeStartSettlementIds = (Array.isArray(window.routeIntermediateCityIds)
       ? window.routeIntermediateCityIds : []).filter(id => {
         const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
@@ -5464,6 +5496,76 @@ function clearRouteDrawing() {
 
 // Единая отмена маршрута: вызывается кнопкой и клавишей Escape.
 function cancelPartyRoute() {
+  const intermediateSnapshot = window.routeEditorOriginIntermediateSnapshot;
+  if (intermediateSnapshot && intermediateSnapshot.cityId != null) {
+    if (pendingRouteClickTimer) clearTimeout(pendingRouteClickTimer);
+    pendingRouteClickTimer = null;
+    pendingRouteClickPosition = null;
+    pendingRouteClickPace = null;
+    pendingRouteClickSpeedReduced = null;
+    stopRouteMarkerAnimation();
+    if (typeof window.cancelPendingRouteSettlementTraces === "function") {
+      window.cancelPendingRouteSettlementTraces();
+    }
+    if (typeof window.cancelActiveRouteSettlementAnimations === "function") {
+      window.cancelActiveRouteSettlementAnimations();
+    }
+    routeFinished = true;
+    window.routeEditingConfirmedRoute = false;
+    window.routePendingConfirmation = false;
+    window.routeMode = false;
+    window.routeAnimationPublished = true;
+    pendingRouteResumeState = null;
+    pendingRoutePlaybackResumeDistance = null;
+    routePoints = Array.isArray(intermediateSnapshot.routePoints)
+      ? intermediateSnapshot.routePoints : [];
+    window.routeDestinationCityId = intermediateSnapshot.destinationCityId || null;
+    window.routeDestinationBoundaryPoint = intermediateSnapshot.destinationBoundaryPoint || null;
+    window.routeDestinationApproachPoint = intermediateSnapshot.destinationApproachPoint || null;
+    window.routeIntermediateCityIds = Array.isArray(intermediateSnapshot.intermediateCityIds)
+      ? intermediateSnapshot.intermediateCityIds.slice() : [];
+    window.routePlaybackRouteStartedAt = intermediateSnapshot.routeStartedAt || null;
+    routeRestResetDistances = intermediateSnapshot.restResetDistances.slice();
+    routeForcedSegments = intermediateSnapshot.forcedSegments.map(segment => ({ ...segment }));
+    routeForcedMarch = Boolean(intermediateSnapshot.forcedMarch);
+    routeForcedMarchStartDistance = Number(intermediateSnapshot.forcedMarchStartDistance) || 0;
+    routeForcedMarchStartUnits = Number(intermediateSnapshot.forcedMarchStartUnits) || 0;
+    routeForcedMarchEpochStartDistance = Number(intermediateSnapshot.forcedMarchEpochStartDistance) || 0;
+    routeForcedMarchPendingExit = Boolean(intermediateSnapshot.forcedMarchPendingExit);
+    routePace = intermediateSnapshot.pace || routePace;
+    routeSpeedReduced = Boolean(intermediateSnapshot.speedReduced);
+    routeRestElapsedCarryUnits = Number(intermediateSnapshot.restElapsedCarryUnits) || 0;
+    window.partyPlaybackState = { ...intermediateSnapshot.playbackState };
+    partyPlaybackDistance = Math.max(0, Number(intermediateSnapshot.playbackState.startDistance) || 0);
+    window.confirmedPartyRoute = routePoints;
+    clearRouteIntermediateCityOutlines();
+    clearRouteDrawing();
+    if (window.clearSettlementOutline) window.clearSettlementOutline();
+    const area = (window.settlementAreas || []).find(item =>
+      String(item.id) === String(intermediateSnapshot.cityId)
+    );
+    const occupiedPosition = getPartyPlaybackPositionForDistance(partyPlaybackDistance);
+    if (occupiedPosition && partyMarker) window.setPartyMarkerPlaybackPosition(occupiedPosition);
+    if (area && typeof window.completeRouteSettlementOutline === "function") {
+      window.completeRouteSettlementOutline(area);
+    }
+    setPartyMarkerVisibleImmediately(false);
+    createRouteLaunchPanel();
+    if (routePanel) routePanel.style.display = "none";
+    if (routeLaunchPanel) routeLaunchPanel.style.display = "block";
+    // Сначала восстанавливаем слои полного подтверждённого маршрута,
+    // затем применяем маску уже пройденного участка до входа в город.
+    updateRouteLine(null);
+    renderPartyPlaybackState(window.partyPlaybackState);
+    updatePartyPlaybackRouteLine(partyPlaybackDistance);
+    updatePartyPlaybackRouteTokens(partyPlaybackDistance);
+    map.doubleClickZoom.enable();
+    window.routeEditorOriginIntermediateSnapshot = null;
+    window.routeStartCityOutlineClearedFor = null;
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    console.log("Редактирование отменено: восстановлено состояние промежуточного города");
+    return;
+  }
   const terminalSnapshot = window.routeEditorOriginTerminalSnapshot;
   if (terminalSnapshot && terminalSnapshot.cityId != null) {
     if (pendingRouteClickTimer) clearTimeout(pendingRouteClickTimer);
@@ -5697,6 +5799,17 @@ function clipIntervalToActiveRoute(start, end, activeIntervals) {
     if (b > a + 0.001) pieces.push({ start: a, end: b });
   });
   return pieces;
+}
+
+function isRouteAtPausedIntermediateCityCenter() {
+  const snapshot = window.routeEditorOriginIntermediateSnapshot;
+  if (!snapshot || snapshot.cityId == null || !Array.isArray(routePoints) || !routePoints.length) return false;
+  const last = routePoints[routePoints.length - 1];
+  const cityId = String(snapshot.cityId);
+  if (String(last._routeSettlementId || '') !== cityId ||
+      getRouteSegmentMode(last) !== 'settlement-zero') return false;
+  const area = (window.settlementAreas || []).find(item => String(item.id) === cityId);
+  return Boolean(area && window.isRouteAtSettlementCenter(last, area));
 }
 
 function getLastPointAtSettlementCenter(points) {
@@ -7080,7 +7193,8 @@ function updateRouteLine(cursorPosition = null) {
       forcedButton.disabled = routeFinished || window.routePendingConfirmation;
     }
 
-    document.getElementById("route-undo").disabled = routePoints.length <= 1;
+    document.getElementById("route-undo").disabled = routePoints.length <= 1 ||
+      isRouteAtPausedIntermediateCityCenter();
   }
 
   // Сначала применяем маску наведённого/конечного поселения.
@@ -7196,6 +7310,7 @@ window.applySynchronizedPartyRoute = function(data) {
   window.routeIntermediateCityIds = Array.isArray(data.intermediateSettlementIds)
     ? data.intermediateSettlementIds.map(id => String(id)) : [];
   window.routeEditorOriginTerminalSnapshot = null;
+  window.routeEditorOriginIntermediateSnapshot = null;
   window.routeStartCityOutlineClearedFor = null;
   if (partyMarker) setPartyMarkerVisible(!isPartyMarkerInsideSettlementTransit(0));
   // Убираем статичные обводки выбранных промежуточных городов.
