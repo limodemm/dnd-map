@@ -392,10 +392,7 @@ map.on('click', function(e) {
   // Дополнительная страховка для конечного города: состояние паузы иногда
   // уже обновлено другим обработчиком, но маркер всё ещё скрыт в центре.
   // В таком случае определяем занятый город по фактической позиции маркера.
-  if (!pausedCityArea && pausedState && pausedState.status === "paused" && window.partyMarker) {
-    // После форсированного марша и разбития лагеря Firebase может не вернуть
-    // флаг terminal/intermediate, а маркер при этом уже стоит в городе.
-    // Определяем занятое поселение по фактической позиции независимо от opacity.
+  if (!pausedCityArea && window.partyMarker && window.partyMarkerHiddenForSettlementExit) {
     const markerPosition = window.partyMarker.getLatLng();
     pausedCityArea = (window.settlementAreas || []).find(area =>
       isPointInsideSettlementClickPolygon(markerPosition, getSettlementClickPolygon(area, 4))
@@ -974,22 +971,13 @@ partyMarker.on("click", function() {
   // Если маршрут уже прокладывается, повторный клик ничего не делает
   if (window.routeMode) return;
 
-  const markerIsPausedInSettlement = Boolean(
-    window.partyPlaybackState && window.partyPlaybackState.status === "paused"
-  );
-  const hiddenMarkerStartArea = partyMarker &&
-    (window.partyMarkerHiddenForSettlementExit || markerIsPausedInSettlement)
-      ? findSettlementAt(partyMarker.getLatLng()) : null;
-  const pausedIntermediateStateId = window.partyPlaybackState &&
-    window.partyPlaybackState.status === "paused" &&
+  const previousTerminalCityId = isTerminalSettlementPaused(window.partyPlaybackState)
+    ? String(window.routeDestinationCityId) : null;
+  const previousIntermediateCityId = !previousTerminalCityId &&
+    window.partyPlaybackState && window.partyPlaybackState.status === "paused" &&
     window.partyPlaybackState.intermediateSettlementReached &&
     window.partyPlaybackState.intermediateSettlementId != null
       ? String(window.partyPlaybackState.intermediateSettlementId) : null;
-  const previousTerminalCityId = isTerminalSettlementPaused(window.partyPlaybackState)
-    ? String(window.routeDestinationCityId)
-    : (!pausedIntermediateStateId && hiddenMarkerStartArea && hiddenMarkerStartArea.id != null
-        ? String(hiddenMarkerStartArea.id) : null);
-  const previousIntermediateCityId = !previousTerminalCityId ? pausedIntermediateStateId : null;
   const previousIntermediateArea = previousIntermediateCityId
     ? (window.settlementAreas || []).find(item => String(item.id) === previousIntermediateCityId)
     : null;
@@ -997,7 +985,7 @@ partyMarker.on("click", function() {
     ? (window.settlementAreas || []).find(item => String(item.id) === previousTerminalCityId)
     : null;
   const markerStartArea = !previousIntermediateArea && !previousTerminalArea &&
-    partyMarker && (window.partyMarkerHiddenForSettlementExit || markerIsPausedInSettlement)
+    window.partyMarkerHiddenForSettlementExit && partyMarker
       ? findSettlementAt(partyMarker.getLatLng()) : null;
   const previousStartArea = previousIntermediateArea || previousTerminalArea || markerStartArea;
   window.routeStartSettlementId = previousStartArea && previousStartArea.id != null
@@ -1075,11 +1063,9 @@ partyMarker.on("click", function() {
     );
   }
 
-if (!previousTerminalCityId && !previousIntermediateCityId && !markerStartArea) {
-  setPartyMarkerVisible(true);
-}
+if (!previousTerminalCityId && !previousIntermediateCityId) setPartyMarkerVisible(true);
 if (previousStartArea && previousStartArea.center &&
-    (previousIntermediateArea || previousTerminalArea || markerStartArea)) {
+    (previousIntermediateArea || previousTerminalArea)) {
   // Выход из любого занятого города начинается из его центра.
   // Маркер остаётся скрытым на всём протяжении нахождения в городе.
   partyMarker.setLatLng(previousStartArea.center);
@@ -1168,22 +1154,6 @@ window.handleSettlementCityDoubleClick = function(latlng) {
   } else if (isTerminalSettlementPaused(state)) {
     const destination = getTerminalDestinationSettlement();
     targetArea = destination ? destination.area : null;
-  }
-
-  // После лагеря Firebase может сохранить паузу уже без флага
-  // terminalSettlementReached/intermediateSettlementReached. Если жетон
-  // по-прежнему скрыт внутри поселения, определяем занятый город по его
-  // фактическому положению — двойной клик должен запускать новый маршрут.
-  if (!targetArea && state && state.status === "paused" && partyMarker) {
-    // В том числе поддерживаем город после форсированного марша и лагеря:
-    // состояние прибытия могло потерять специальные флаги, но маркер остался
-    // внутри города. Для команды двойного клика этого достаточно.
-    const markerPosition = partyMarker.getLatLng();
-    targetArea = (window.settlementAreas || []).find(area =>
-      Array.isArray(area.points) && area.points.length >= 3 &&
-      typeof window.pointInSettlement === "function" &&
-      window.pointInSettlement(markerPosition, area.points)
-    ) || null;
   }
 
   if (!targetArea) return false;
@@ -2190,17 +2160,6 @@ function syncRouteLaunchControls() {
   const reachedRouteEnd = Boolean(state && state.status === "paused" && routeTotal > 0.001 &&
     Number(state.startDistance) >= routeTotal - 0.001);
   const playUnavailable = animationRunning || playing || campRequired || terminalCityPaused || reachedRouteEnd;
-  const pausedAtIntermediateCity = Boolean(paused && state &&
-    state.intermediateSettlementReached && state.intermediateSettlementId != null);
-  const pausedMarkerInsideSettlement = Boolean(paused && window.partyMarker &&
-    (window.settlementAreas || []).some(area =>
-      Array.isArray(area.points) && area.points.length >= 3 &&
-      typeof window.pointInSettlement === "function" &&
-      window.pointInSettlement(window.partyMarker.getLatLng(), area.points)
-    ));
-  const pausedInsideSettlement = paused && !pausedAtIntermediateCity &&
-    (Boolean(window.partyMarkerHiddenForSettlementExit) || pausedMarkerInsideSettlement);
-  const editUnavailable = animationRunning || playing || terminalCityPaused || reachedRouteEnd || pausedInsideSettlement;
   const playButton = routeLaunchPanel.querySelector("#route-party-play");
   const editButton = routeLaunchPanel.querySelector("#route-party-edit");
   const campButton = routeLaunchPanel.querySelector("#route-party-camp");
@@ -2213,7 +2172,7 @@ function syncRouteLaunchControls() {
   }
   // Во время раскрытия маршрута все действия, кроме кнопки паузы,
   // заблокированы до полного завершения анимации.
-  if (editButton) editButton.disabled = editUnavailable;
+  if (editButton) editButton.disabled = animationRunning || playing || terminalCityPaused;
   const confirmationOpen = Boolean(partyActionConfirmationId || partyActionConfirmationSubmitting);
   if (campButton) campButton.disabled = animationRunning || !paused || confirmationOpen;
   if (shortRestButton) shortRestButton.disabled = animationRunning || !paused || confirmationOpen;
@@ -4272,26 +4231,6 @@ function getLastSettlementTransitEndDistance(points) {
   const intervals = getRouteSettlementTransitIntervals(points || routePoints);
   return intervals.length ? intervals[intervals.length - 1].end : 0;
 }
-
-// По обычному маршруту поселение не сбрасывает дневной прогресс: время,
-// набранное до входа, продолжает учитываться после выхода. Исключение —
-// вход в поселение в рамках форсированного марша: для него сохраняем прежнее
-// поведение с новым отсчётом после выхода из города.
-function getSettlementDayResetExitDistances(points) {
-  const intervals = getRouteSettlementTransitIntervals(points || routePoints);
-  const forcedSegments = (Array.isArray(routeForcedSegments) ? routeForcedSegments : [])
-    .map(segment => getForcedSegmentDistances(segment));
-  return intervals.filter(interval => {
-    const start = Number(interval.start) || 0;
-    const end = Number(interval.end) || start;
-    const overlapsForcedSegment = forcedSegments.some(segment =>
-      segment.start <= end + 0.05 && segment.end >= start - 0.05
-    );
-    const belongsToActiveForcedMarch = Boolean(routeForcedMarch) &&
-      Number(routeForcedMarchStartDistance) <= end + 0.05;
-    return overlapsForcedSegment || belongsToActiveForcedMarch;
-  }).map(interval => Number(interval.end)).filter(Number.isFinite);
-}
 window.getLastSettlementTransitEndDistance = getLastSettlementTransitEndDistance;
 
 function isRouteAtSettlementCenter(point, area) {
@@ -5245,17 +5184,7 @@ function renderPartyPlaybackState(state) {
     ? getRouteTravelLength(routePoints) : 0;
   const reachedRouteEnd = Boolean(state && state.status === "paused" && routeTotal > 0.001 &&
     Number(state.startDistance) >= routeTotal - 0.001);
-  const pausedAtIntermediateCity = Boolean(paused && state &&
-    state.intermediateSettlementReached && state.intermediateSettlementId != null);
-  const pausedMarkerInsideSettlement = Boolean(paused && window.partyMarker &&
-    (window.settlementAreas || []).some(area =>
-      Array.isArray(area.points) && area.points.length >= 3 &&
-      typeof window.pointInSettlement === "function" &&
-      window.pointInSettlement(window.partyMarker.getLatLng(), area.points)
-    ));
-  const pausedInsideSettlement = paused && !pausedAtIntermediateCity &&
-    (Boolean(window.partyMarkerHiddenForSettlementExit) || pausedMarkerInsideSettlement);
-  if (editButton) editButton.disabled = Boolean(playing || terminalCityPaused || reachedRouteEnd || pausedInsideSettlement);
+  if (editButton) editButton.disabled = Boolean(playing || terminalCityPaused || reachedRouteEnd);
   pauseButton.classList.toggle("active", !playing);
   pauseButton.setAttribute("aria-pressed", !playing ? "true" : "false");
   playButton.classList.toggle("active", playing);
@@ -5627,17 +5556,11 @@ function getNormalRestDistances(totalLength, dailyLimit, routeGeometry = routePo
       end: Math.max(0, Math.min(totalLength, interval.end))
     }))
     .filter(interval => interval.end >= interval.start - 0.001);
-  const settlementResetExitDistances = getSettlementDayResetExitDistances(routeGeometry);
-  const resetTransitIntervals = transitIntervals.filter(interval =>
-    settlementResetExitDistances.some(distance => Math.abs(distance - interval.end) <= 0.05)
-  );
 
-  // Обычный проход через город не разрывает игровой день. Граница дневного
-  // отсчёта переносится на выход только для поселений, достигнутых форсированным
-  // маршем; добровольный лагерь добавляет отдельный сброс ниже.
+  // Выход из поселения начинает новый отсчёт дневного времени.
   const activeIntervals = [];
   let cursor = 0;
-  resetTransitIntervals.forEach(interval => {
+  transitIntervals.forEach(interval => {
     if (interval.start > cursor + 0.001) {
       activeIntervals.push({ start: cursor, end: interval.start });
     }
@@ -5646,7 +5569,7 @@ function getNormalRestDistances(totalLength, dailyLimit, routeGeometry = routePo
   if (cursor < totalLength - 0.001) {
     activeIntervals.push({ start: cursor, end: totalLength });
   }
-  if (!activeIntervals.length && totalLength > 0.001) {
+  if (!activeIntervals.length && !transitIntervals.length && totalLength > 0.001) {
     activeIntervals.push({ start: 0, end: totalLength });
   }
 
@@ -5754,8 +5677,7 @@ function getNormalRestDistances(totalLength, dailyLimit, routeGeometry = routePo
 
 
 // Возвращает накопленную долю игрового дня от последнего привала до позиции отряда.
-// Обычный проход через город не сбрасывает время; исключение — поселение,
-// достигнутое форсированным маршем, для которого сохраняется прежний сброс.
+// Если между последним привалом и отрядом было поселение, отсчёт начинается с его выхода.
 function getRouteElapsedUnitsSinceLastRest(points, currentDistance, carryInUnits = 0) {
   const total = getRouteTravelLength(points);
   const current = Math.max(0, Math.min(total, Number(currentDistance) || 0));
@@ -5767,7 +5689,9 @@ function getRouteElapsedUnitsSinceLastRest(points, currentDistance, carryInUnits
   const lastManualReset = routeRestResetDistances
     .filter(distance => distance <= current + 0.001)
     .sort((a, b) => b - a)[0];
-  const lastSettlementExit = getSettlementDayResetExitDistances(points)
+  const transitIntervals = getRouteSettlementTransitIntervals(points);
+  const lastSettlementExit = transitIntervals
+    .map(interval => Number(interval.end))
     .filter(distance => Number.isFinite(distance) && distance <= current + 0.001)
     .sort((a, b) => b - a)[0];
 
@@ -10322,22 +10246,10 @@ map.on("zoomend", function() {
       if (destinationTransit) currentInterval = destinationTransit;
     }
 
-    // Некоторые прибытия после форсированного марша завершаются без обычного
-    // terminal/intermediate-флага. После перезагрузки всё равно восстанавливаем
-    // город, если пауза сохранена, а жетон фактически находится внутри него.
-    const markerFallbackArea = !currentInterval && movement && movement.status === "paused" && partyMarker
-      ? (window.settlementAreas || []).find(area =>
-          Array.isArray(area.points) && area.points.length >= 3 &&
-          typeof window.pointInSettlement === "function" &&
-          window.pointInSettlement(partyMarker.getLatLng(), area.points)
-        ) || null
-      : null;
-
     let markerInsideSettlement = false;
     let missingCurrentArea = false;
     const currentId = currentInterval && currentInterval.settlementId != null
-      ? String(currentInterval.settlementId)
-      : (markerFallbackArea && markerFallbackArea.id != null ? String(markerFallbackArea.id) : null);
+      ? String(currentInterval.settlementId) : null;
 
     if (currentId) {
       const area = (window.settlementAreas || []).find(item => String(item.id) === currentId);
