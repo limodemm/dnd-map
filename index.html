@@ -976,6 +976,16 @@ partyMarker.on("click", function() {
   const previousIntermediateArea = previousIntermediateCityId
     ? (window.settlementAreas || []).find(item => String(item.id) === previousIntermediateCityId)
     : null;
+  const previousTerminalArea = previousTerminalCityId
+    ? (window.settlementAreas || []).find(item => String(item.id) === previousTerminalCityId)
+    : null;
+  const markerStartArea = !previousIntermediateArea && !previousTerminalArea &&
+    window.partyMarkerHiddenForSettlementExit && partyMarker
+      ? findSettlementAt(partyMarker.getLatLng()) : null;
+  const previousStartArea = previousIntermediateArea || previousTerminalArea || markerStartArea;
+  window.routeStartSettlementId = previousStartArea && previousStartArea.id != null
+    ? String(previousStartArea.id)
+    : (previousTerminalCityId || previousIntermediateCityId || null);
   // Прямой двойной клик по городу должен отменяться так же безопасно,
   // как редактирование через шестерёнку: запоминаем занятый город как
   // источник редактора, чтобы отмена не показывала маркер и не стирала контур.
@@ -1067,9 +1077,8 @@ routeFinished = false;
 window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
 window.routeDestinationApproachPoint = null;
-window.routeIntermediateCityIds = previousTerminalCityId
-  ? [previousTerminalCityId]
-  : previousIntermediateCityId ? [previousIntermediateCityId] : [];
+window.routeIntermediateCityIds = window.routeStartSettlementId
+  ? [String(window.routeStartSettlementId)] : [];
 window.routeIntermediateSettlementUndoSnapshots = [];
 clearRouteIntermediateCityOutlines();
 // При выходе из промежуточного города сохраняем его обводку, несмотря на
@@ -1099,10 +1108,11 @@ if (forcedButton) {
 // Отключаем двойной клик для приближения карты
 map.doubleClickZoom.disable();
 
-// Начинаем маршрут от текущего положения отряда; из промежуточного
-// города — строго от его центра.
-routePoints = [previousIntermediateArea && previousIntermediateArea.center
-  ? L.latLng(previousIntermediateArea.center.lat, previousIntermediateArea.center.lng)
+// Начинаем маршрут из центра занятого города. После перезагрузки жетон
+// может сохранять небольшое смещение внутри скрытого перехода, поэтому
+// координаты центра надёжнее текущей экранной позиции маркера.
+routePoints = [previousStartArea && previousStartArea.center
+  ? L.latLng(Number(previousStartArea.center.lat), Number(previousStartArea.center.lng))
   : partyMarker.getLatLng()];
 
   lastCursorPosition = null;
@@ -3823,11 +3833,19 @@ window.routePendingConfirmation = false;
     // дальнейший откат запрещён: иначе город исчезнет из маршрута.
     if (!Array.isArray(routePoints) || routePoints.length <= 1 ||
         isRouteAtPausedIntermediateCityCenter()) return;
-    const routeStartSettlementIds = (Array.isArray(window.routeIntermediateCityIds)
-      ? window.routeIntermediateCityIds : []).filter(id => {
-        const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
-        return Boolean(area && routePoints[0] && window.isRouteAtSettlementCenter(routePoints[0], area));
-      }).map(String);
+    const inferredStartArea = window.routeStartSettlementId != null
+      ? (window.settlementAreas || []).find(item => String(item.id) === String(window.routeStartSettlementId))
+      : (window.settlementAreas || []).find(item => item && item.center && routePoints[0] &&
+          window.isRouteAtSettlementCenter(routePoints[0], item));
+    const routeStartSettlementIds = Array.from(new Set([
+      ...(window.routeStartSettlementId != null ? [String(window.routeStartSettlementId)] : []),
+      ...(inferredStartArea && inferredStartArea.id != null ? [String(inferredStartArea.id)] : []),
+      ...(Array.isArray(window.routeIntermediateCityIds)
+        ? window.routeIntermediateCityIds.filter(id => {
+            const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
+            return Boolean(area && routePoints[0] && window.isRouteAtSettlementCenter(routePoints[0], area));
+          }).map(String) : [])
+    ]));
     const intermediateIdsBeforeUndo = (Array.isArray(window.routeIntermediateCityIds)
       ? window.routeIntermediateCityIds : []).map(id => String(id));
     if (window.routeDestinationCityId) {
@@ -3996,6 +4014,16 @@ window.routePendingConfirmation = false;
       if (!retainedIntermediateIds.has(id) && !routeStartSettlementIds.includes(id) &&
           window.clearRouteDestinationSettlementTrace) {
         window.clearRouteDestinationSettlementTrace(id);
+      }
+    });
+    // Восстанавливаем завершённую обводку стартового города независимо
+    // от того, до какой контрольной точки вернулась команда. Иначе после
+    // перезагрузки очистка обводки конечного города могла оставить старт
+    // без визуального контура.
+    routeStartSettlementIds.forEach(id => {
+      const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
+      if (area && typeof window.completeRouteSettlementOutline === "function") {
+        window.completeRouteSettlementOutline(area);
       }
     });
     refreshRouteIntermediateCityOutlines();
@@ -7766,7 +7794,7 @@ window.handlePartyRouteClick = function(latlng) {
     }
   }
 
-  const clickedArea = findSettlementAt(latlng);
+  const clickedArea = findRouteTargetSettlementAt(latlng) || findSettlementAt(latlng);
 
   // Если ожидается одиночный клик, второй клик рядом завершает маршрут.
   if (pendingRouteClickTimer) {
@@ -7783,6 +7811,16 @@ window.handlePartyRouteClick = function(latlng) {
 
       // Двойной клик по городу — прежний способ завершить маршрут у города.
       if (clickedArea && routePoints.length > 0) {
+        // Город, в который завершается маршрут, не должен оставаться
+        // препятствием во время расчёта подхода к его границе. Это важно,
+        // если он уже был промежуточным в текущем маршруте.
+        const targetId = String(clickedArea.id);
+        if (Array.isArray(window.routeIntermediateCityIds) &&
+            window.routeIntermediateCityIds.some(id => String(id) === targetId)) {
+          window.routeIntermediateCityIds = window.routeIntermediateCityIds
+            .filter(id => String(id) !== targetId);
+          refreshRouteIntermediateCityOutlines();
+        }
         addInterveningSettlementsBeforeTarget(
           clickedArea, latlng, clickPace, clickSpeedReduced
         );
@@ -8115,6 +8153,26 @@ map.on("zoomend", function() {
     );
     if (!matches.length) return null;
     return matches.sort((a, b) => polygonArea(a.points) - polygonArea(b.points))[0];
+  }
+
+  // При прокладке маршрута исходный город не должен перехватывать клик
+  // по соседнему поселению, если их фактические области пересекаются.
+  // Сначала выбираем среди совпадений не стартовый город, затем — самый
+  // конкретный по площади, как и в обычном поиске поселения.
+  function findRouteTargetSettlementAt(point) {
+    const areas = Array.isArray(window.settlementAreas) ? window.settlementAreas : [];
+    const matches = areas.filter(area =>
+      area && area.id != null && Array.isArray(area.points) && area.points.length >= 3 &&
+      pointInSettlement(point, area.points)
+    );
+    if (!matches.length) return null;
+    const startId = Array.isArray(window.routeIntermediateCityIds) &&
+      window.routeIntermediateCityIds.length
+        ? String(window.routeIntermediateCityIds[0]) : null;
+    const nonStartMatches = startId
+      ? matches.filter(area => String(area.id) !== startId) : matches;
+    const candidates = nonStartMatches.length ? nonStartMatches : matches;
+    return candidates.sort((a, b) => polygonArea(a.points) - polygonArea(b.points))[0];
   }
 
   function polygonArea(points) {
@@ -9036,9 +9094,14 @@ map.on("zoomend", function() {
     if (!area) return null;
 
     const visualPolygon = getSettlementBrushErasePolygon(area, 0);
-    // Пока курсор остаётся внутри визуальной кисти, не создаём маршрутных
-    // механик. При этом направление выхода определяется именно лучом от центра.
-    if (pointInSettlement(end, visualPolygon)) return [start];
+    // Пока курсор остаётся внутри визуальной кисти стартового города,
+    // не создаём маршрутных механик. Но если конечная точка уже находится
+    // в другом поселении, это не «движение внутри старта», а короткий маршрут
+    // в соседний город: разрешаем лучу выйти из стартовой кисти.
+    const endpointSettlement = findRouteTargetSettlementAt(end) || findSettlementAt(end);
+    const endpointIsAnotherSettlement = endpointSettlement &&
+      String(endpointSettlement.id) !== String(area.id);
+    if (pointInSettlement(end, visualPolygon) && !endpointIsAnotherSettlement) return [start];
 
     // Ищем первое пересечение луча «центр -> курсор» с полигоном.
     // Поиск ближайшей к курсору точки границы давал скачки на другую сторону
