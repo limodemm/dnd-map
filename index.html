@@ -965,6 +965,18 @@ if (window.partyMarkerHiddenForSettlementExit) {
 }
 
 partyMarker.on("click", function() {
+  console.info("[ROUTE-DIAG] PARTY MARKER CLICK", {
+    routeMode: window.routeMode,
+    routeFinished,
+    routePendingConfirmation: window.routePendingConfirmation,
+    routeStartSettlementId: window.routeStartSettlementId,
+    routeDestinationCityId: window.routeDestinationCityId,
+    playbackStatus: window.partyPlaybackState && window.partyPlaybackState.status,
+    intermediateSettlementId: window.partyPlaybackState && window.partyPlaybackState.intermediateSettlementId,
+    intermediateSettlementReached: window.partyPlaybackState && window.partyPlaybackState.intermediateSettlementReached,
+    markerPosition: partyMarker ? { lat: partyMarker.getLatLng().lat, lng: partyMarker.getLatLng().lng } : null
+  });
+  console.trace("[ROUTE-DIAG] PARTY MARKER CLICK CALL STACK");
 
   // Если маршрут уже прокладывается, повторный клик ничего не делает
   if (window.routeMode) return;
@@ -1139,6 +1151,14 @@ routePoints = [previousStartArea && previousStartArea.center
 
 window.handleSettlementCityDoubleClick = function(latlng) {
   const state = window.partyPlaybackState;
+  console.info("[ROUTE-DIAG] SETTLEMENT DBLCLICK CHECK", {
+    routeMode: window.routeMode,
+    click: latlng ? { lat: latlng.lat, lng: latlng.lng } : null,
+    playbackStatus: state && state.status,
+    intermediateSettlementId: state && state.intermediateSettlementId,
+    intermediateSettlementReached: state && state.intermediateSettlementReached,
+    routeDestinationCityId: window.routeDestinationCityId
+  });
   if (!latlng || !partyMarker || window.routeMode) return false;
 
   let targetArea = null;
@@ -1159,6 +1179,14 @@ window.handleSettlementCityDoubleClick = function(latlng) {
   const visualPolygon = getSettlementClickPolygon(targetArea, 4);
   if (!isPointInsideSettlementClickPolygon(latlng, visualPolygon)) return false;
 
+  console.warn("[ROUTE-DIAG] SETTLEMENT DBLCLICK MATCH — STARTING ROUTE FROM PARTY MARKER", {
+    matchedSettlementId: targetArea.id,
+    matchedSettlementType: targetArea.type,
+    click: { lat: latlng.lat, lng: latlng.lng },
+    markerPosition: partyMarker ? { lat: partyMarker.getLatLng().lat, lng: partyMarker.getLatLng().lng } : null
+  });
+  console.trace("[ROUTE-DIAG] SETTLEMENT DBLCLICK MATCH CALL STACK");
+
   // Одиночный клик по городу остаётся обычным кликом карты.
   // Только двойной клик запускает стандартную логику нового маршрута.
   if (map.doubleClickZoom) map.doubleClickZoom.disable();
@@ -1167,6 +1195,15 @@ window.handleSettlementCityDoubleClick = function(latlng) {
 };
 
 map.on("dblclick", function(e) {
+  console.info("[ROUTE-DIAG] MAP DBLCLICK EVENT", {
+    routeMode: window.routeMode,
+    routeFinished,
+    routePendingConfirmation: window.routePendingConfirmation,
+    click: e && e.latlng ? { lat: e.latlng.lat, lng: e.latlng.lng } : null,
+    markerPosition: partyMarker ? { lat: partyMarker.getLatLng().lat, lng: partyMarker.getLatLng().lng } : null,
+    playbackStatus: window.partyPlaybackState && window.partyPlaybackState.status,
+    routeDestinationCityId: window.routeDestinationCityId
+  });
   if (window.settlementDrawingActive || settlementJustDrew) return;
 
   // Нативное событие Leaflet — страховка для двойного клика по цели
