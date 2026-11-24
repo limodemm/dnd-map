@@ -7794,7 +7794,7 @@ window.handlePartyRouteClick = function(latlng) {
     }
   }
 
-  const clickedArea = findRouteTargetSettlementAt(latlng) || findSettlementAt(latlng);
+  const clickedArea = findSettlementAt(latlng);
 
   // Если ожидается одиночный клик, второй клик рядом завершает маршрут.
   if (pendingRouteClickTimer) {
@@ -7811,16 +7811,6 @@ window.handlePartyRouteClick = function(latlng) {
 
       // Двойной клик по городу — прежний способ завершить маршрут у города.
       if (clickedArea && routePoints.length > 0) {
-        // Город, в который завершается маршрут, не должен оставаться
-        // препятствием во время расчёта подхода к его границе. Это важно,
-        // если он уже был промежуточным в текущем маршруте.
-        const targetId = String(clickedArea.id);
-        if (Array.isArray(window.routeIntermediateCityIds) &&
-            window.routeIntermediateCityIds.some(id => String(id) === targetId)) {
-          window.routeIntermediateCityIds = window.routeIntermediateCityIds
-            .filter(id => String(id) !== targetId);
-          refreshRouteIntermediateCityOutlines();
-        }
         addInterveningSettlementsBeforeTarget(
           clickedArea, latlng, clickPace, clickSpeedReduced
         );
@@ -8153,26 +8143,6 @@ map.on("zoomend", function() {
     );
     if (!matches.length) return null;
     return matches.sort((a, b) => polygonArea(a.points) - polygonArea(b.points))[0];
-  }
-
-  // При прокладке маршрута исходный город не должен перехватывать клик
-  // по соседнему поселению, если их фактические области пересекаются.
-  // Сначала выбираем среди совпадений не стартовый город, затем — самый
-  // конкретный по площади, как и в обычном поиске поселения.
-  function findRouteTargetSettlementAt(point) {
-    const areas = Array.isArray(window.settlementAreas) ? window.settlementAreas : [];
-    const matches = areas.filter(area =>
-      area && area.id != null && Array.isArray(area.points) && area.points.length >= 3 &&
-      pointInSettlement(point, area.points)
-    );
-    if (!matches.length) return null;
-    const startId = Array.isArray(window.routeIntermediateCityIds) &&
-      window.routeIntermediateCityIds.length
-        ? String(window.routeIntermediateCityIds[0]) : null;
-    const nonStartMatches = startId
-      ? matches.filter(area => String(area.id) !== startId) : matches;
-    const candidates = nonStartMatches.length ? nonStartMatches : matches;
-    return candidates.sort((a, b) => polygonArea(a.points) - polygonArea(b.points))[0];
   }
 
   function polygonArea(points) {
@@ -9094,14 +9064,9 @@ map.on("zoomend", function() {
     if (!area) return null;
 
     const visualPolygon = getSettlementBrushErasePolygon(area, 0);
-    // Пока курсор остаётся внутри визуальной кисти стартового города,
-    // не создаём маршрутных механик. Но если конечная точка уже находится
-    // в другом поселении, это не «движение внутри старта», а короткий маршрут
-    // в соседний город: разрешаем лучу выйти из стартовой кисти.
-    const endpointSettlement = findRouteTargetSettlementAt(end) || findSettlementAt(end);
-    const endpointIsAnotherSettlement = endpointSettlement &&
-      String(endpointSettlement.id) !== String(area.id);
-    if (pointInSettlement(end, visualPolygon) && !endpointIsAnotherSettlement) return [start];
+    // Пока курсор остаётся внутри визуальной кисти, не создаём маршрутных
+    // механик. При этом направление выхода определяется именно лучом от центра.
+    if (pointInSettlement(end, visualPolygon)) return [start];
 
     // Ищем первое пересечение луча «центр -> курсор» с полигоном.
     // Поиск ближайшей к курсору точки границы давал скачки на другую сторону
