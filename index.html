@@ -148,13 +148,30 @@ body {
   /* Не показываем условную полночь до получения настоящего состояния отряда. */
   opacity: 0;
 }
+/* Ровная круговая тень под рамкой, не повторяющая неровности её орнамента. */
+#celestial-clock::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  left: 50%;
+  top: -66px;
+  width: 132px;
+  height: 132px;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.01);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.38);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
 #celestial-clock-disc,
 #celestial-clock-frame {
   position: absolute;
   left: 50%;
-  top: -63.3333px;
-  width: 126.6667px;
-  height: 126.6667px;
+  top: -66px;
+  width: 132px;
+  height: 132px;
   object-fit: contain;
   transform: translateX(-50%);
   user-select: none;
@@ -163,8 +180,11 @@ body {
 #celestial-clock-disc {
   transform: translateX(-50%) rotate(0deg);
   transform-origin: 50% 50%;
-  /* Внутренний круг чуть меньше отверстия рамки: края рисунка не смогут выпирать. */
-  clip-path: circle(44% at 50% 50%);
+  /* Диаметр диска совмещён со средней линией внутреннего обода рамки. */
+  width: 106.5px;
+  height: 106.5px;
+  top: -53.25px;
+  clip-path: circle(50% at 50% 50%);
   will-change: transform;
 }
 #celestial-clock-frame {
@@ -172,12 +192,13 @@ body {
   height: 132px;
   top: -66px;
   z-index: 2;
-  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.48));
+  filter: none;
 }
 @media (max-width: 600px) {
   #celestial-clock { width: 102.6667px; height: 51.3333px; }
-  #celestial-clock-disc { width: 102.6667px; height: 102.6667px; top: -51.3333px; }
+  #celestial-clock-disc { width: 85.2px; height: 85.2px; top: -42.6px; }
   #celestial-clock-frame { width: 106.6667px; height: 106.6667px; top: -53.3333px; }
+  #celestial-clock::before { width: 106.6667px; height: 106.6667px; top: -53.3333px; }
 }
   </style>
 </head>
@@ -4887,7 +4908,7 @@ window.updateCelestialClock = function(state = window.partyPlaybackState, now = 
     disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
   } else if (deltaHours > 0.001) {
     // Отдых тоже прокручивает диск плавно, но заметно быстрее обычного пути.
-    const duration = deltaHours >= 4 ? 850 : 380;
+    const duration = deltaHours >= 4 ? 2550 : 1140;
     disc.style.transition = `transform ${duration}ms cubic-bezier(0.22, 0.72, 0.24, 1)`;
     disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
   } else {
