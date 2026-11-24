@@ -997,6 +997,15 @@ partyMarker.on("click", function() {
         window.clearRouteDestinationSettlementTrace(id);
       }
     });
+    // Конечный город старого маршрута не входит в список промежуточных.
+    // При старте нового маршрута из текущего промежуточного города его
+    // трассу тоже нужно убрать, иначе финальная обводка остаётся висеть.
+    const previousDestinationCityId = window.routeDestinationCityId != null
+      ? String(window.routeDestinationCityId) : null;
+    if (previousDestinationCityId && previousDestinationCityId !== previousIntermediateCityId &&
+        typeof window.clearRouteDestinationSettlementTrace === "function") {
+      window.clearRouteDestinationSettlementTrace(previousDestinationCityId);
+    }
   }
   window.routeEditorOriginTerminalSnapshot = previousTerminalCityId ? {
     cityId: previousTerminalCityId,
@@ -2823,6 +2832,27 @@ function createRouteLaunchPanel() {
       window.partyPlaybackState.intermediateSettlementReached &&
       window.partyPlaybackState.intermediateSettlementId != null
         ? String(window.partyPlaybackState.intermediateSettlementId) : null;
+    const pausedTerminalCityId = !pausedIntermediateCityId &&
+      isTerminalSettlementPaused(window.partyPlaybackState)
+        ? String(window.routeDestinationCityId) : null;
+    // Шестерёнка в конечном городе должна сохранять тот же снимок,
+    // что и запуск редактора двойным кликом по жетону. Тогда отмена
+    // восстановит занятый город, его обводку и скрытый маркер.
+    window.routeEditorOriginTerminalSnapshot = pausedTerminalCityId ? {
+      cityId: pausedTerminalCityId,
+      routePoints: Array.isArray(routePoints) ? routePoints.map(point => {
+        const copy = L.latLng(Number(point.lat), Number(point.lng));
+        return copyRoutePointMetadata(point, copy);
+      }) : [],
+      playbackState: window.partyPlaybackState ? { ...window.partyPlaybackState } : null,
+      routeStartedAt: window.routePlaybackRouteStartedAt || null,
+      destinationBoundaryPoint: window.routeDestinationBoundaryPoint
+        ? L.latLng(window.routeDestinationBoundaryPoint.lat, window.routeDestinationBoundaryPoint.lng) : null,
+      destinationApproachPoint: window.routeDestinationApproachPoint
+        ? L.latLng(window.routeDestinationApproachPoint.lat, window.routeDestinationApproachPoint.lng) : null,
+      intermediateCityIds: Array.isArray(window.routeIntermediateCityIds)
+        ? window.routeIntermediateCityIds.slice() : []
+    } : null;
     window.routeEditorOriginIntermediateSnapshot = pausedIntermediateCityId ? {
       cityId: pausedIntermediateCityId,
       routePoints: Array.isArray(routePoints) ? routePoints.map(point => {
@@ -5691,6 +5721,7 @@ function cancelPartyRoute() {
     if (routeLaunchPanel) routeLaunchPanel.style.display = "none";
     map.doubleClickZoom.enable();
     window.routeEditorOriginTerminalSnapshot = null;
+    window.routeEditorOriginIntermediateSnapshot = null;
     window.routeStartCityOutlineClearedFor = null;
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     console.log("Редактирование выхода отменено: восстановлено состояние города");
