@@ -1161,6 +1161,23 @@ window.handleSettlementCityDoubleClick = function(latlng) {
 
 map.on("dblclick", function(e) {
   if (window.settlementDrawingActive || settlementJustDrew) return;
+
+  // Нативное событие Leaflet — страховка для двойного клика по цели
+  // во время прокладки маршрута. Если собственный таймер уже успел
+  // принять первый клик за одиночный, второй клик мог только создать
+  // новое ожидание, а этот обработчик раньше вообще не завершал маршрут.
+  // Повторный вызов с той же координатой переводит пару кликов в обычную
+  // ветку завершения handlePartyRouteClick, не меняя её геометрию.
+  if (window.routeMode && typeof window.handlePartyRouteClick === "function") {
+    window.handlePartyRouteClick(e.latlng);
+    if (window.routeMode) window.handlePartyRouteClick(e.latlng);
+    if (e.originalEvent) {
+      e.originalEvent.preventDefault();
+      e.originalEvent.stopPropagation();
+    }
+    return;
+  }
+
   if (window.handleSettlementCityDoubleClick(e.latlng)) {
     if (e.originalEvent) {
       e.originalEvent.preventDefault();
@@ -7813,6 +7830,26 @@ window.handlePartyRouteClick = function(latlng) {
       pendingRouteClickPace = null;
       pendingRouteClickSpeedReduced = null;
 
+      // Если первый клик уже успел обработаться как одиночный, город
+      // мог стать промежуточным: маршрут тогда заканчивается в его центре.
+      // Пришедший следом dblclick должен не строить новый хвост из центра,
+      // а преобразовать уже добавленный промежуточный город в конечный.
+      const lastRoutePoint = routePoints[routePoints.length - 1];
+      const clickedCityIsAlreadyRouteEnd = Boolean(
+        clickedArea &&
+        lastRoutePoint &&
+        String(lastRoutePoint._routeSettlementId || "") === String(clickedArea.id) &&
+        getRouteSegmentMode(lastRoutePoint) === "settlement-zero" &&
+        Array.isArray(window.routeIntermediateCityIds) &&
+        window.routeIntermediateCityIds.some(id => String(id) === String(clickedArea.id))
+      );
+      if (clickedCityIsAlreadyRouteEnd &&
+          typeof window.finishRouteAtLastSelectedSettlement === "function" &&
+          window.finishRouteAtLastSelectedSettlement()) {
+        console.log("Промежуточное поселение преобразовано в конечное двойным кликом:", clickedArea.id);
+        return;
+      }
+
       // Двойной клик по городу — прежний способ завершить маршрут у города.
       if (clickedArea && routePoints.length > 0) {
         addInterveningSettlementsBeforeTarget(
@@ -7912,8 +7949,7 @@ window.handlePartyRouteClick = function(latlng) {
     }
   }
 
-  // Даём браузеру достаточно времени распознать двойной клик.
-  // На мобильных устройствах интервал между двумя нажатиями часто больше 180 мс.
+  // Ожидаем второй клик ровно 180 мс.
   pendingRouteClickPosition = latlng;
   pendingRouteClickPace = clickPace;
   pendingRouteClickSpeedReduced = clickSpeedReduced;
@@ -7942,7 +7978,7 @@ window.handlePartyRouteClick = function(latlng) {
     } else {
       window.addPartyRoutePoint(position, 0, segmentPace, segmentSpeedReduced);
     }
-  }, 500);
+  }, 180);
 };
 
 // Движение курсора на ПК.
