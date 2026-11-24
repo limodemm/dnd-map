@@ -392,8 +392,8 @@ map.on('click', function(e) {
   // Дополнительная страховка для конечного города: состояние паузы иногда
   // уже обновлено другим обработчиком, но маркер всё ещё скрыт в центре.
   // В таком случае определяем занятый город по фактической позиции маркера.
-  if (!pausedCityArea && partyMarker && window.partyMarkerHiddenForSettlementExit) {
-    const markerPosition = partyMarker.getLatLng();
+  if (!pausedCityArea && window.partyMarker && window.partyMarkerHiddenForSettlementExit) {
+    const markerPosition = window.partyMarker.getLatLng();
     pausedCityArea = (window.settlementAreas || []).find(area =>
       isPointInsideSettlementClickPolygon(markerPosition, getSettlementClickPolygon(area, 4))
     ) || null;
@@ -952,6 +952,9 @@ let partyIcon = createPartyIcon();
   interactive: true,
   zIndexOffset: 2000
 }).addTo(map);
+// Маркер создаётся внутри module-скрипта, но обработчик клика по карте
+// объявлен в обычном script. Публикуем ссылку для безопасного доступа из него.
+window.partyMarker = partyMarker;
 if (window.partyMarkerHiddenForSettlementExit) {
   partyMarker._icon.style.transition = "none";
   partyMarker._icon.style.opacity = "0";
