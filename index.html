@@ -2945,6 +2945,13 @@ function createRouteLaunchPanel() {
     const editOriginDistance = Math.max(0, Math.min(
       originalRouteLength, pendingRoutePlaybackResumeDistance
     ));
+    // Снимок исходного конечного города нужен только пока отряд фактически
+    // остаётся в нём. Если новый маршрут уже пройден хотя бы частично,
+    // отмена редактирования должна оставить отряд в текущей точке маршрута,
+    // а не откатывать его к городу, из которого он вышел.
+    if (editOriginDistance > 0.001) {
+      window.routeEditorOriginTerminalSnapshot = null;
+    }
     if (editOriginDistance > 0.001) {
       // Убираем из нового укороченного маршрута все промежуточные города,
       // которые отряд уже полностью покинул. Иначе редактор восстановит их
