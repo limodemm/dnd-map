@@ -331,6 +331,38 @@ function renderPopup() {
   marker._customId = data.id;
 }
 
+// Геометрия города может быть доступна раньше, чем завершится инициализация
+// слоя сухой кисти. Для обработки кликов используем её, если она уже готова,
+// иначе безопасно проверяем исходный полигон города.
+function getSettlementClickPolygon(area, extraPixels) {
+  if (!area) return [];
+  if (typeof window.getSettlementBrushErasePolygon === "function") {
+    try {
+      const polygon = window.getSettlementBrushErasePolygon(area, extraPixels || 0);
+      if (Array.isArray(polygon) && polygon.length >= 3) return polygon;
+    } catch (error) {
+      console.warn("Не удалось получить визуальный контур города для клика:", error);
+    }
+  }
+  return Array.isArray(area.points) ? area.points : [];
+}
+
+function isPointInsideSettlementClickPolygon(latlng, polygon) {
+  if (!latlng || !Array.isArray(polygon) || polygon.length < 3) return false;
+  if (typeof window.pointInSettlement === "function") {
+    return window.pointInSettlement(latlng, polygon);
+  }
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = Number(polygon[i].lng), yi = Number(polygon[i].lat);
+    const xj = Number(polygon[j].lng), yj = Number(polygon[j].lat);
+    const intersects = ((yi > latlng.lat) !== (yj > latlng.lat)) &&
+      (latlng.lng < (xj - xi) * (latlng.lat - yi) / ((yj - yi) || 0.0000001) + xi);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
 // --- ДОБАВЛЕНИЕ МЕТКИ ПО КЛИКУ ---
 map.on('click', function(e) {
   // В режиме редактора клики по карте добавляют точки контура,
@@ -358,9 +390,8 @@ map.on('click', function(e) {
     pausedCityArea = terminalDestination ? terminalDestination.area : null;
   }
   if (pausedCityArea) {
-    const cityPolygon = window.getSettlementBrushErasePolygon(pausedCityArea, 4);
-    if (Array.isArray(cityPolygon) && cityPolygon.length >= 3 &&
-        window.pointInSettlement(e.latlng, cityPolygon)) {
+    const cityPolygon = getSettlementClickPolygon(pausedCityArea, 4);
+    if (isPointInsideSettlementClickPolygon(e.latlng, cityPolygon)) {
       if (map.doubleClickZoom) map.doubleClickZoom.disable();
       setTimeout(function() {
         if (!window.routeMode && map.doubleClickZoom) map.doubleClickZoom.enable();
@@ -1061,9 +1092,8 @@ window.handleSettlementCityDoubleClick = function(latlng) {
   }
 
   if (!targetArea) return false;
-  const visualPolygon = window.getSettlementBrushErasePolygon(targetArea, 4);
-  if (!Array.isArray(visualPolygon) || visualPolygon.length < 3 ||
-      !window.pointInSettlement(latlng, visualPolygon)) return false;
+  const visualPolygon = getSettlementClickPolygon(targetArea, 4);
+  if (!isPointInsideSettlementClickPolygon(latlng, visualPolygon)) return false;
 
   // Одиночный клик по городу остаётся обычным кликом карты.
   // Только двойной клик запускает стандартную логику нового маршрута.
