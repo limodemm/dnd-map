@@ -7501,8 +7501,21 @@ window.applySynchronizedPartyRoute = function(data) {
     ? L.latLng(data.destinationApproachPoint.lat, data.destinationApproachPoint.lng) : null;
   window.routeIntermediateCityIds = Array.isArray(data.intermediateSettlementIds)
     ? data.intermediateSettlementIds.map(id => String(id)) : [];
-  window.routeEditorOriginTerminalSnapshot = null;
-  window.routeEditorOriginIntermediateSnapshot = null;
+  // Локальный снимок города, из которого отряд начал новый маршрут,
+  // нужен для отмены редактора после подтверждения этого маршрута.
+  // Подтверждение приходит обратно через Firebase как синхронизированный
+  // маршрут; не теряем снимок, если начало нового маршрута совпадает
+  // с городом, где отряд уже находился до прокладки.
+  const keepTerminalEditorOrigin = Boolean(
+    window.routeEditorOriginTerminalSnapshot &&
+    window.routeEditorOriginTerminalSnapshot.cityId != null &&
+    window.routeStartSettlementId != null &&
+    String(window.routeEditorOriginTerminalSnapshot.cityId) === String(window.routeStartSettlementId)
+  );
+  if (!keepTerminalEditorOrigin) {
+    window.routeEditorOriginTerminalSnapshot = null;
+    window.routeEditorOriginIntermediateSnapshot = null;
+  }
   window.routeStartCityOutlineClearedFor = null;
   if (partyMarker) setPartyMarkerVisible(!isPartyMarkerInsideSettlementTransit(0));
   // Убираем статичные обводки выбранных промежуточных городов.
