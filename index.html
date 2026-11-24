@@ -5497,75 +5497,11 @@ function clearRouteDrawing() {
 // Единая отмена маршрута: вызывается кнопкой и клавишей Escape.
 function cancelPartyRoute() {
   const intermediateSnapshot = window.routeEditorOriginIntermediateSnapshot;
-  if (intermediateSnapshot && intermediateSnapshot.cityId != null) {
-    if (pendingRouteClickTimer) clearTimeout(pendingRouteClickTimer);
-    pendingRouteClickTimer = null;
-    pendingRouteClickPosition = null;
-    pendingRouteClickPace = null;
-    pendingRouteClickSpeedReduced = null;
-    stopRouteMarkerAnimation();
-    if (typeof window.cancelPendingRouteSettlementTraces === "function") {
-      window.cancelPendingRouteSettlementTraces();
-    }
-    if (typeof window.cancelActiveRouteSettlementAnimations === "function") {
-      window.cancelActiveRouteSettlementAnimations();
-    }
-    routeFinished = true;
-    window.routeEditingConfirmedRoute = false;
-    window.routePendingConfirmation = false;
-    window.routeMode = false;
-    window.routeAnimationPublished = true;
-    pendingRouteResumeState = null;
-    pendingRoutePlaybackResumeDistance = null;
-    routePoints = Array.isArray(intermediateSnapshot.routePoints)
-      ? intermediateSnapshot.routePoints : [];
-    window.routeDestinationCityId = intermediateSnapshot.destinationCityId || null;
-    window.routeDestinationBoundaryPoint = intermediateSnapshot.destinationBoundaryPoint || null;
-    window.routeDestinationApproachPoint = intermediateSnapshot.destinationApproachPoint || null;
-    window.routeIntermediateCityIds = Array.isArray(intermediateSnapshot.intermediateCityIds)
-      ? intermediateSnapshot.intermediateCityIds.slice() : [];
-    window.routePlaybackRouteStartedAt = intermediateSnapshot.routeStartedAt || null;
-    routeRestResetDistances = intermediateSnapshot.restResetDistances.slice();
-    routeForcedSegments = intermediateSnapshot.forcedSegments.map(segment => ({ ...segment }));
-    routeForcedMarch = Boolean(intermediateSnapshot.forcedMarch);
-    routeForcedMarchStartDistance = Number(intermediateSnapshot.forcedMarchStartDistance) || 0;
-    routeForcedMarchStartUnits = Number(intermediateSnapshot.forcedMarchStartUnits) || 0;
-    routeForcedMarchEpochStartDistance = Number(intermediateSnapshot.forcedMarchEpochStartDistance) || 0;
-    routeForcedMarchPendingExit = Boolean(intermediateSnapshot.forcedMarchPendingExit);
-    routePace = intermediateSnapshot.pace || routePace;
-    routeSpeedReduced = Boolean(intermediateSnapshot.speedReduced);
-    routeRestElapsedCarryUnits = Number(intermediateSnapshot.restElapsedCarryUnits) || 0;
-    window.partyPlaybackState = { ...intermediateSnapshot.playbackState };
-    partyPlaybackDistance = Math.max(0, Number(intermediateSnapshot.playbackState.startDistance) || 0);
-    window.confirmedPartyRoute = routePoints;
-    clearRouteIntermediateCityOutlines();
-    clearRouteDrawing();
-    if (window.clearSettlementOutline) window.clearSettlementOutline();
-    const area = (window.settlementAreas || []).find(item =>
-      String(item.id) === String(intermediateSnapshot.cityId)
-    );
-    const occupiedPosition = getPartyPlaybackPositionForDistance(partyPlaybackDistance);
-    if (occupiedPosition && partyMarker) window.setPartyMarkerPlaybackPosition(occupiedPosition);
-    if (area && typeof window.completeRouteSettlementOutline === "function") {
-      window.completeRouteSettlementOutline(area);
-    }
-    setPartyMarkerVisibleImmediately(false);
-    createRouteLaunchPanel();
-    if (routePanel) routePanel.style.display = "none";
-    if (routeLaunchPanel) routeLaunchPanel.style.display = "block";
-    // Сначала восстанавливаем слои полного подтверждённого маршрута,
-    // затем применяем маску уже пройденного участка до входа в город.
-    updateRouteLine(null);
-    renderPartyPlaybackState(window.partyPlaybackState);
-    updatePartyPlaybackRouteLine(partyPlaybackDistance);
-    updatePartyPlaybackRouteTokens(partyPlaybackDistance);
-    map.doubleClickZoom.enable();
-    window.routeEditorOriginIntermediateSnapshot = null;
-    window.routeStartCityOutlineClearedFor = null;
-    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-    console.log("Редактирование отменено: восстановлено состояние промежуточного города");
-    return;
-  }
+  const intermediateCityId = intermediateSnapshot && intermediateSnapshot.cityId != null
+    ? String(intermediateSnapshot.cityId) : null;
+  const intermediateCityArea = intermediateCityId
+    ? (window.settlementAreas || []).find(item => String(item.id) === intermediateCityId)
+    : null;
   const terminalSnapshot = window.routeEditorOriginTerminalSnapshot;
   if (terminalSnapshot && terminalSnapshot.cityId != null) {
     if (pendingRouteClickTimer) clearTimeout(pendingRouteClickTimer);
@@ -5681,6 +5617,22 @@ function cancelPartyRoute() {
 
   if (document.activeElement && document.activeElement.blur) {
     document.activeElement.blur();
+  }
+
+  // Отмена редактирования из промежуточного города использует ту же
+  // общую очистку маршрута, что и остальные случаи. Отличается только
+  // сохранение текущего города: его контур остаётся завершённым, а жетон
+  // отряда остаётся скрытым внутри города. Старый маршрут не восстанавливаем.
+  if (intermediateCityId) {
+    if (intermediateCityArea && intermediateCityArea.center && partyMarker) {
+      window.setPartyMarkerPlaybackPosition(intermediateCityArea.center);
+    }
+    if (intermediateCityArea && typeof window.completeRouteSettlementOutline === "function") {
+      window.completeRouteSettlementOutline(intermediateCityArea);
+    }
+    setPartyMarkerVisibleImmediately(false);
+    window.routeEditorOriginIntermediateSnapshot = null;
+    window.routeStartCityOutlineClearedFor = null;
   }
 
   console.log("Прокладка маршрута отменена");
