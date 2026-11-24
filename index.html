@@ -7912,7 +7912,8 @@ window.handlePartyRouteClick = function(latlng) {
     }
   }
 
-  // Ожидаем второй клик ровно 180 мс.
+  // Даём браузеру достаточно времени распознать двойной клик.
+  // На мобильных устройствах интервал между двумя нажатиями часто больше 180 мс.
   pendingRouteClickPosition = latlng;
   pendingRouteClickPace = clickPace;
   pendingRouteClickSpeedReduced = clickSpeedReduced;
@@ -7941,7 +7942,7 @@ window.handlePartyRouteClick = function(latlng) {
     } else {
       window.addPartyRoutePoint(position, 0, segmentPace, segmentSpeedReduced);
     }
-  }, 180);
+  }, 500);
 };
 
 // Движение курсора на ПК.
