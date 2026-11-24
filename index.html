@@ -145,6 +145,8 @@ body {
   overflow: hidden;
   pointer-events: none;
   contain: paint;
+  /* Не показываем условную полночь до получения настоящего состояния отряда. */
+  opacity: 0;
 }
 #celestial-clock-disc,
 #celestial-clock-frame {
@@ -161,6 +163,8 @@ body {
 #celestial-clock-disc {
   transform: translateX(-50%) rotate(0deg);
   transform-origin: 50% 50%;
+  /* Внутренний круг чуть меньше отверстия рамки: края рисунка не смогут выпирать. */
+  clip-path: circle(44% at 50% 50%);
   will-change: transform;
 }
 #celestial-clock-frame {
@@ -168,6 +172,7 @@ body {
   height: 132px;
   top: -66px;
   z-index: 2;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.48));
 }
 @media (max-width: 600px) {
   #celestial-clock { width: 102.6667px; height: 51.3333px; }
@@ -4859,12 +4864,36 @@ window.getPartyGameTimeHours = function(state = window.partyPlaybackState, now =
 };
 
 window.updateCelestialClock = function(state = window.partyPlaybackState, now = window.getSynchronizedRouteNow()) {
+  const clock = document.getElementById("celestial-clock");
   const disc = document.getElementById("celestial-clock-disc");
-  if (!disc) return;
+  if (!clock || !disc || !state) return;
+
   const hours = window.getPartyGameTimeHours(state, now);
-  // Полный оборот соответствует 24 игровым часам; положительный угол — по часовой стрелке.
-  const angle = ((hours % 24) / 24) * 360;
-  disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
+  const previousHours = Number(disc.dataset.gameHours);
+  const hasPreviousValue = Number.isFinite(previousHours);
+  const deltaHours = hasPreviousValue ? hours - previousHours : 0;
+
+  // Не используем остаток от 24: накопленный угол сохраняет направление
+  // вращения при переходе через полночь и не даёт диску провернуться назад.
+  const angle = (hours / 24) * 360;
+  if (!hasPreviousValue) {
+    // Первое отображение — сразу в правильном положении, без анимации из полуночи.
+    disc.style.transition = "none";
+    disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
+    clock.style.opacity = "1";
+  } else if (state.status === "playing") {
+    // Во время движения угол обновляется каждый кадр, как и раньше: без CSS-торможения.
+    disc.style.transition = "none";
+    disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
+  } else if (deltaHours > 0.001) {
+    // Отдых тоже прокручивает диск плавно, но заметно быстрее обычного пути.
+    const duration = deltaHours >= 4 ? 850 : 380;
+    disc.style.transition = `transform ${duration}ms cubic-bezier(0.22, 0.72, 0.24, 1)`;
+    disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
+  } else {
+    disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
+  }
+
   disc.dataset.gameHours = String(hours);
 };
 
@@ -5905,8 +5934,8 @@ function getRouteElapsedUnitsSinceLastRest(points, currentDistance, carryInUnits
   return Math.max(0, Math.min(0.999999, elapsed));
 }
 
-// Начальное положение — полночь: луна в нижней видимой половине.
-window.updateCelestialClock(null, window.getSynchronizedRouteNow());
+// Положение небесного диска задаётся после получения состояния отряда.
+// До этого циферблат скрыт, чтобы при перезагрузке не показывалась ложная полночь.
 
 // =====================================
 // ОЧИСТКА ЛИНИИ И ПРИВАЛОВ
