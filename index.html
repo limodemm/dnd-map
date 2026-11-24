@@ -398,7 +398,10 @@ map.on('click', function(e) {
       isPointInsideSettlementClickPolygon(markerPosition, getSettlementClickPolygon(area, 4))
     ) || null;
   }
-  if (pausedCityArea) {
+  // Пока прокладывается новый маршрут, клики должны доходить до
+  // обработчика маршрута даже внутри города, из которого отряд выходит.
+  // Иначе проверка занятого города перехватывает их раньше routeMode.
+  if (!window.routeMode && pausedCityArea) {
     const cityPolygon = getSettlementClickPolygon(pausedCityArea, 4);
     if (isPointInsideSettlementClickPolygon(e.latlng, cityPolygon)) {
       if (map.doubleClickZoom) map.doubleClickZoom.disable();
@@ -1059,10 +1062,11 @@ partyMarker.on("click", function() {
   }
 
 if (!previousTerminalCityId && !previousIntermediateCityId) setPartyMarkerVisible(true);
-if (previousIntermediateArea && previousIntermediateArea.center) {
-  // Внутри промежуточного города новая прокладка начинается из его центра.
+if (previousStartArea && previousStartArea.center &&
+    (previousIntermediateArea || previousTerminalArea)) {
+  // Выход из любого занятого города начинается из его центра.
   // Маркер остаётся скрытым на всём протяжении нахождения в городе.
-  partyMarker.setLatLng(previousIntermediateArea.center);
+  partyMarker.setLatLng(previousStartArea.center);
   setPartyMarkerVisible(false);
 }
 
