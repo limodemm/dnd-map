@@ -976,6 +976,16 @@ partyMarker.on("click", function() {
   const previousIntermediateArea = previousIntermediateCityId
     ? (window.settlementAreas || []).find(item => String(item.id) === previousIntermediateCityId)
     : null;
+  const previousTerminalArea = previousTerminalCityId
+    ? (window.settlementAreas || []).find(item => String(item.id) === previousTerminalCityId)
+    : null;
+  const markerStartArea = !previousIntermediateArea && !previousTerminalArea &&
+    window.partyMarkerHiddenForSettlementExit && partyMarker
+      ? findSettlementAt(partyMarker.getLatLng()) : null;
+  const previousStartArea = previousIntermediateArea || previousTerminalArea || markerStartArea;
+  window.routeStartSettlementId = previousStartArea && previousStartArea.id != null
+    ? String(previousStartArea.id)
+    : (previousTerminalCityId || previousIntermediateCityId || null);
   // Прямой двойной клик по городу должен отменяться так же безопасно,
   // как редактирование через шестерёнку: запоминаем занятый город как
   // источник редактора, чтобы отмена не показывала маркер и не стирала контур.
@@ -997,6 +1007,15 @@ partyMarker.on("click", function() {
         window.clearRouteDestinationSettlementTrace(id);
       }
     });
+    // Конечный город старого маршрута не входит в список промежуточных.
+    // При старте нового маршрута из текущего промежуточного города его
+    // трассу тоже нужно убрать, иначе финальная обводка остаётся висеть.
+    const previousDestinationCityId = window.routeDestinationCityId != null
+      ? String(window.routeDestinationCityId) : null;
+    if (previousDestinationCityId && previousDestinationCityId !== previousIntermediateCityId &&
+        typeof window.clearRouteDestinationSettlementTrace === "function") {
+      window.clearRouteDestinationSettlementTrace(previousDestinationCityId);
+    }
   }
   window.routeEditorOriginTerminalSnapshot = previousTerminalCityId ? {
     cityId: previousTerminalCityId,
@@ -1058,9 +1077,8 @@ routeFinished = false;
 window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
 window.routeDestinationApproachPoint = null;
-window.routeIntermediateCityIds = previousTerminalCityId
-  ? [previousTerminalCityId]
-  : previousIntermediateCityId ? [previousIntermediateCityId] : [];
+window.routeIntermediateCityIds = window.routeStartSettlementId
+  ? [String(window.routeStartSettlementId)] : [];
 window.routeIntermediateSettlementUndoSnapshots = [];
 clearRouteIntermediateCityOutlines();
 // При выходе из промежуточного города сохраняем его обводку, несмотря на
@@ -1090,10 +1108,11 @@ if (forcedButton) {
 // Отключаем двойной клик для приближения карты
 map.doubleClickZoom.disable();
 
-// Начинаем маршрут от текущего положения отряда; из промежуточного
-// города — строго от его центра.
-routePoints = [previousIntermediateArea && previousIntermediateArea.center
-  ? L.latLng(previousIntermediateArea.center.lat, previousIntermediateArea.center.lng)
+// Начинаем маршрут из центра занятого города. После перезагрузки жетон
+// может сохранять небольшое смещение внутри скрытого перехода, поэтому
+// координаты центра надёжнее текущей экранной позиции маркера.
+routePoints = [previousStartArea && previousStartArea.center
+  ? L.latLng(Number(previousStartArea.center.lat), Number(previousStartArea.center.lng))
   : partyMarker.getLatLng()];
 
   lastCursorPosition = null;
@@ -2823,6 +2842,33 @@ function createRouteLaunchPanel() {
       window.partyPlaybackState.intermediateSettlementReached &&
       window.partyPlaybackState.intermediateSettlementId != null
         ? String(window.partyPlaybackState.intermediateSettlementId) : null;
+    const pausedTerminalCityId = !pausedIntermediateCityId &&
+      isTerminalSettlementPaused(window.partyPlaybackState)
+        ? String(window.routeDestinationCityId) : null;
+    // Шестерёнка в конечном городе должна сохранять тот же снимок,
+    // что и запуск редактора двойным кликом по жетону. Тогда отмена
+    // восстановит занятый город, его обводку и скрытый маркер.
+    // Если отряд только что прибыл в конечный город и оттуда уже начал
+    // прокладывать следующий маршрут, исходный город больше не определяется
+    // как конечный город ТЕКУЩЕГО маршрута. В этом случае сохраняем снимок,
+    // созданный при клике по маркеру отряда, а не затираем его значением null.
+    if (pausedTerminalCityId) {
+      window.routeEditorOriginTerminalSnapshot = {
+        cityId: pausedTerminalCityId,
+        routePoints: Array.isArray(routePoints) ? routePoints.map(point => {
+          const copy = L.latLng(Number(point.lat), Number(point.lng));
+          return copyRoutePointMetadata(point, copy);
+        }) : [],
+        playbackState: window.partyPlaybackState ? { ...window.partyPlaybackState } : null,
+        routeStartedAt: window.routePlaybackRouteStartedAt || null,
+        destinationBoundaryPoint: window.routeDestinationBoundaryPoint
+          ? L.latLng(window.routeDestinationBoundaryPoint.lat, window.routeDestinationBoundaryPoint.lng) : null,
+        destinationApproachPoint: window.routeDestinationApproachPoint
+          ? L.latLng(window.routeDestinationApproachPoint.lat, window.routeDestinationApproachPoint.lng) : null,
+        intermediateCityIds: Array.isArray(window.routeIntermediateCityIds)
+          ? window.routeIntermediateCityIds.slice() : []
+      };
+    }
     window.routeEditorOriginIntermediateSnapshot = pausedIntermediateCityId ? {
       cityId: pausedIntermediateCityId,
       routePoints: Array.isArray(routePoints) ? routePoints.map(point => {
@@ -3787,11 +3833,19 @@ window.routePendingConfirmation = false;
     // дальнейший откат запрещён: иначе город исчезнет из маршрута.
     if (!Array.isArray(routePoints) || routePoints.length <= 1 ||
         isRouteAtPausedIntermediateCityCenter()) return;
-    const routeStartSettlementIds = (Array.isArray(window.routeIntermediateCityIds)
-      ? window.routeIntermediateCityIds : []).filter(id => {
-        const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
-        return Boolean(area && routePoints[0] && window.isRouteAtSettlementCenter(routePoints[0], area));
-      }).map(String);
+    const inferredStartArea = window.routeStartSettlementId != null
+      ? (window.settlementAreas || []).find(item => String(item.id) === String(window.routeStartSettlementId))
+      : (window.settlementAreas || []).find(item => item && item.center && routePoints[0] &&
+          window.isRouteAtSettlementCenter(routePoints[0], item));
+    const routeStartSettlementIds = Array.from(new Set([
+      ...(window.routeStartSettlementId != null ? [String(window.routeStartSettlementId)] : []),
+      ...(inferredStartArea && inferredStartArea.id != null ? [String(inferredStartArea.id)] : []),
+      ...(Array.isArray(window.routeIntermediateCityIds)
+        ? window.routeIntermediateCityIds.filter(id => {
+            const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
+            return Boolean(area && routePoints[0] && window.isRouteAtSettlementCenter(routePoints[0], area));
+          }).map(String) : [])
+    ]));
     const intermediateIdsBeforeUndo = (Array.isArray(window.routeIntermediateCityIds)
       ? window.routeIntermediateCityIds : []).map(id => String(id));
     if (window.routeDestinationCityId) {
@@ -3960,6 +4014,16 @@ window.routePendingConfirmation = false;
       if (!retainedIntermediateIds.has(id) && !routeStartSettlementIds.includes(id) &&
           window.clearRouteDestinationSettlementTrace) {
         window.clearRouteDestinationSettlementTrace(id);
+      }
+    });
+    // Восстанавливаем завершённую обводку стартового города независимо
+    // от того, до какой контрольной точки вернулась команда. Иначе после
+    // перезагрузки очистка обводки конечного города могла оставить старт
+    // без визуального контура.
+    routeStartSettlementIds.forEach(id => {
+      const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
+      if (area && typeof window.completeRouteSettlementOutline === "function") {
+        window.completeRouteSettlementOutline(area);
       }
     });
     refreshRouteIntermediateCityOutlines();
@@ -5691,6 +5755,7 @@ function cancelPartyRoute() {
     if (routeLaunchPanel) routeLaunchPanel.style.display = "none";
     map.doubleClickZoom.enable();
     window.routeEditorOriginTerminalSnapshot = null;
+    window.routeEditorOriginIntermediateSnapshot = null;
     window.routeStartCityOutlineClearedFor = null;
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     console.log("Редактирование выхода отменено: восстановлено состояние города");
