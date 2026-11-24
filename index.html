@@ -2838,21 +2838,27 @@ function createRouteLaunchPanel() {
     // Шестерёнка в конечном городе должна сохранять тот же снимок,
     // что и запуск редактора двойным кликом по жетону. Тогда отмена
     // восстановит занятый город, его обводку и скрытый маркер.
-    window.routeEditorOriginTerminalSnapshot = pausedTerminalCityId ? {
-      cityId: pausedTerminalCityId,
-      routePoints: Array.isArray(routePoints) ? routePoints.map(point => {
-        const copy = L.latLng(Number(point.lat), Number(point.lng));
-        return copyRoutePointMetadata(point, copy);
-      }) : [],
-      playbackState: window.partyPlaybackState ? { ...window.partyPlaybackState } : null,
-      routeStartedAt: window.routePlaybackRouteStartedAt || null,
-      destinationBoundaryPoint: window.routeDestinationBoundaryPoint
-        ? L.latLng(window.routeDestinationBoundaryPoint.lat, window.routeDestinationBoundaryPoint.lng) : null,
-      destinationApproachPoint: window.routeDestinationApproachPoint
-        ? L.latLng(window.routeDestinationApproachPoint.lat, window.routeDestinationApproachPoint.lng) : null,
-      intermediateCityIds: Array.isArray(window.routeIntermediateCityIds)
-        ? window.routeIntermediateCityIds.slice() : []
-    } : null;
+    // Если отряд только что прибыл в конечный город и оттуда уже начал
+    // прокладывать следующий маршрут, исходный город больше не определяется
+    // как конечный город ТЕКУЩЕГО маршрута. В этом случае сохраняем снимок,
+    // созданный при клике по маркеру отряда, а не затираем его значением null.
+    if (pausedTerminalCityId) {
+      window.routeEditorOriginTerminalSnapshot = {
+        cityId: pausedTerminalCityId,
+        routePoints: Array.isArray(routePoints) ? routePoints.map(point => {
+          const copy = L.latLng(Number(point.lat), Number(point.lng));
+          return copyRoutePointMetadata(point, copy);
+        }) : [],
+        playbackState: window.partyPlaybackState ? { ...window.partyPlaybackState } : null,
+        routeStartedAt: window.routePlaybackRouteStartedAt || null,
+        destinationBoundaryPoint: window.routeDestinationBoundaryPoint
+          ? L.latLng(window.routeDestinationBoundaryPoint.lat, window.routeDestinationBoundaryPoint.lng) : null,
+        destinationApproachPoint: window.routeDestinationApproachPoint
+          ? L.latLng(window.routeDestinationApproachPoint.lat, window.routeDestinationApproachPoint.lng) : null,
+        intermediateCityIds: Array.isArray(window.routeIntermediateCityIds)
+          ? window.routeIntermediateCityIds.slice() : []
+      };
+    }
     window.routeEditorOriginIntermediateSnapshot = pausedIntermediateCityId ? {
       cityId: pausedIntermediateCityId,
       routePoints: Array.isArray(routePoints) ? routePoints.map(point => {
