@@ -2979,6 +2979,15 @@ function createRouteLaunchPanel() {
         ...departedStartCityIds
       ]));
 
+      // Стартовый город нового маршрута перестаёт быть текущей точкой
+      // отряда сразу после фактического выхода из его границ. Не оставляем
+      // его в routeStartSettlementId: кнопка «Вернуть» использует это поле
+      // как основание повторно восстановить обводку стартового города.
+      if (window.routeStartSettlementId != null &&
+          departedCityIds.includes(String(window.routeStartSettlementId))) {
+        window.routeStartSettlementId = null;
+      }
+
       if (departedCityIds.length) {
         departedCityIds.forEach(id => {
           if (typeof window.clearRouteDestinationSettlementTrace === "function") {
