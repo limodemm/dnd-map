@@ -392,7 +392,10 @@ map.on('click', function(e) {
   // Дополнительная страховка для конечного города: состояние паузы иногда
   // уже обновлено другим обработчиком, но маркер всё ещё скрыт в центре.
   // В таком случае определяем занятый город по фактической позиции маркера.
-  if (!pausedCityArea && window.partyMarker && window.partyMarkerHiddenForSettlementExit) {
+  if (!pausedCityArea && pausedState && pausedState.status === "paused" && window.partyMarker) {
+    // После форсированного марша и разбития лагеря Firebase может не вернуть
+    // флаг terminal/intermediate, а маркер при этом уже стоит в городе.
+    // Определяем занятое поселение по фактической позиции независимо от opacity.
     const markerPosition = window.partyMarker.getLatLng();
     pausedCityArea = (window.settlementAreas || []).find(area =>
       isPointInsideSettlementClickPolygon(markerPosition, getSettlementClickPolygon(area, 4))
@@ -971,17 +974,22 @@ partyMarker.on("click", function() {
   // Если маршрут уже прокладывается, повторный клик ничего не делает
   if (window.routeMode) return;
 
-  const hiddenMarkerStartArea = window.partyMarkerHiddenForSettlementExit && partyMarker
-    ? findSettlementAt(partyMarker.getLatLng()) : null;
-  const previousTerminalCityId = isTerminalSettlementPaused(window.partyPlaybackState)
-    ? String(window.routeDestinationCityId)
-    : (hiddenMarkerStartArea && hiddenMarkerStartArea.id != null
-        ? String(hiddenMarkerStartArea.id) : null);
-  const previousIntermediateCityId = !previousTerminalCityId &&
-    window.partyPlaybackState && window.partyPlaybackState.status === "paused" &&
+  const markerIsPausedInSettlement = Boolean(
+    window.partyPlaybackState && window.partyPlaybackState.status === "paused"
+  );
+  const hiddenMarkerStartArea = partyMarker &&
+    (window.partyMarkerHiddenForSettlementExit || markerIsPausedInSettlement)
+      ? findSettlementAt(partyMarker.getLatLng()) : null;
+  const pausedIntermediateStateId = window.partyPlaybackState &&
+    window.partyPlaybackState.status === "paused" &&
     window.partyPlaybackState.intermediateSettlementReached &&
     window.partyPlaybackState.intermediateSettlementId != null
       ? String(window.partyPlaybackState.intermediateSettlementId) : null;
+  const previousTerminalCityId = isTerminalSettlementPaused(window.partyPlaybackState)
+    ? String(window.routeDestinationCityId)
+    : (!pausedIntermediateStateId && hiddenMarkerStartArea && hiddenMarkerStartArea.id != null
+        ? String(hiddenMarkerStartArea.id) : null);
+  const previousIntermediateCityId = !previousTerminalCityId ? pausedIntermediateStateId : null;
   const previousIntermediateArea = previousIntermediateCityId
     ? (window.settlementAreas || []).find(item => String(item.id) === previousIntermediateCityId)
     : null;
@@ -989,7 +997,7 @@ partyMarker.on("click", function() {
     ? (window.settlementAreas || []).find(item => String(item.id) === previousTerminalCityId)
     : null;
   const markerStartArea = !previousIntermediateArea && !previousTerminalArea &&
-    window.partyMarkerHiddenForSettlementExit && partyMarker
+    partyMarker && (window.partyMarkerHiddenForSettlementExit || markerIsPausedInSettlement)
       ? findSettlementAt(partyMarker.getLatLng()) : null;
   const previousStartArea = previousIntermediateArea || previousTerminalArea || markerStartArea;
   window.routeStartSettlementId = previousStartArea && previousStartArea.id != null
@@ -1166,7 +1174,10 @@ window.handleSettlementCityDoubleClick = function(latlng) {
   // terminalSettlementReached/intermediateSettlementReached. Если жетон
   // по-прежнему скрыт внутри поселения, определяем занятый город по его
   // фактическому положению — двойной клик должен запускать новый маршрут.
-  if (!targetArea && window.partyMarkerHiddenForSettlementExit && partyMarker) {
+  if (!targetArea && state && state.status === "paused" && partyMarker) {
+    // В том числе поддерживаем город после форсированного марша и лагеря:
+    // состояние прибытия могло потерять специальные флаги, но маркер остался
+    // внутри города. Для команды двойного клика этого достаточно.
     const markerPosition = partyMarker.getLatLng();
     targetArea = (window.settlementAreas || []).find(area =>
       Array.isArray(area.points) && area.points.length >= 3 &&
@@ -2179,7 +2190,16 @@ function syncRouteLaunchControls() {
   const reachedRouteEnd = Boolean(state && state.status === "paused" && routeTotal > 0.001 &&
     Number(state.startDistance) >= routeTotal - 0.001);
   const playUnavailable = animationRunning || playing || campRequired || terminalCityPaused || reachedRouteEnd;
-  const pausedInsideSettlement = paused && Boolean(window.partyMarkerHiddenForSettlementExit);
+  const pausedAtIntermediateCity = Boolean(paused && state &&
+    state.intermediateSettlementReached && state.intermediateSettlementId != null);
+  const pausedMarkerInsideSettlement = Boolean(paused && window.partyMarker &&
+    (window.settlementAreas || []).some(area =>
+      Array.isArray(area.points) && area.points.length >= 3 &&
+      typeof window.pointInSettlement === "function" &&
+      window.pointInSettlement(window.partyMarker.getLatLng(), area.points)
+    ));
+  const pausedInsideSettlement = paused && !pausedAtIntermediateCity &&
+    (Boolean(window.partyMarkerHiddenForSettlementExit) || pausedMarkerInsideSettlement);
   const editUnavailable = animationRunning || playing || terminalCityPaused || reachedRouteEnd || pausedInsideSettlement;
   const playButton = routeLaunchPanel.querySelector("#route-party-play");
   const editButton = routeLaunchPanel.querySelector("#route-party-edit");
@@ -5225,7 +5245,16 @@ function renderPartyPlaybackState(state) {
     ? getRouteTravelLength(routePoints) : 0;
   const reachedRouteEnd = Boolean(state && state.status === "paused" && routeTotal > 0.001 &&
     Number(state.startDistance) >= routeTotal - 0.001);
-  const pausedInsideSettlement = paused && Boolean(window.partyMarkerHiddenForSettlementExit);
+  const pausedAtIntermediateCity = Boolean(paused && state &&
+    state.intermediateSettlementReached && state.intermediateSettlementId != null);
+  const pausedMarkerInsideSettlement = Boolean(paused && window.partyMarker &&
+    (window.settlementAreas || []).some(area =>
+      Array.isArray(area.points) && area.points.length >= 3 &&
+      typeof window.pointInSettlement === "function" &&
+      window.pointInSettlement(window.partyMarker.getLatLng(), area.points)
+    ));
+  const pausedInsideSettlement = paused && !pausedAtIntermediateCity &&
+    (Boolean(window.partyMarkerHiddenForSettlementExit) || pausedMarkerInsideSettlement);
   if (editButton) editButton.disabled = Boolean(playing || terminalCityPaused || reachedRouteEnd || pausedInsideSettlement);
   pauseButton.classList.toggle("active", !playing);
   pauseButton.setAttribute("aria-pressed", !playing ? "true" : "false");
@@ -10293,10 +10322,22 @@ map.on("zoomend", function() {
       if (destinationTransit) currentInterval = destinationTransit;
     }
 
+    // Некоторые прибытия после форсированного марша завершаются без обычного
+    // terminal/intermediate-флага. После перезагрузки всё равно восстанавливаем
+    // город, если пауза сохранена, а жетон фактически находится внутри него.
+    const markerFallbackArea = !currentInterval && movement && movement.status === "paused" && partyMarker
+      ? (window.settlementAreas || []).find(area =>
+          Array.isArray(area.points) && area.points.length >= 3 &&
+          typeof window.pointInSettlement === "function" &&
+          window.pointInSettlement(partyMarker.getLatLng(), area.points)
+        ) || null
+      : null;
+
     let markerInsideSettlement = false;
     let missingCurrentArea = false;
     const currentId = currentInterval && currentInterval.settlementId != null
-      ? String(currentInterval.settlementId) : null;
+      ? String(currentInterval.settlementId)
+      : (markerFallbackArea && markerFallbackArea.id != null ? String(markerFallbackArea.id) : null);
 
     if (currentId) {
       const area = (window.settlementAreas || []).find(item => String(item.id) === currentId);
