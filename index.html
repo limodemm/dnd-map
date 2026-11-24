@@ -2595,6 +2595,15 @@ function createRouteLaunchPanel() {
     const state = window.partyPlaybackState;
     if (!state || state.status !== "playing" || routeMarkerAnimations.length > 0) return;
     const distance = window.getPartyPlaybackDistance(state, window.getSynchronizedRouteNow());
+    const pendingExitId = state.intermediateSettlementExitPendingId != null
+      ? String(state.intermediateSettlementExitPendingId) : null;
+    const pendingExitDistance = Number(state.intermediateSettlementExitDistance);
+    const hasPendingExit = Boolean(pendingExitId && Number.isFinite(pendingExitDistance) &&
+      distance < pendingExitDistance - 0.001);
+    if (pendingExitId && Number.isFinite(pendingExitDistance) && !hasPendingExit &&
+        typeof window.clearRouteDestinationSettlementTrace === "function") {
+      window.clearRouteDestinationSettlementTrace(pendingExitId);
+    }
     try {
       await window.publishPartyPlaybackState({
         status: "paused",
@@ -2602,6 +2611,10 @@ function createRouteLaunchPanel() {
         startedAt: null,
         routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
         campRequired: false,
+        intermediateSettlementReached: false,
+        intermediateSettlementId: null,
+        intermediateSettlementExitPendingId: hasPendingExit ? pendingExitId : null,
+        intermediateSettlementExitDistance: hasPendingExit ? pendingExitDistance : null,
         campHoursElapsed: Math.max(0, Number(state.campHoursElapsed) || 0),
         restResetDistances: routeRestResetDistances.slice()
       });
@@ -2613,8 +2626,31 @@ function createRouteLaunchPanel() {
     if (routeMarkerAnimations.length > 0 || !Array.isArray(routePoints) || routePoints.length < 2) return;
     const current = window.partyPlaybackState;
     if (current && current.campRequired) return;
-    const distance = current ? window.getPartyPlaybackDistance(current, window.getSynchronizedRouteNow()) : 0;
+    let distance = current ? window.getPartyPlaybackDistance(current, window.getSynchronizedRouteNow()) : 0;
     const total = getRouteTravelLength(routePoints);
+    let resumedFromIntermediate = null;
+    const transitIntervals = getRouteSettlementTransitIntervals(routePoints);
+    const pausedCityId = current && current.intermediateSettlementReached &&
+      current.intermediateSettlementId != null
+        ? String(current.intermediateSettlementId) : null;
+    const pausedCityInterval = pausedCityId
+      ? transitIntervals.find(interval => String(interval.settlementId || '') === pausedCityId)
+      : null;
+    const occupiedCityInterval = pausedCityInterval ||
+      getIntermediateSettlementTransitAtDistance(distance, transitIntervals);
+    if (occupiedCityInterval) {
+      resumedFromIntermediate = {
+        id: String(occupiedCityInterval.settlementId),
+        exitDistance: Math.max(0, Number(occupiedCityInterval.end) || 0)
+      };
+      // Продолжаем с внешней выходной точки, а не ведём скрытый маркер
+      // через весь город повторно.
+      distance = resumedFromIntermediate.exitDistance;
+      const exitPosition = getPartyPlaybackDisplayPosition(distance) ||
+        getRoutePointAtDistance(routePoints, distance);
+      if (exitPosition && partyMarker) window.setPartyMarkerPlaybackPosition(exitPosition);
+      window.setPartyMarkerBearingForDistance(distance, false, false, true);
+    }
     if (distance >= total - 0.001) return;
     try {
       await window.publishPartyPlaybackState({
@@ -2625,9 +2661,14 @@ function createRouteLaunchPanel() {
         startedAt: window.getSynchronizedRouteNow(),
         routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
         campRequired: false,
+        intermediateSettlementReached: false,
+        intermediateSettlementId: null,
+        intermediateSettlementExitPendingId: resumedFromIntermediate ? resumedFromIntermediate.id : null,
+        intermediateSettlementExitDistance: resumedFromIntermediate ? resumedFromIntermediate.exitDistance : null,
         campHoursElapsed: Math.max(0, Number(current && current.campHoursElapsed) || 0),
         restResetDistances: routeRestResetDistances.slice()
       });
+      if (resumedFromIntermediate) setPartyMarkerVisible(true);
     } catch (error) {
       console.error("Не удалось запустить движение отряда:", error);
     }
@@ -2653,31 +2694,39 @@ function createRouteLaunchPanel() {
       originalRouteLength, pendingRoutePlaybackResumeDistance
     ));
     if (editOriginDistance > 0.001) {
-      // Если маршрут начинался из уже посещённого города, а отряд успел
-      // выйти за его границы, при входе в редактор больше не показываем
-      // обводку этого города. Его ID иначе переживает обрезку маршрута и
-      // refreshRouteIntermediateCityOutlines рисует контур повторно.
+      // Убираем из нового укороченного маршрута все промежуточные города,
+      // которые отряд уже полностью покинул. Иначе редактор восстановит их
+      // статичные обводки из старого списка ID. Отдельная проверка старта
+      // сохраняет прежнюю защиту для маршрутов, начавшихся внутри города.
       const routeOrigin = routePoints[0];
       const editOriginPosition = getPartyPlaybackPositionForDistance(editOriginDistance);
-      const departedStartCityIds = (Array.isArray(window.routeIntermediateCityIds)
-        ? window.routeIntermediateCityIds : []).filter(id => {
-          const area = (window.settlementAreas || []).find(item =>
-            String(item.id) === String(id)
-          );
-          if (!area || !Array.isArray(area.points) || area.points.length < 3 ||
-              !routeOrigin || !editOriginPosition) return false;
-          const routeStartedInside = pointInSettlement(routeOrigin, area.points);
-          const markerStillInside = pointInSettlement(editOriginPosition, area.points);
-          return routeStartedInside && !markerStillInside;
-        }).map(String);
+      const intermediateIds = (Array.isArray(window.routeIntermediateCityIds)
+        ? window.routeIntermediateCityIds : []).map(String);
+      const exitedByDistanceIds = getRouteSettlementTransitIntervals(routePoints)
+        .filter(interval => interval.settlementId != null &&
+          intermediateIds.includes(String(interval.settlementId)) &&
+          Number(interval.end) <= editOriginDistance + 0.001)
+        .map(interval => String(interval.settlementId));
+      const departedStartCityIds = intermediateIds.filter(id => {
+        const area = (window.settlementAreas || []).find(item => String(item.id) === id);
+        if (!area || !Array.isArray(area.points) || area.points.length < 3 ||
+            !routeOrigin || !editOriginPosition) return false;
+        const routeStartedInside = pointInSettlement(routeOrigin, area.points);
+        const markerStillInside = pointInSettlement(editOriginPosition, area.points);
+        return routeStartedInside && !markerStillInside;
+      });
+      const departedCityIds = Array.from(new Set([
+        ...exitedByDistanceIds,
+        ...departedStartCityIds
+      ]));
 
-      if (departedStartCityIds.length) {
-        departedStartCityIds.forEach(id => {
+      if (departedCityIds.length) {
+        departedCityIds.forEach(id => {
           if (typeof window.clearRouteDestinationSettlementTrace === "function") {
             window.clearRouteDestinationSettlementTrace(id);
           }
         });
-        const departedSet = new Set(departedStartCityIds);
+        const departedSet = new Set(departedCityIds);
         window.routeIntermediateCityIds = (window.routeIntermediateCityIds || [])
           .filter(id => !departedSet.has(String(id)));
       }
@@ -4742,6 +4791,45 @@ function getTerminalPartyMarkerHideDistance(routeTransitIntervals = null) {
   return Number.isFinite(entryDistance) && entryDistance >= 0 ? entryDistance : null;
 }
 
+function getIntermediateSettlementTransitAtDistance(distance, routeTransitIntervals = null) {
+  const currentDistance = Math.max(0, Number(distance) || 0);
+  const intervals = Array.isArray(routeTransitIntervals)
+    ? routeTransitIntervals : getRouteSettlementTransitIntervals(routePoints);
+  const intermediateIds = new Set((Array.isArray(window.routeIntermediateCityIds)
+    ? window.routeIntermediateCityIds : []).map(id => String(id)));
+  return intervals.find(interval => {
+    const id = interval && interval.settlementId != null ? String(interval.settlementId) : null;
+    if (!id || !intermediateIds.has(id) ||
+        (window.routeDestinationCityId != null && id === String(window.routeDestinationCityId))) return false;
+    const start = Number(interval.start);
+    const end = Number(interval.end);
+    // Нулевой интервал — это город, из которого маршрут уже начинается.
+    // В нём маркер скрыт до выхода, но повторной автопаузы быть не должно.
+    return start > 0.001 && end > start + 0.001 &&
+      currentDistance >= start - 0.001 && currentDistance < end - 0.001;
+  }) || null;
+}
+
+function findNextIntermediateSettlementTransit(startDistance, currentDistance, routeTransitIntervals = null) {
+  const start = Math.max(0, Number(startDistance) || 0);
+  const current = Math.max(start, Number(currentDistance) || 0);
+  const intervals = Array.isArray(routeTransitIntervals)
+    ? routeTransitIntervals : getRouteSettlementTransitIntervals(routePoints);
+  const intermediateIds = new Set((Array.isArray(window.routeIntermediateCityIds)
+    ? window.routeIntermediateCityIds : []).map(id => String(id)));
+  return intervals
+    .filter(interval => {
+      const id = interval && interval.settlementId != null ? String(interval.settlementId) : null;
+      if (!id || !intermediateIds.has(id) ||
+          (window.routeDestinationCityId != null && id === String(window.routeDestinationCityId))) return false;
+      const entry = Number(interval.start);
+      const exit = Number(interval.end);
+      return entry > 0.001 && exit > entry + 0.001 &&
+        start < exit - 0.001 && current >= entry - 0.001;
+    })
+    .sort((a, b) => Number(a.start) - Number(b.start))[0] || null;
+}
+
 function isPartyMarkerInsideSettlementTransit(distance, terminalHideDistance = undefined, routeTransitIntervals = null) {
   const currentDistance = Math.max(0, Number(distance) || 0);
   const intervals = Array.isArray(routeTransitIntervals)
@@ -4750,6 +4838,7 @@ function isPartyMarkerInsideSettlementTransit(distance, terminalHideDistance = u
     Number(interval.start) <= 0.001 && Number(interval.end) > 0.001 && interval.settlementId
   );
   if (startTransit && currentDistance < Number(startTransit.end) - 0.001) return true;
+  if (getIntermediateSettlementTransitAtDistance(currentDistance, intervals)) return true;
 
   if (terminalHideDistance === undefined) {
     terminalHideDistance = getTerminalPartyMarkerHideDistance(intervals);
@@ -4887,9 +4976,83 @@ function tickPartyPlayback() {
     .sort((a, b) => a - b)[0];
   const reachedRestStop = Number.isFinite(nextRestStop);
   if (reachedRestStop) distance = nextRestStop;
+  const transitIntervals = getRouteSettlementTransitIntervals(routePoints);
+
+  // После возобновления из города обводка остаётся до фактического выхода
+  // за его внешнюю границу. Выходная дистанция хранится в общем состоянии,
+  // поэтому это работает и после обновления страницы.
+  const pendingExitId = state.intermediateSettlementExitPendingId != null
+    ? String(state.intermediateSettlementExitPendingId) : null;
+  const pendingExitDistance = Number(state.intermediateSettlementExitDistance);
+  if (pendingExitId && Number.isFinite(pendingExitDistance) &&
+      distance >= pendingExitDistance + 0.001) {
+    const cleared = window._clearedIntermediateSettlementTraces ||
+      (window._clearedIntermediateSettlementTraces = new Set());
+    const clearKey = String(state.routeStartedAt) + ':' + pendingExitId + ':' + pendingExitDistance.toFixed(3);
+    if (!cleared.has(clearKey)) {
+      if (typeof window.clearRouteDestinationSettlementTrace === "function") {
+        window.clearRouteDestinationSettlementTrace(pendingExitId);
+      }
+      cleared.add(clearKey);
+    }
+  }
+
+  // Автопауза на внешнем входе в промежуточный город. Внутренний участок
+  // не проигрывается маркером: после Play он появится уже на выходящей линии.
+  const intermediateTransit = findNextIntermediateSettlementTransit(
+    playbackStartDistance, distance, transitIntervals
+  );
+  if (intermediateTransit) {
+    const cityId = String(intermediateTransit.settlementId);
+    const entryDistance = Math.max(0, Number(intermediateTransit.start) || 0);
+    const exitDistance = Math.max(entryDistance, Number(intermediateTransit.end) || entryDistance);
+    partyPlaybackDistance = entryDistance;
+    const entryPosition = getPartyPlaybackDisplayPosition(entryDistance) ||
+      getRoutePointAtDistance(routePoints, entryDistance);
+    if (entryPosition && partyMarker) window.setPartyMarkerPlaybackPosition(entryPosition);
+    setPartyMarkerVisible(false);
+    const cityArea = (window.settlementAreas || []).find(area => String(area.id) === cityId);
+    if (cityArea && typeof window.completeRouteSettlementOutline === "function") {
+      window.completeRouteSettlementOutline(cityArea);
+    }
+    const pausedState = {
+      ...state,
+      status: "paused",
+      startDistance: entryDistance,
+      startedAt: null,
+      routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
+      campRequired: false,
+      intermediateSettlementReached: true,
+      intermediateSettlementId: cityId,
+      intermediateSettlementExitDistance: exitDistance,
+      intermediateSettlementExitPendingId: null
+    };
+    window.partyPlaybackState = pausedState;
+    renderPartyPlaybackState(pausedState);
+    stopPartyPlaybackFrame();
+    setPartyMarkerPlaybackSmoothing(false);
+    updatePartyPlaybackRouteLine(entryDistance);
+    updatePartyPlaybackRouteTokens(entryDistance);
+    if (typeof window.publishPartyPlaybackState === "function") {
+      window.publishPartyPlaybackState({
+        status: "paused",
+        startDistance: entryDistance,
+        startedAt: null,
+        routeStartedAt: Number(window.routePlaybackRouteStartedAt) || null,
+        campRequired: false,
+        intermediateSettlementReached: true,
+        intermediateSettlementId: cityId,
+        intermediateSettlementExitDistance: exitDistance,
+        intermediateSettlementExitPendingId: null,
+        campHoursElapsed: Math.max(0, Number(state.campHoursElapsed) || 0),
+        restResetDistances: routeRestResetDistances.slice()
+      }).catch(error => console.error("Не удалось автоматически остановить отряд у промежуточного города:", error));
+    }
+    return;
+  }
+
   partyPlaybackDistance = distance;
   const destination = getTerminalDestinationSettlement();
-  const transitIntervals = getRouteSettlementTransitIntervals(routePoints);
   const startCityTransit = transitIntervals.find(interval =>
     Number(interval.start) <= 0.001 && Number(interval.end) > 0.001 && interval.settlementId
   );
@@ -9708,8 +9871,16 @@ map.on("zoomend", function() {
     let currentInterval = intervals.find(interval => {
       const start = Math.max(0, Number(interval.start) || 0);
       const end = Math.max(start, Number(interval.end) || start);
-      return distance >= start - 0.001 && distance <= end + 0.001;
+      return distance >= start - 0.001 && distance < end - 0.001;
     }) || null;
+
+    if (movement && movement.intermediateSettlementReached &&
+        movement.intermediateSettlementId != null) {
+      const pausedCityId = String(movement.intermediateSettlementId);
+      currentInterval = intervals.find(interval =>
+        String(interval.settlementId || '') === pausedCityId
+      ) || currentInterval;
+    }
 
     // При терминальной паузе считаем текущим именно конечное поселение,
     // даже если округление расстояния вывело его за край интервала.
