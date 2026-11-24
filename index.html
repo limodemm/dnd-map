@@ -139,12 +139,13 @@ body {
   z-index: 1200;
   top: 0;
   left: 50%;
-  width: 126.6667px;
-  height: 63.3333px;
+  width: 132px;
+  height: 66px;
   transform: translateX(-50%);
-  overflow: hidden;
+  /* Обрезаем верхнюю половину, но оставляем место по бокам для целой рамки и тени. */
+  overflow: visible;
+  clip-path: inset(0 -6px 0 -6px);
   pointer-events: none;
-  contain: paint;
   /* Не показываем условную полночь до получения настоящего состояния отряда. */
   opacity: 0;
 }
@@ -176,10 +177,10 @@ body {
   height: 132px;
   top: -66px;
   z-index: 2;
-  filter: drop-shadow(0 1px 1.2px rgba(0, 0, 0, 0.62));
+  filter: drop-shadow(0 2px 3.2px rgba(0, 0, 0, 0.72));
 }
 @media (max-width: 600px) {
-  #celestial-clock { width: 102.6667px; height: 51.3333px; }
+  #celestial-clock { width: 106.6667px; height: 53.3333px; clip-path: inset(0 -5px 0 -5px); }
   #celestial-clock-disc { width: 97px; height: 97px; top: -48.5px; }
   #celestial-clock-frame { width: 106.6667px; height: 106.6667px; top: -53.3333px; }
 }
