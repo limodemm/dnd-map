@@ -341,12 +341,35 @@ map.on('click', function(e) {
     }
     return;
   }
-  if (!window.settlementDrawingActive && !settlementJustDrew &&
-      typeof window.handleTerminalSettlementMapClick === "function" &&
-      window.handleTerminalSettlementMapClick(e.latlng)) return;
-  if (!window.settlementDrawingActive && !settlementJustDrew &&
-      typeof window.handleIntermediateSettlementMapClick === "function" &&
-      window.handleIntermediateSettlementMapClick(e.latlng)) return;
+  // Первый клик по занятому городу не открывает редактор, но временно
+  // подавляет стандартный dblclick-zoom, чтобы второй клик мог обработаться
+  // как команда открытия редактора.
+  const pausedState = window.partyPlaybackState;
+  const pausedIntermediateId = pausedState && pausedState.status === "paused" &&
+    pausedState.intermediateSettlementReached && pausedState.intermediateSettlementId != null
+      ? String(pausedState.intermediateSettlementId) : null;
+  const pausedTerminal = typeof isTerminalSettlementPaused === "function" &&
+    isTerminalSettlementPaused(pausedState);
+  let pausedCityArea = pausedIntermediateId
+    ? (window.settlementAreas || []).find(item => String(item.id) === pausedIntermediateId)
+    : null;
+  if (!pausedCityArea && pausedTerminal && typeof getTerminalDestinationSettlement === "function") {
+    const terminalDestination = getTerminalDestinationSettlement();
+    pausedCityArea = terminalDestination ? terminalDestination.area : null;
+  }
+  if (pausedCityArea) {
+    const cityPolygon = getSettlementBrushErasePolygon(pausedCityArea, 4);
+    if (Array.isArray(cityPolygon) && cityPolygon.length >= 3 &&
+        pointInSettlement(e.latlng, cityPolygon)) {
+      if (map.doubleClickZoom) map.doubleClickZoom.disable();
+      setTimeout(function() {
+        if (!window.routeMode && map.doubleClickZoom) map.doubleClickZoom.enable();
+      }, 500);
+      // Одиночный клик по занятому городу не открывает заметки и не создаёт
+      // метку; действие выполняется только обработчиком двойного клика.
+      return;
+    }
+  }
   if (popupJustClosed || window.settlementDrawingActive || settlementJustDrew) return;
 
   if (window.routeMode) {
@@ -907,7 +930,9 @@ partyMarker.on("click", function() {
     window.partyPlaybackState.intermediateSettlementReached &&
     window.partyPlaybackState.intermediateSettlementId != null
       ? String(window.partyPlaybackState.intermediateSettlementId) : null;
-  if (previousIntermediateCityId) window.routeEditorOriginIntermediateSnapshot = null;
+  const previousIntermediateArea = previousIntermediateCityId
+    ? (window.settlementAreas || []).find(item => String(item.id) === previousIntermediateCityId)
+    : null;
   window.routeEditorOriginTerminalSnapshot = previousTerminalCityId ? {
     cityId: previousTerminalCityId,
     routePoints: Array.isArray(routePoints) ? routePoints.map(point => {
@@ -949,7 +974,13 @@ partyMarker.on("click", function() {
     );
   }
 
-if (!previousTerminalCityId) setPartyMarkerVisible(true);
+if (!previousTerminalCityId && !previousIntermediateCityId) setPartyMarkerVisible(true);
+if (previousIntermediateArea && previousIntermediateArea.center) {
+  // Внутри промежуточного города новая прокладка начинается из его центра.
+  // Маркер остаётся скрытым на всём протяжении нахождения в городе.
+  partyMarker.setLatLng(previousIntermediateArea.center);
+  setPartyMarkerVisible(false);
+}
 
 window.routeMode = true;
 window.routeAnimationPublished = false;
@@ -967,9 +998,14 @@ window.routeIntermediateCityIds = previousTerminalCityId
   : previousIntermediateCityId ? [previousIntermediateCityId] : [];
 window.routeIntermediateSettlementUndoSnapshots = [];
 clearRouteIntermediateCityOutlines();
-// Сбрасываем также обводку конечного города, если предыдущий маршрут
-// был завершён двойным кликом и пользователь начал новый с маркера отряда.
-if (window.clearSettlementOutline) window.clearSettlementOutline();
+// При выходе из промежуточного города сохраняем его обводку, несмотря на
+// сброс старых промежуточных обводок предыдущего маршрута.
+if (previousIntermediateArea && typeof window.completeRouteSettlementOutline === "function") {
+  window.completeRouteSettlementOutline(previousIntermediateArea);
+} else if (window.clearSettlementOutline) {
+  // Обводку конечного города сбрасываем при обычном старте нового маршрута.
+  window.clearSettlementOutline();
+}
 // Сбрасываем состояние форсированного марша
 routeForcedMarch = false;
 routeForcedMarchStartDistance = 0;
@@ -989,8 +1025,11 @@ if (forcedButton) {
 // Отключаем двойной клик для приближения карты
 map.doubleClickZoom.disable();
 
-// Начинаем маршрут от текущего положения отряда
-routePoints = [partyMarker.getLatLng()];
+// Начинаем маршрут от текущего положения отряда; из промежуточного
+// города — строго от его центра.
+routePoints = [previousIntermediateArea && previousIntermediateArea.center
+  ? L.latLng(previousIntermediateArea.center.lat, previousIntermediateArea.center.lng)
+  : partyMarker.getLatLng()];
 
   lastCursorPosition = null;
 
@@ -1003,40 +1042,45 @@ routePoints = [partyMarker.getLatLng()];
   console.log("Режим прокладки маршрута включён");
 });
 
-window.handleTerminalSettlementMapClick = function(latlng) {
+window.handleSettlementCityDoubleClick = function(latlng) {
   const state = window.partyPlaybackState;
-  if (!isTerminalSettlementPaused(state) || !latlng || !partyMarker) return false;
-  const destination = getTerminalDestinationSettlement();
-  if (!destination) return false;
-  const visualPolygon = getSettlementBrushErasePolygon(destination.area, 4);
+  if (!latlng || !partyMarker || window.routeMode) return false;
+
+  let targetArea = null;
+  const intermediateCityId = state && state.status === "paused" &&
+    state.intermediateSettlementReached && state.intermediateSettlementId != null
+      ? String(state.intermediateSettlementId) : null;
+
+  if (intermediateCityId) {
+    targetArea = (window.settlementAreas || []).find(item =>
+      String(item.id) === intermediateCityId
+    ) || null;
+  } else if (isTerminalSettlementPaused(state)) {
+    const destination = getTerminalDestinationSettlement();
+    targetArea = destination ? destination.area : null;
+  }
+
+  if (!targetArea) return false;
+  const visualPolygon = getSettlementBrushErasePolygon(targetArea, 4);
   if (!Array.isArray(visualPolygon) || visualPolygon.length < 3 ||
       !pointInSettlement(latlng, visualPolygon)) return false;
+
+  // Одиночный клик по городу остаётся обычным кликом карты.
+  // Только двойной клик запускает стандартную логику нового маршрута.
+  if (map.doubleClickZoom) map.doubleClickZoom.disable();
   partyMarker.fire("click");
   return true;
 };
 
-window.handleIntermediateSettlementMapClick = function(latlng) {
-  const state = window.partyPlaybackState;
-  if (!state || state.status !== "paused" ||
-      !state.intermediateSettlementReached || state.intermediateSettlementId == null ||
-      !latlng) return false;
-
-  const cityId = String(state.intermediateSettlementId);
-  const area = (window.settlementAreas || []).find(item => String(item.id) === cityId);
-  if (!area) return false;
-  const visualPolygon = getSettlementBrushErasePolygon(area, 4);
-  if (!Array.isArray(visualPolygon) || visualPolygon.length < 3 ||
-      !pointInSettlement(latlng, visualPolygon)) return false;
-
-  // Открываем именно редактор существующего маршрута. Его обработчик
-  // сохранит будущую часть пути и перенесёт начало к текущему положению
-  // отряда; повторно начинать маршрут и очищать его геометрию нельзя.
-  const editButton = routeLaunchPanel &&
-    routeLaunchPanel.querySelector("#route-party-edit");
-  if (!editButton || editButton.disabled) return false;
-  editButton.click();
-  return Boolean(window.routeMode && routePanel && routePanel.style.display !== "none");
-};
+map.on("dblclick", function(e) {
+  if (window.settlementDrawingActive || settlementJustDrew) return;
+  if (window.handleSettlementCityDoubleClick(e.latlng)) {
+    if (e.originalEvent) {
+      e.originalEvent.preventDefault();
+      e.originalEvent.stopPropagation();
+    }
+  }
+});
 // =====================================
 // ПОСТРОЕНИЕ МАРШРУТА
 // =====================================
@@ -2879,11 +2923,7 @@ function createRouteLaunchPanel() {
     window.routeAnimationPublished = false;
     window.routePendingConfirmation = false;
     window.routeMode = true;
-    // В промежуточном городе оставляем редактор полностью рабочим:
-    // сохранённая будущая часть маршрута остаётся на месте, а новые точки
-    // можно добавлять дальше. Для обычного редактирования подтверждённого
-    // маршрута сохраняется прежняя блокировка до «Вернуть».
-    routeFinished = !pausedIntermediateCityId;
+    routeFinished = true;
     // После возврата из панели подтверждения конечный флажок/город остаётся
     // зафиксированной точкой. Карта не принимает новые точки маршрута, пока
     // игрок явно не нажмёт «Вернуть» или «Отменить».
