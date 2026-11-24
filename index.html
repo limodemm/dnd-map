@@ -358,9 +358,9 @@ map.on('click', function(e) {
     pausedCityArea = terminalDestination ? terminalDestination.area : null;
   }
   if (pausedCityArea) {
-    const cityPolygon = getSettlementBrushErasePolygon(pausedCityArea, 4);
+    const cityPolygon = window.getSettlementBrushErasePolygon(pausedCityArea, 4);
     if (Array.isArray(cityPolygon) && cityPolygon.length >= 3 &&
-        pointInSettlement(e.latlng, cityPolygon)) {
+        window.pointInSettlement(e.latlng, cityPolygon)) {
       if (map.doubleClickZoom) map.doubleClickZoom.disable();
       setTimeout(function() {
         if (!window.routeMode && map.doubleClickZoom) map.doubleClickZoom.enable();
@@ -1061,9 +1061,9 @@ window.handleSettlementCityDoubleClick = function(latlng) {
   }
 
   if (!targetArea) return false;
-  const visualPolygon = getSettlementBrushErasePolygon(targetArea, 4);
+  const visualPolygon = window.getSettlementBrushErasePolygon(targetArea, 4);
   if (!Array.isArray(visualPolygon) || visualPolygon.length < 3 ||
-      !pointInSettlement(latlng, visualPolygon)) return false;
+      !window.pointInSettlement(latlng, visualPolygon)) return false;
 
   // Одиночный клик по городу остаётся обычным кликом карты.
   // Только двойной клик запускает стандартную логику нового маршрута.
@@ -8001,6 +8001,7 @@ map.on("zoomend", function() {
     }
     return inside;
   }
+  window.pointInSettlement = pointInSettlement;
 
   function findSettlementAt(point) {
     // Поиск области не должен ломаться, если Firebase ещё не загрузил список.
@@ -8566,7 +8567,7 @@ map.on("zoomend", function() {
       return map.layerPointToLatLng(L.point(point.x + nx * padding, point.y + ny * padding));
     });
   }
-
+  window.getSettlementBrushErasePolygon = getSettlementBrushErasePolygon;
 
   // Возвращает кратчайший участок между двумя точками, обходящий внешнюю
   // границу визуальной кисти. В отличие от невидимой области area.points,
