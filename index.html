@@ -902,6 +902,12 @@ partyMarker.on("click", function() {
 
   const previousTerminalCityId = isTerminalSettlementPaused(window.partyPlaybackState)
     ? String(window.routeDestinationCityId) : null;
+  const previousIntermediateCityId = !previousTerminalCityId &&
+    window.partyPlaybackState && window.partyPlaybackState.status === "paused" &&
+    window.partyPlaybackState.intermediateSettlementReached &&
+    window.partyPlaybackState.intermediateSettlementId != null
+      ? String(window.partyPlaybackState.intermediateSettlementId) : null;
+  if (previousIntermediateCityId) window.routeEditorOriginIntermediateSnapshot = null;
   window.routeEditorOriginTerminalSnapshot = previousTerminalCityId ? {
     cityId: previousTerminalCityId,
     routePoints: Array.isArray(routePoints) ? routePoints.map(point => {
@@ -956,7 +962,9 @@ routeFinished = false;
 window.routeDestinationCityId = null;
 window.routeDestinationBoundaryPoint = null;
 window.routeDestinationApproachPoint = null;
-window.routeIntermediateCityIds = previousTerminalCityId ? [previousTerminalCityId] : [];
+window.routeIntermediateCityIds = previousTerminalCityId
+  ? [previousTerminalCityId]
+  : previousIntermediateCityId ? [previousIntermediateCityId] : [];
 window.routeIntermediateSettlementUndoSnapshots = [];
 clearRouteIntermediateCityOutlines();
 // Сбрасываем также обводку конечного города, если предыдущий маршрут
@@ -1020,14 +1028,12 @@ window.handleIntermediateSettlementMapClick = function(latlng) {
   if (!Array.isArray(visualPolygon) || visualPolygon.length < 3 ||
       !pointInSettlement(latlng, visualPolygon)) return false;
 
-  // Для промежуточного города используем уже существующий сценарий кнопки
-  // «Редактировать маршрут»: он сохраняет точку входа в город и открывает
-  // редактор от текущего положения отряда, не затрагивая локальные заметки.
-  const editButton = routeLaunchPanel &&
-    routeLaunchPanel.querySelector("#route-party-edit");
-  if (!editButton || editButton.disabled) return false;
-  editButton.click();
-  return true;
+  // Клик по занятому промежуточному городу должен вести себя так же,
+  // как клик по самому маркеру отряда: полностью начать новый маршрут
+  // от текущего положения, а не открывать режим редактирования старого.
+  if (!partyMarker) return false;
+  partyMarker.fire("click");
+  return Boolean(window.routeMode);
 };
 // =====================================
 // ПОСТРОЕНИЕ МАРШРУТА
