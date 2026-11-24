@@ -966,30 +966,15 @@ partyMarker.on("click", function() {
   // Если маршрут уже прокладывается, повторный клик ничего не делает
   if (window.routeMode) return;
 
-  let previousTerminalCityId = isTerminalSettlementPaused(window.partyPlaybackState)
+  const previousTerminalCityId = isTerminalSettlementPaused(window.partyPlaybackState)
     ? String(window.routeDestinationCityId) : null;
-  let previousIntermediateCityId = !previousTerminalCityId &&
+  const previousIntermediateCityId = !previousTerminalCityId &&
     window.partyPlaybackState && window.partyPlaybackState.status === "paused" &&
     window.partyPlaybackState.intermediateSettlementReached &&
     window.partyPlaybackState.intermediateSettlementId != null
       ? String(window.partyPlaybackState.intermediateSettlementId) : null;
-  // После восстановления страницы терминальная пауза иногда ещё не успевает
-  // восстановиться из состояния маршрута, хотя жетон уже скрыт в центре города.
-  // Определяем такой город по фактическому положению жетона, чтобы двойной клик
-  // снова запускал маршрут именно из занятого города.
-  if (!previousTerminalCityId && !previousIntermediateCityId &&
-      window.partyMarkerHiddenForSettlementExit && partyMarker) {
-    const occupiedPosition = partyMarker.getLatLng();
-    const occupiedArea = (window.settlementAreas || []).find(area =>
-      isPointInsideSettlementClickPolygon(occupiedPosition, getSettlementClickPolygon(area, 4))
-    );
-    if (occupiedArea) previousTerminalCityId = String(occupiedArea.id);
-  }
   const previousIntermediateArea = previousIntermediateCityId
     ? (window.settlementAreas || []).find(item => String(item.id) === previousIntermediateCityId)
-    : null;
-  const previousTerminalArea = previousTerminalCityId
-    ? (window.settlementAreas || []).find(item => String(item.id) === previousTerminalCityId)
     : null;
   // Прямой двойной клик по городу должен отменяться так же безопасно,
   // как редактирование через шестерёнку: запоминаем занятый город как
@@ -1089,13 +1074,10 @@ window.routeIntermediateSettlementUndoSnapshots = [];
 clearRouteIntermediateCityOutlines();
 // При выходе из промежуточного города сохраняем его обводку, несмотря на
 // сброс старых промежуточных обводок предыдущего маршрута.
-const previousStartArea = previousIntermediateArea || previousTerminalArea;
-if (previousStartArea && typeof window.completeRouteSettlementOutline === "function") {
-  // Начальный город остаётся занятым и при прокладке следующего маршрута.
-  // Это особенно важно после перезагрузки, когда состояние паузы
-  // восстанавливается по положению скрытого жетона.
-  window.completeRouteSettlementOutline(previousStartArea);
+if (previousIntermediateArea && typeof window.completeRouteSettlementOutline === "function") {
+  window.completeRouteSettlementOutline(previousIntermediateArea);
 } else if (window.clearSettlementOutline) {
+  // Обводку конечного города сбрасываем при обычном старте нового маршрута.
   window.clearSettlementOutline();
 }
 // Сбрасываем состояние форсированного марша
@@ -1151,15 +1133,6 @@ window.handleSettlementCityDoubleClick = function(latlng) {
     const destination = getTerminalDestinationSettlement();
     targetArea = destination ? destination.area : null;
   }
-  // На перезагруженной странице метаданные терминальной паузы могут быть
-  // временно неполными. Скрытый жетон в центре поселения остаётся надёжным
-  // признаком занятого города и позволяет обработать двойной клик.
-  if (!targetArea && window.partyMarkerHiddenForSettlementExit) {
-    const markerPosition = partyMarker.getLatLng();
-    targetArea = (window.settlementAreas || []).find(area =>
-      isPointInsideSettlementClickPolygon(markerPosition, getSettlementClickPolygon(area, 4))
-    ) || null;
-  }
 
   if (!targetArea) return false;
   const visualPolygon = getSettlementClickPolygon(targetArea, 4);
@@ -1174,17 +1147,6 @@ window.handleSettlementCityDoubleClick = function(latlng) {
 
 map.on("dblclick", function(e) {
   if (window.settlementDrawingActive || settlementJustDrew) return;
-  // В режиме прокладки используем само событие dblclick как надёжный
-  // сигнал завершения у города. Таймер одиночного клика может уже успеть
-  // превратить первый клик в промежуточный город, особенно на мобильных.
-  if (window.routeMode && typeof window.handlePartyRouteDoubleClick === "function" &&
-      window.handlePartyRouteDoubleClick(e.latlng)) {
-    if (e.originalEvent) {
-      e.originalEvent.preventDefault();
-      e.originalEvent.stopPropagation();
-    }
-    return;
-  }
   if (window.handleSettlementCityDoubleClick(e.latlng)) {
     if (e.originalEvent) {
       e.originalEvent.preventDefault();
@@ -3861,28 +3823,11 @@ window.routePendingConfirmation = false;
     // дальнейший откат запрещён: иначе город исчезнет из маршрута.
     if (!Array.isArray(routePoints) || routePoints.length <= 1 ||
         isRouteAtPausedIntermediateCityCenter()) return;
-    const routeStartSettlementIds = Array.from(new Set([
-      ...(Array.isArray(window.routeIntermediateCityIds) ? window.routeIntermediateCityIds : [])
-        .filter(id => {
-          const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
-          return Boolean(area && routePoints[0] && (
-            window.isRouteAtSettlementCenter(routePoints[0], area) ||
-            (Array.isArray(area.points) && window.pointInSettlement &&
-              window.pointInSettlement(routePoints[0], area.points))
-          ));
-        }).map(String),
-      // После перезагрузки старые версии опубликованного маршрута могли
-      // не сохранить стартовый город в intermediateSettlementIds. Находим
-      // его не только по точному центру, но и по попаданию первой точки
-      // внутрь фактического полигона поселения.
-      ...(window.settlementAreas || []).filter(area =>
-        area && area.id != null && routePoints[0] && (
-          (area.center && window.isRouteAtSettlementCenter(routePoints[0], area)) ||
-          (Array.isArray(area.points) && window.pointInSettlement &&
-            window.pointInSettlement(routePoints[0], area.points))
-        )
-      ).map(area => String(area.id))
-    ]));
+    const routeStartSettlementIds = (Array.isArray(window.routeIntermediateCityIds)
+      ? window.routeIntermediateCityIds : []).filter(id => {
+        const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
+        return Boolean(area && routePoints[0] && window.isRouteAtSettlementCenter(routePoints[0], area));
+      }).map(String);
     const intermediateIdsBeforeUndo = (Array.isArray(window.routeIntermediateCityIds)
       ? window.routeIntermediateCityIds : []).map(id => String(id));
     if (window.routeDestinationCityId) {
@@ -4054,17 +3999,6 @@ window.routePendingConfirmation = false;
       }
     });
     refreshRouteIntermediateCityOutlines();
-    const rollbackEndPoint = routePoints.length ? routePoints[routePoints.length - 1] : null;
-    routeStartSettlementIds.forEach(id => {
-      const area = (window.settlementAreas || []).find(item => String(item.id) === String(id));
-      if (area && rollbackEndPoint && (
-          window.isRouteAtSettlementCenter(rollbackEndPoint, area) ||
-          (Array.isArray(area.points) && window.pointInSettlement &&
-            window.pointInSettlement(rollbackEndPoint, area.points))
-        ) && typeof window.completeRouteSettlementOutline === "function") {
-        window.completeRouteSettlementOutline(area);
-      }
-    });
 
     if (!routeForcedMarch) {
       routeForcedMarchPendingExit = false;
@@ -7506,17 +7440,6 @@ window.applySynchronizedPartyRoute = function(data) {
     ? L.latLng(data.destinationApproachPoint.lat, data.destinationApproachPoint.lng) : null;
   window.routeIntermediateCityIds = Array.isArray(data.intermediateSettlementIds)
     ? data.intermediateSettlementIds.map(id => String(id)) : [];
-  // Стартовый город маршрута тоже учитывается как занятое поселение.
-  // Для старых сохранений восстанавливаем его по центру первой точки.
-  if (routePoints.length) {
-    const startCity = (window.settlementAreas || []).find(area =>
-      area && area.id != null && area.center &&
-      window.isRouteAtSettlementCenter(routePoints[0], area)
-    );
-    if (startCity && !window.routeIntermediateCityIds.some(id => String(id) === String(startCity.id))) {
-      window.routeIntermediateCityIds.unshift(String(startCity.id));
-    }
-  }
   window.routeEditorOriginTerminalSnapshot = null;
   window.routeEditorOriginIntermediateSnapshot = null;
   window.routeStartCityOutlineClearedFor = null;
@@ -7987,32 +7910,6 @@ window.handlePartyRouteClick = function(latlng) {
       window.addPartyRoutePoint(position, 0, segmentPace, segmentSpeedReduced);
     }
   }, 180);
-};
-
-// Обрабатывает настоящий dblclick по городу независимо от того, успел ли
-// таймер одиночного клика (180 мс) уже добавить этот город как промежуточный.
-// В последнем случае повторный вызов обычного обработчика переводит город
-// из промежуточного в конечный, используя существующую логику завершения.
-window.handlePartyRouteDoubleClick = function(latlng) {
-  if (!window.routeMode || !latlng || !Array.isArray(routePoints) || !routePoints.length) {
-    return false;
-  }
-  const targetArea = findSettlementAt(latlng);
-  if (!targetArea) return false;
-
-  if (pendingRouteClickTimer) {
-    clearTimeout(pendingRouteClickTimer);
-  } else {
-    // Если первый клик уже был обработан как одиночный, создаём временную
-    // пару кликов из самого dblclick-события, чтобы штатная ветка завершения
-    // сработала и сняла город из списка промежуточных.
-    pendingRouteClickPosition = latlng;
-    pendingRouteClickPace = routePace;
-    pendingRouteClickSpeedReduced = routeSpeedReduced;
-  }
-  pendingRouteClickTimer = setTimeout(function() {}, 1000);
-  window.handlePartyRouteClick(latlng);
-  return true;
 };
 
 // Движение курсора на ПК.
