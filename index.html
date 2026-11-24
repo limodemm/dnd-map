@@ -965,18 +965,8 @@ if (window.partyMarkerHiddenForSettlementExit) {
 }
 
 partyMarker.on("click", function() {
-  console.info("[ROUTE-DIAG] PARTY MARKER CLICK", {
-    routeMode: window.routeMode,
-    routeFinished,
-    routePendingConfirmation: window.routePendingConfirmation,
-    routeStartSettlementId: window.routeStartSettlementId,
-    routeDestinationCityId: window.routeDestinationCityId,
-    playbackStatus: window.partyPlaybackState && window.partyPlaybackState.status,
-    intermediateSettlementId: window.partyPlaybackState && window.partyPlaybackState.intermediateSettlementId,
-    intermediateSettlementReached: window.partyPlaybackState && window.partyPlaybackState.intermediateSettlementReached,
-    markerPosition: partyMarker ? { lat: partyMarker.getLatLng().lat, lng: partyMarker.getLatLng().lng } : null
-  });
-  console.trace("[ROUTE-DIAG] PARTY MARKER CLICK CALL STACK");
+  
+  
 
   // Если маршрут уже прокладывается, повторный клик ничего не делает
   if (window.routeMode) return;
@@ -1095,13 +1085,7 @@ window.routeDestinationBoundaryPoint = null;
 window.routeDestinationApproachPoint = null;
 window.routeIntermediateCityIds = window.routeStartSettlementId
   ? [String(window.routeStartSettlementId)] : [];
-console.info("[ROUTE-DIAG] START", {
-  startSettlementId: window.routeStartSettlementId,
-  intermediateCityIds: window.routeIntermediateCityIds.slice(),
-  previousTerminalCityId,
-  previousIntermediateCityId,
-  routeStartPoint: routePoints[0] ? { lat: routePoints[0].lat, lng: routePoints[0].lng } : null
-});
+
 window.routeIntermediateSettlementUndoSnapshots = [];
 clearRouteIntermediateCityOutlines();
 // При выходе из промежуточного города сохраняем его обводку, несмотря на
@@ -1151,15 +1135,12 @@ routePoints = [previousStartArea && previousStartArea.center
 
 window.handleSettlementCityDoubleClick = function(latlng) {
   const state = window.partyPlaybackState;
-  console.info("[ROUTE-DIAG] SETTLEMENT DBLCLICK CHECK", {
-    routeMode: window.routeMode,
-    click: latlng ? { lat: latlng.lat, lng: latlng.lng } : null,
-    playbackStatus: state && state.status,
-    intermediateSettlementId: state && state.intermediateSettlementId,
-    intermediateSettlementReached: state && state.intermediateSettlementReached,
-    routeDestinationCityId: window.routeDestinationCityId
-  });
+  
   if (!latlng || !partyMarker || window.routeMode) return false;
+
+  // После завершения маршрута двойной клик по конечному городу не должен
+  // запускать новый маршрут из того же города до подтверждения результата.
+  if (routeFinished && window.routePendingConfirmation) return false;
 
   let targetArea = null;
   const intermediateCityId = state && state.status === "paused" &&
@@ -1179,13 +1160,8 @@ window.handleSettlementCityDoubleClick = function(latlng) {
   const visualPolygon = getSettlementClickPolygon(targetArea, 4);
   if (!isPointInsideSettlementClickPolygon(latlng, visualPolygon)) return false;
 
-  console.warn("[ROUTE-DIAG] SETTLEMENT DBLCLICK MATCH — STARTING ROUTE FROM PARTY MARKER", {
-    matchedSettlementId: targetArea.id,
-    matchedSettlementType: targetArea.type,
-    click: { lat: latlng.lat, lng: latlng.lng },
-    markerPosition: partyMarker ? { lat: partyMarker.getLatLng().lat, lng: partyMarker.getLatLng().lng } : null
-  });
-  console.trace("[ROUTE-DIAG] SETTLEMENT DBLCLICK MATCH CALL STACK");
+  
+  
 
   // Одиночный клик по городу остаётся обычным кликом карты.
   // Только двойной клик запускает стандартную логику нового маршрута.
@@ -1195,15 +1171,7 @@ window.handleSettlementCityDoubleClick = function(latlng) {
 };
 
 map.on("dblclick", function(e) {
-  console.info("[ROUTE-DIAG] MAP DBLCLICK EVENT", {
-    routeMode: window.routeMode,
-    routeFinished,
-    routePendingConfirmation: window.routePendingConfirmation,
-    click: e && e.latlng ? { lat: e.latlng.lat, lng: e.latlng.lng } : null,
-    markerPosition: partyMarker ? { lat: partyMarker.getLatLng().lat, lng: partyMarker.getLatLng().lng } : null,
-    playbackStatus: window.partyPlaybackState && window.partyPlaybackState.status,
-    routeDestinationCityId: window.routeDestinationCityId
-  });
+  
   if (window.settlementDrawingActive || settlementJustDrew) return;
 
   // Нативное событие Leaflet — страховка для двойного клика по цели
@@ -7787,16 +7755,7 @@ function finishPartyRoute(latlng) {
 
   // Маршрут должен содержать хотя бы одну линию
   if (routePoints.length < 2) {
-    console.warn("[ROUTE-DIAG] FINISH ABORTED: route has fewer than two points", {
-      destinationCityId: window.routeDestinationCityId,
-      intermediateCityIds: Array.isArray(window.routeIntermediateCityIds)
-        ? window.routeIntermediateCityIds.map(String) : [],
-      routePoints: routePoints.map(point => ({
-        lat: point.lat, lng: point.lng,
-        settlementId: point._routeSettlementId || null,
-        segmentMode: getRouteSegmentMode(point)
-      }))
-    });
+    
     console.log("Для завершения маршрута нужна хотя бы одна точка");
     return;
   }
@@ -7870,20 +7829,7 @@ window.handlePartyRouteClick = function(latlng) {
   }
 
   const clickedArea = findSettlementAt(latlng);
-  console.info("[ROUTE-DIAG] CLICK", {
-    clickedSettlementId: clickedArea ? String(clickedArea.id) : null,
-    routeMode: window.routeMode,
-    destinationCityId: window.routeDestinationCityId,
-    intermediateCityIds: Array.isArray(window.routeIntermediateCityIds)
-      ? window.routeIntermediateCityIds.map(String) : [],
-    routePointCount: routePoints.length,
-    lastPoint: routePoints.length ? {
-      lat: routePoints[routePoints.length - 1].lat,
-      lng: routePoints[routePoints.length - 1].lng,
-      settlementId: routePoints[routePoints.length - 1]._routeSettlementId || null,
-      segmentMode: getRouteSegmentMode(routePoints[routePoints.length - 1])
-    } : null
-  });
+  
 
   // Если ожидается одиночный клик, второй клик рядом завершает маршрут.
   if (pendingRouteClickTimer) {
@@ -7935,13 +7881,7 @@ window.handlePartyRouteClick = function(latlng) {
             const approachPath = getRouteSegmentAroundIntermediateCities(
               routePoints[routePoints.length - 1], visualEntryPoint
             );
-            console.info("[ROUTE-DIAG] FINAL CITY APPROACH", {
-              targetCityId: String(clickedArea.id),
-              intermediateCityIds: (window.routeIntermediateCityIds || []).map(String),
-              approachPathLength: approachPath ? approachPath.length : null,
-              routePointCountBeforeApproach: routePoints.length,
-              visualEntryPoint: { lat: visualEntryPoint.lat, lng: visualEntryPoint.lng }
-            });
+            
             if (approachPath && approachPath.length >= 2) {
               approachPath.slice(1).forEach(point => {
                 routePoints.push(window.applyRouteTravelSettings(point, clickPace, clickSpeedReduced));
@@ -9163,10 +9103,7 @@ map.on("zoomend", function() {
     // Пока курсор остаётся внутри визуальной кисти, не создаём маршрутных
     // механик. При этом направление выхода определяется именно лучом от центра.
     if (pointInSettlement(end, visualPolygon)) {
-      console.warn("[ROUTE-DIAG] EXIT PATH STOPPED: target still inside start-city brush", {
-        startCityId: String(area.id),
-        end: { lat: end.lat, lng: end.lng }
-      });
+      
       return [start];
     }
 
@@ -9208,13 +9145,7 @@ map.on("zoomend", function() {
     const actualPointRaw = firstRayIntersection(area.points || []);
     const outerPointRaw = firstRayIntersection(visualPolygon);
     if (!actualPointRaw || !outerPointRaw) {
-      console.warn("[ROUTE-DIAG] EXIT PATH FAILED: ray intersection missing", {
-        startCityId: String(area.id),
-        hasActualIntersection: Boolean(actualPointRaw),
-        hasBrushIntersection: Boolean(outerPointRaw),
-        start: { lat: start.lat, lng: start.lng },
-        end: { lat: end.lat, lng: end.lng }
-      });
+      
       return null;
     }
 
@@ -9230,12 +9161,7 @@ map.on("zoomend", function() {
     );
     const outsidePath = getRouteSegmentAroundIntermediateCities(outerPoint, end, true);
     if (!outsidePath || outsidePath.length < 2) {
-      console.warn("[ROUTE-DIAG] EXIT PATH FAILED: outside path unavailable", {
-        startCityId: String(area.id),
-        outsidePathLength: outsidePath ? outsidePath.length : null,
-        intermediateCityIds: ids.map(String),
-        end: { lat: end.lat, lng: end.lng }
-      });
+      
       return null;
     }
     return [start, actualPoint, outerPoint, ...outsidePath.slice(1)];
@@ -9363,11 +9289,7 @@ map.on("zoomend", function() {
     if (!area || !area.id) return;
     if (!Array.isArray(window.routeIntermediateCityIds)) window.routeIntermediateCityIds = [];
     if (window.routeIntermediateCityIds.some(id => String(id) === String(area.id))) {
-      console.warn("[ROUTE-DIAG] CITY SKIPPED: already selected", {
-        cityId: String(area.id),
-        intermediateCityIds: window.routeIntermediateCityIds.map(String),
-        routeStartSettlementId: window.routeStartSettlementId
-      });
+      
       return;
     }
 
