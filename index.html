@@ -344,6 +344,9 @@ map.on('click', function(e) {
   if (!window.settlementDrawingActive && !settlementJustDrew &&
       typeof window.handleTerminalSettlementMapClick === "function" &&
       window.handleTerminalSettlementMapClick(e.latlng)) return;
+  if (!window.settlementDrawingActive && !settlementJustDrew &&
+      typeof window.handleIntermediateSettlementMapClick === "function" &&
+      window.handleIntermediateSettlementMapClick(e.latlng)) return;
   if (popupJustClosed || window.settlementDrawingActive || settlementJustDrew) return;
 
   if (window.routeMode) {
@@ -1001,6 +1004,29 @@ window.handleTerminalSettlementMapClick = function(latlng) {
   if (!Array.isArray(visualPolygon) || visualPolygon.length < 3 ||
       !pointInSettlement(latlng, visualPolygon)) return false;
   partyMarker.fire("click");
+  return true;
+};
+
+window.handleIntermediateSettlementMapClick = function(latlng) {
+  const state = window.partyPlaybackState;
+  if (!state || state.status !== "paused" ||
+      !state.intermediateSettlementReached || state.intermediateSettlementId == null ||
+      !latlng) return false;
+
+  const cityId = String(state.intermediateSettlementId);
+  const area = (window.settlementAreas || []).find(item => String(item.id) === cityId);
+  if (!area) return false;
+  const visualPolygon = getSettlementBrushErasePolygon(area, 4);
+  if (!Array.isArray(visualPolygon) || visualPolygon.length < 3 ||
+      !pointInSettlement(latlng, visualPolygon)) return false;
+
+  // Для промежуточного города используем уже существующий сценарий кнопки
+  // «Редактировать маршрут»: он сохраняет точку входа в город и открывает
+  // редактор от текущего положения отряда, не затрагивая локальные заметки.
+  const editButton = routeLaunchPanel &&
+    routeLaunchPanel.querySelector("#route-party-edit");
+  if (!editButton || editButton.disabled) return false;
+  editButton.click();
   return true;
 };
 // =====================================
