@@ -4791,7 +4791,7 @@ function getRouteDistanceAtElapsedTime(points, startDistance, elapsedUnits, maxD
 }
 
 // Общее движение маркера. Один дневной переход (8 игровых часов)
-// теперь проходит за 10 секунд реального времени в тестовом режиме.
+// проходит за 30 секунд реального времени.
 window.partyPlaybackState = null;
 let partyPlaybackFrame = null;
 let partyPlaybackDistance = 0;
@@ -4800,10 +4800,10 @@ let partyPlaybackLastUiStatus = null;
 function getPartyPlaybackDistance(state, now) {
   const start = Math.max(0, Number(state.startDistance) || 0);
   if (state.status !== "playing") return start;
-  // Тестовая скорость: 8 игровых часов пути за 10 секунд реального времени.
+  // Скорость движения: 8 игровых часов пути за 30 секунд реального времени.
   // Скрытый переход внутри поселения дополнительно ускорен в 8 раз:
   // игроку не приходится ждать, пока невидимый маркер пересечёт город.
-  let remainingUnits = Math.max(0, now - Number(state.startedAt || now)) / 10000;
+  let remainingUnits = Math.max(0, now - Number(state.startedAt || now)) / 30000;
   const maxDistance = getRouteTravelLength(routePoints);
   let passed = 0;
   for (let i = 1; i < routePoints.length; i++) {
