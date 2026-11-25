@@ -160,27 +160,29 @@ body {
   opacity: 0;
 }
 #celestial-light-night {
-  background: rgba(8, 15, 39, 0.48);
+  /* Холодное затемнение покрывает карту целиком в ночные часы. */
+  background: rgba(8, 15, 39, 0.62);
   opacity: 0;
 }
 #celestial-light-sunset {
-  /* Широкий тёплый градиент: цвет доходит и до противоположного края карты. */
-  background: radial-gradient(ellipse 190% 150% at -4% 50%,
-    rgba(255, 145, 82, 0.62) 0%,
-    rgba(245, 133, 91, 0.43) 38%,
-    rgba(222, 119, 111, 0.22) 76%,
-    rgba(210, 116, 122, 0.06) 100%,
-    rgba(210, 116, 122, 0) 120%);
+  /* Локальный источник тёплого света слева: к центру и правому краю плавно исчезает. */
+  background: radial-gradient(ellipse 96% 128% at -3% 50%,
+    rgba(255, 164, 91, 0.48) 0%,
+    rgba(255, 151, 94, 0.34) 30%,
+    rgba(242, 139, 105, 0.17) 62%,
+    rgba(225, 128, 117, 0.045) 88%,
+    rgba(225, 128, 117, 0) 108%);
   mix-blend-mode: screen;
   opacity: 0;
 }
 #celestial-light-dawn {
-  background: radial-gradient(ellipse 190% 150% at 104% 50%,
-    rgba(255, 211, 151, 0.58) 0%,
-    rgba(248, 184, 161, 0.41) 38%,
-    rgba(218, 158, 183, 0.21) 76%,
-    rgba(207, 151, 180, 0.055) 100%,
-    rgba(207, 151, 180, 0) 120%);
+  /* Золотисто-розовый локальный источник света справа. */
+  background: radial-gradient(ellipse 96% 128% at 103% 50%,
+    rgba(255, 220, 151, 0.48) 0%,
+    rgba(255, 199, 157, 0.34) 30%,
+    rgba(232, 169, 178, 0.17) 62%,
+    rgba(211, 151, 181, 0.045) 88%,
+    rgba(211, 151, 181, 0) 108%);
   mix-blend-mode: screen;
   opacity: 0;
 }
@@ -4966,18 +4968,18 @@ function applyCelestialLighting(dayHours) {
     return 1 - x * x * (3 - 2 * x);
   };
 
-  // Рассвет и закат растянуты на несколько часов: оттенок заметен даже
-  // на противоположном краю изображения, но не перекрашивает карту целиком.
+  // Рассвет и закат включают локальные боковые источники света;
+  // их радиальные градиенты плавно затухают до противоположного края.
   const sunsetStrength = bell(hour, 17.8, 4.4);
   const dawnStrength = bell(hour, 6.2, 4.4);
   const nightStrength = Math.pow(1 - smoothDaylight, 0.9);
 
-  // Дневной оттенок временно отключён, чтобы карта оставалась чистой и контрастной.
-  // Рассвет и закат усилены отдельно, без изменения ночного затемнения.
+  // Днём карта остаётся без цветной вуали; ночь темнее и равномерно покрывает карту.
+  // Рассвет и закат усиливаются только в пределах своих боковых радиальных свечений.
   if (dayLayer) dayLayer.style.opacity = "0";
-  if (nightLayer) nightLayer.style.opacity = String(nightStrength * 0.32);
-  if (sunsetLayer) sunsetLayer.style.opacity = String(sunsetStrength * 0.95);
-  if (dawnLayer) dawnLayer.style.opacity = String(dawnStrength * 0.92);
+  if (nightLayer) nightLayer.style.opacity = String(nightStrength * 0.54);
+  if (sunsetLayer) sunsetLayer.style.opacity = String(sunsetStrength * 0.88);
+  if (dawnLayer) dawnLayer.style.opacity = String(dawnStrength * 0.86);
 }
 
 window.updateCelestialClock = function(state = window.partyPlaybackState, now = window.getSynchronizedRouteNow()) {
