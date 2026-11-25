@@ -134,50 +134,41 @@ body {
   
 /* Небесный диск: центр круга совпадает с верхней границей карты;
    видна только нижняя половина, верхняя часть всегда обрезана. */
-/* Освещение располагается в том же Leaflet-pane, что и само изображение карты,
-   поэтому его границы и масштаб всегда совпадают с map.jpg, а не с рамкой окна. */
+/* Отдельный слой освещения карты. Он не перехватывает клики и не влияет на Leaflet. */
 #celestial-light {
   position: absolute;
-  left: 0;
-  top: 0;
-  z-index: 1;
+  inset: 0;
+  z-index: 1100;
   overflow: hidden;
   pointer-events: none;
 }
-#celestial-light-day,
 #celestial-light-night,
 #celestial-light-sunset,
 #celestial-light-dawn {
   position: absolute;
   inset: 0;
   pointer-events: none;
-}
-#celestial-light-day {
-  background: rgba(255, 220, 132, 0.24);
-  mix-blend-mode: soft-light;
-  opacity: 0;
+  transition: opacity 900ms ease;
 }
 #celestial-light-night {
-  background: rgba(8, 15, 39, 0.54);
+  background: rgba(7, 13, 35, 0.78);
   opacity: 0;
 }
 #celestial-light-sunset {
-  background: radial-gradient(ellipse 145% 132% at 0% 50%,
-    rgba(255, 139, 78, 0.48) 0%,
-    rgba(239, 116, 82, 0.30) 38%,
-    rgba(205, 105, 104, 0.14) 76%,
-    rgba(205, 105, 104, 0.035) 100%,
-    rgba(205, 105, 104, 0) 120%);
+  background: radial-gradient(ellipse 86% 118% at 0% 50%,
+    rgba(255, 112, 55, 0.82) 0%,
+    rgba(235, 91, 58, 0.43) 34%,
+    rgba(193, 77, 75, 0.12) 63%,
+    rgba(193, 77, 75, 0) 78%);
   mix-blend-mode: screen;
   opacity: 0;
 }
 #celestial-light-dawn {
-  background: radial-gradient(ellipse 145% 132% at 100% 50%,
-    rgba(255, 204, 143, 0.46) 0%,
-    rgba(245, 169, 153, 0.29) 38%,
-    rgba(207, 145, 171, 0.14) 76%,
-    rgba(207, 145, 171, 0.035) 100%,
-    rgba(207, 145, 171, 0) 120%);
+  background: radial-gradient(ellipse 86% 118% at 100% 50%,
+    rgba(255, 190, 126, 0.76) 0%,
+    rgba(245, 155, 139, 0.40) 34%,
+    rgba(202, 132, 164, 0.12) 63%,
+    rgba(202, 132, 164, 0) 78%);
   mix-blend-mode: screen;
   opacity: 0;
 }
@@ -264,7 +255,6 @@ background:#1e1e1e; padding:20px; border-radius:8px; z-index:1000; color:white; 
 <div id="map-wrapper">
   <div id="map">
     <div id="celestial-light" aria-hidden="true">
-      <div id="celestial-light-day"></div>
       <div id="celestial-light-night"></div>
       <div id="celestial-light-sunset"></div>
       <div id="celestial-light-dawn"></div>
@@ -349,28 +339,6 @@ map.fitBounds(bounds, {
 
 map.setMaxBounds(bounds);
 map.panInsideBounds(bounds, { animate: false });
-
-// Подгоняем световой слой под реальный прямоугольник imageOverlay (map.jpg).
-// Он находится в том же pane, поэтому перемещается и масштабируется вместе с картой.
-(function attachCelestialLightToMapImage() {
-  const light = document.getElementById("celestial-light");
-  if (!light || !overlay || typeof overlay.getElement !== "function") return;
-  const syncLightBounds = function() {
-    const image = overlay.getElement();
-    if (!image || !image.parentNode) return;
-    if (light.parentNode !== image.parentNode) image.parentNode.appendChild(light);
-    const style = image.style;
-    light.style.left = style.left || "0px";
-    light.style.top = style.top || "0px";
-    light.style.width = style.width || `${image.offsetWidth}px`;
-    light.style.height = style.height || `${image.offsetHeight}px`;
-    light.style.transform = style.transform || "none";
-    light.style.transformOrigin = style.transformOrigin || "0 0";
-  };
-  syncLightBounds();
-  map.on("viewreset zoomend moveend resize", syncLightBounds);
-  map.on("zoomanim", function() { requestAnimationFrame(syncLightBounds); });
-})();
 
 map.on('popupclose', function() {
   popupJustClosed = true;
@@ -4946,95 +4914,55 @@ window.getPartyGameTimeHours = function(state = window.partyPlaybackState, now =
   return baseHours + travelUnits * 8;
 };
 
-let celestialLightAnimationFrame = null;
-let celestialDisplayedHours = null;
-
-function applyCelestialLighting(dayHours) {
-  const dayLayer = document.getElementById("celestial-light-day");
-  const nightLayer = document.getElementById("celestial-light-night");
-  const sunsetLayer = document.getElementById("celestial-light-sunset");
-  const dawnLayer = document.getElementById("celestial-light-dawn");
-  const hour = ((dayHours % 24) + 24) % 24;
-  const smoothDaylight = Math.max(0, Math.sin(((hour - 6) / 12) * Math.PI));
-  const bell = (value, center, halfWidth) => {
-    const distance = Math.abs(value - center);
-    if (distance >= halfWidth) return 0;
-    const x = distance / halfWidth;
-    return 1 - x * x * (3 - 2 * x);
-  };
-
-  // Рассвет и закат растянуты на несколько часов: оттенок заметен даже
-  // на противоположном краю изображения, но не перекрашивает карту целиком.
-  const sunsetStrength = bell(hour, 17.7, 3.4);
-  const dawnStrength = bell(hour, 6.3, 3.4);
-  const nightStrength = Math.pow(1 - smoothDaylight, 0.9);
-
-  if (dayLayer) dayLayer.style.opacity = String(smoothDaylight * 0.72);
-  if (nightLayer) nightLayer.style.opacity = String(nightStrength * 0.34);
-  if (sunsetLayer) sunsetLayer.style.opacity = String(sunsetStrength * 0.48);
-  if (dawnLayer) dawnLayer.style.opacity = String(dawnStrength * 0.46);
-}
-
 window.updateCelestialClock = function(state = window.partyPlaybackState, now = window.getSynchronizedRouteNow()) {
   const clock = document.getElementById("celestial-clock");
   const disc = document.getElementById("celestial-clock-disc");
+  const nightLayer = document.getElementById("celestial-light-night");
+  const sunsetLayer = document.getElementById("celestial-light-sunset");
+  const dawnLayer = document.getElementById("celestial-light-dawn");
   if (!clock || !disc || !state) return;
 
   const hours = window.getPartyGameTimeHours(state, now);
+  // Для времени суток используем отдельный 24-часовой цикл. Он только
+  // считывает игровое время и не меняет ни часы маршрута, ни состояние отряда.
   const dayHours = ((hours % 24) + 24) % 24;
   const previousHours = Number(disc.dataset.gameHours);
   const hasPreviousValue = Number.isFinite(previousHours);
   const deltaHours = hasPreviousValue ? hours - previousHours : 0;
+
+  // Угол оставляем накопительным: так диск плавно проходит полночь,
+  // а освещение при этом корректно начинает новый день с 00:00.
   const angle = (hours / 24) * 360;
 
-  // Повторный Firebase-снимок с тем же временем не должен обрывать
-  // уже идущую анимацию лагеря и мгновенно перескакивать к конечному свету.
-  if (hasPreviousValue && Math.abs(deltaHours) <= 0.001 &&
-      celestialLightAnimationFrame !== null && state.status !== "playing") {
-    return;
-  }
-
-  if (celestialLightAnimationFrame !== null) {
-    cancelAnimationFrame(celestialLightAnimationFrame);
-    celestialLightAnimationFrame = null;
-  }
-
+  const smoothDaylight = Math.max(0, Math.sin(((dayHours - 6) / 12) * Math.PI));
+  const bell = (hour, center, halfWidth) => {
+    const distance = Math.abs(hour - center);
+    if (distance >= halfWidth) return 0;
+    const x = distance / halfWidth;
+    return 1 - x * x * (3 - 2 * x);
+  };
+  const sunsetStrength = bell(dayHours, 17.7, 2.2);
+  const dawnStrength = bell(dayHours, 6.3, 2.2);
+  const nightStrength = Math.pow(1 - smoothDaylight, 0.9);
+  if (nightLayer) nightLayer.style.opacity = String(nightStrength * 0.48);
+  if (sunsetLayer) sunsetLayer.style.opacity = String(sunsetStrength * 0.72);
+  if (dawnLayer) dawnLayer.style.opacity = String(dawnStrength * 0.68);
   if (!hasPreviousValue) {
+    // Первое отображение — сразу в правильном положении, без анимации из полуночи.
     disc.style.transition = "none";
     disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
-    celestialDisplayedHours = hours;
-    applyCelestialLighting(dayHours);
     clock.style.opacity = "1";
-  } else if (state.status !== "playing" && deltaHours > 0.001) {
-    // При разбитии лагеря время перескакивает на 8 часов. Показываем весь
-    // переход суток постепенно, чтобы рассвет/закат не пропадали между кадрами.
+  } else if (state.status === "playing") {
+    // Во время движения угол обновляется каждый кадр, как и раньше: без CSS-торможения.
+    disc.style.transition = "none";
+    disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
+  } else if (deltaHours > 0.001) {
+    // Отдых тоже прокручивает диск плавно, но заметно быстрее обычного пути.
     const duration = deltaHours >= 4 ? 2550 : 1140;
-    const fromHours = Number.isFinite(celestialDisplayedHours) ? celestialDisplayedHours : previousHours;
-    const startedAt = performance.now();
     disc.style.transition = `transform ${duration}ms cubic-bezier(0.22, 0.72, 0.24, 1)`;
     disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
-
-    const animateLight = timestamp => {
-      const progress = Math.min(1, Math.max(0, (timestamp - startedAt) / duration));
-      // Та же плавная кривая, что и у диска часов.
-      const eased = 1 - Math.pow(1 - progress, 2.35);
-      const visualHours = fromHours + (hours - fromHours) * eased;
-      celestialDisplayedHours = visualHours;
-      applyCelestialLighting(((visualHours % 24) + 24) % 24);
-      if (progress < 1) {
-        celestialLightAnimationFrame = requestAnimationFrame(animateLight);
-      } else {
-        celestialLightAnimationFrame = null;
-        celestialDisplayedHours = hours;
-        applyCelestialLighting(dayHours);
-      }
-    };
-    celestialLightAnimationFrame = requestAnimationFrame(animateLight);
   } else {
-    disc.style.transition = "none";
     disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
-    celestialDisplayedHours = hours;
-    applyCelestialLighting(dayHours);
   }
 
   disc.dataset.gameHours = String(hours);
