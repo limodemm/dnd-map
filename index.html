@@ -1571,6 +1571,23 @@ function ensurePartyActionConfirmationDialog() {
       font-size: 17px;
       line-height: 1.4;
     }
+    #party-action-confirmation-hours {
+      display: none;
+      width: 112px;
+      box-sizing: border-box;
+      margin: -5px auto 16px;
+      padding: 8px 10px;
+      color: #eee2c8;
+      background: #17130f;
+      border: 1px solid #92764e;
+      border-radius: 6px;
+      font: 17px Georgia, serif;
+      text-align: center;
+    }
+    #party-action-confirmation-hours:focus {
+      outline: 2px solid #d6b46a;
+      outline-offset: 2px;
+    }
     #party-action-confirmation-buttons {
       display: flex;
       justify-content: center;
@@ -1602,6 +1619,7 @@ function ensurePartyActionConfirmationDialog() {
   overlay.innerHTML = `
     <div id="party-action-confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="party-action-confirmation-text">
       <div id="party-action-confirmation-text"></div>
+      <input id="party-action-confirmation-hours" type="number" min="0.1" max="720" step="0.1" inputmode="decimal" placeholder="Часы" aria-label="Количество часов">
       <div id="party-action-confirmation-buttons">
         <button type="button" data-answer="yes">Да</button>
         <button type="button" data-answer="no">Нет</button>
@@ -1620,6 +1638,22 @@ function ensurePartyActionConfirmationDialog() {
       partyActionConfirmationSubmitting = true;
       overlay.querySelectorAll("button").forEach(item => { item.disabled = true; });
       try {
+        if (actionType === "time") {
+          const hoursInput = overlay.querySelector("#party-action-confirmation-hours");
+          const hours = Number(String(hoursInput && hoursInput.value || "").replace(",", "."));
+          if (answer === "yes") {
+            if (!Number.isFinite(hours) || hours < 0.1 || hours > 720) {
+              partyActionConfirmationSubmitting = false;
+              overlay.querySelectorAll("button").forEach(item => { item.disabled = false; });
+              if (hoursInput) { hoursInput.focus(); hoursInput.setCustomValidity("Введите число от 0,1 до 720 часов"); hoursInput.reportValidity(); }
+              return;
+            }
+            if (hoursInput) hoursInput.setCustomValidity("");
+            await performPartyElapsedTime(hours);
+          }
+          closePartyActionConfirmation();
+          return;
+        }
         if (typeof window.resolvePartyActionConfirmation !== "function") {
           throw new Error("Синхронизация подтверждения ещё не готова");
         }
@@ -1655,6 +1689,7 @@ function closePartyActionConfirmation() {
 
 window.applyPartyActionConfirmation = function(confirmation) {
   if (!confirmation || confirmation.status !== "pending") {
+    if (partyActionConfirmationType === "time" && !confirmation) return;
     if (!confirmation || (partyActionConfirmationId && confirmation.id === partyActionConfirmationId)) {
       closePartyActionConfirmation();
     }
@@ -1672,6 +1707,8 @@ window.applyPartyActionConfirmation = function(confirmation) {
   partyActionConfirmationId = String(confirmation.id);
   partyActionConfirmationType = confirmation.action;
   const message = overlay.querySelector("#party-action-confirmation-text");
+  const hoursInput = overlay.querySelector("#party-action-confirmation-hours");
+  if (hoursInput) hoursInput.style.display = "none";
   message.textContent = confirmation.action === "camp"
     ? "Разбить лагерь здесь?"
     : "Остановиться отдохнуть здесь?";
@@ -1694,6 +1731,61 @@ async function requestPartyActionConfirmation(action) {
     await window.publishPartyActionConfirmation(action);
   } catch (error) {
     console.error("Не удалось запросить подтверждение отдыха:", error);
+  }
+}
+
+function requestPartyElapsedTime() {
+  if (partyActionConfirmationSubmitting || partyActionConfirmationId) return;
+  const state = window.partyPlaybackState;
+  if (!state || state.status !== "paused" || routeMarkerAnimations.length > 0) return;
+  const overlay = ensurePartyActionConfirmationDialog();
+  partyActionConfirmationId = "elapsed-time-" + String(Date.now());
+  partyActionConfirmationType = "time";
+  const message = overlay.querySelector("#party-action-confirmation-text");
+  const hoursInput = overlay.querySelector("#party-action-confirmation-hours");
+  message.textContent = "Сколько времени прошло?";
+  if (hoursInput) {
+    hoursInput.style.display = "block";
+    hoursInput.value = "1";
+    hoursInput.setCustomValidity("");
+  }
+  overlay.style.display = "flex";
+  overlay.querySelectorAll("button").forEach(button => { button.disabled = false; });
+  syncRouteLaunchControls();
+  if (hoursInput) {
+    setTimeout(() => { if (partyActionConfirmationType === "time") { hoursInput.focus(); hoursInput.select(); } }, 0);
+  }
+}
+
+async function performPartyElapsedTime(hours) {
+  const state = window.partyPlaybackState;
+  if (!state || state.status !== "paused" || !Number.isFinite(hours) || hours <= 0 || hours > 720) return;
+  const shiftedState = {
+    ...state,
+    status: "paused",
+    startedAt: null,
+    worldTimeHours: window.getPartyGameTimeHours(state) + hours
+  };
+  window.partyPlaybackState = shiftedState;
+  window.updateCelestialClock(shiftedState);
+  renderPartyPlaybackState(shiftedState);
+  try {
+    await window.publishPartyPlaybackState({
+      status: "paused",
+      startDistance: Math.max(0, Number(state.startDistance) || 0),
+      startedAt: null,
+      routeStartedAt: Number(state.routeStartedAt || window.routePlaybackRouteStartedAt) || null,
+      campRequired: Boolean(state.campRequired),
+      campHoursElapsed: Math.max(0, Number(state.campHoursElapsed) || 0),
+      worldTimeHours: shiftedState.worldTimeHours,
+      restResetDistances: Array.isArray(state.restResetDistances)
+        ? state.restResetDistances.slice() : routeRestResetDistances.slice()
+    });
+  } catch (error) {
+    console.error("Не удалось сохранить прошедшее игровое время:", error);
+    window.partyPlaybackState = state;
+    window.updateCelestialClock(state);
+    renderPartyPlaybackState(state);
   }
 }
 
@@ -2356,6 +2448,7 @@ function syncRouteLaunchControls() {
   const editButton = routeLaunchPanel.querySelector("#route-party-edit");
   const campButton = routeLaunchPanel.querySelector("#route-party-camp");
   const shortRestButton = routeLaunchPanel.querySelector("#route-party-short-rest");
+  const elapsedTimeButton = routeLaunchPanel.querySelector("#route-party-elapsed-time");
   const safetySlider = routeLaunchPanel.querySelector("#route-party-camp-safety-slider");
   if (playButton) {
     playButton.disabled = playUnavailable;
@@ -2368,6 +2461,7 @@ function syncRouteLaunchControls() {
   const confirmationOpen = Boolean(partyActionConfirmationId || partyActionConfirmationSubmitting);
   if (campButton) campButton.disabled = animationRunning || !paused || confirmationOpen;
   if (shortRestButton) shortRestButton.disabled = animationRunning || !paused || confirmationOpen;
+  if (elapsedTimeButton) elapsedTimeButton.disabled = animationRunning || !paused || confirmationOpen;
   if (safetySlider) safetySlider.disabled = animationRunning || !paused;
 }
 
@@ -2921,7 +3015,7 @@ function createRouteLaunchPanel() {
     /* В альбомной ориентации телефона панель отряда компактнее, как и редактор маршрута. */
     @media screen and (max-height: 600px) and (orientation: landscape) and (pointer: coarse) {
       #party-route-launch-panel {
-        transform: translateX(-50%) scale(0.75);
+        transform: translateX(-50%) scale(0.60);
         transform-origin: center bottom;
         bottom: max(6px, env(safe-area-inset-bottom));
       }
@@ -2954,6 +3048,12 @@ function createRouteLaunchPanel() {
           <path d="m5.1 17.6 14.7 3.1c.7.2 1.1.9.9 1.6-.2.7-.9 1.1-1.6.9L4.4 20.1c-.7-.2-1.1-.9-.9-1.6.2-.7.9-1.1 1.6-.9Z"/>
         </svg>
       </button>
+      <button type="button" id="route-party-elapsed-time" aria-label="Указать, сколько времени прошло" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M6 3h12M6 21h12M7 3c0 4 2 5.4 5 9-3 3.6-5 5-5 9M17 3c0 4-2 5.4-5 9 3 3.6 5 5 5 9"/>
+          <path d="M8.5 5.5h7M8.5 18.5h7M9 6l3 4 3-4M9 18l3-4 3 4"/>
+        </svg>
+      </button>
     </div>
   `;
   document.body.appendChild(routeLaunchPanel);
@@ -2981,6 +3081,13 @@ function createRouteLaunchPanel() {
     shortRestButton.addEventListener("click", function() {
       if (shortRestButton.disabled) return;
       requestPartyActionConfirmation("fire");
+    });
+  }
+  const elapsedTimeButton = routeLaunchPanel.querySelector("#route-party-elapsed-time");
+  if (elapsedTimeButton) {
+    elapsedTimeButton.addEventListener("click", function() {
+      if (elapsedTimeButton.disabled) return;
+      requestPartyElapsedTime();
     });
   }
   syncRouteLaunchControls();
@@ -5525,6 +5632,7 @@ function renderPartyPlaybackState(state) {
   const editButton = routeLaunchPanel.querySelector("#route-party-edit");
   const campButton = routeLaunchPanel.querySelector("#route-party-camp");
   const shortRestButton = routeLaunchPanel.querySelector("#route-party-short-rest");
+  const elapsedTimeButton = routeLaunchPanel.querySelector("#route-party-elapsed-time");
   const campSafetySlider = routeLaunchPanel.querySelector("#route-party-camp-safety-slider");
   if (!pauseButton || !playButton) return;
   const playing = state && state.status === "playing";
@@ -5565,6 +5673,10 @@ function renderPartyPlaybackState(state) {
   if (shortRestButton) {
     shortRestButton.disabled = !paused || confirmationOpen;
     shortRestButton.setAttribute("aria-disabled", shortRestButton.disabled ? "true" : "false");
+  }
+  if (elapsedTimeButton) {
+    elapsedTimeButton.disabled = !paused || confirmationOpen;
+    elapsedTimeButton.setAttribute("aria-disabled", elapsedTimeButton.disabled ? "true" : "false");
   }
   if (campSafetySlider) {
     campSafetySlider.disabled = !paused;
