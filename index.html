@@ -154,7 +154,7 @@ body {
   pointer-events: none;
 }
 #celestial-light-day {
-  /* Не белёсая вуаль, а лёгкое золотистое повышение яркости. */
+  /* Дневной слой пока отключён: он давал карте цветную вуаль вместо естественного высветления. */
   background: rgba(255, 218, 112, 0.20);
   mix-blend-mode: screen;
   opacity: 0;
@@ -166,20 +166,20 @@ body {
 #celestial-light-sunset {
   /* Широкий тёплый градиент: цвет доходит и до противоположного края карты. */
   background: radial-gradient(ellipse 190% 150% at -4% 50%,
-    rgba(255, 145, 82, 0.40) 0%,
-    rgba(245, 133, 91, 0.27) 38%,
-    rgba(222, 119, 111, 0.13) 76%,
-    rgba(210, 116, 122, 0.035) 100%,
+    rgba(255, 145, 82, 0.62) 0%,
+    rgba(245, 133, 91, 0.43) 38%,
+    rgba(222, 119, 111, 0.22) 76%,
+    rgba(210, 116, 122, 0.06) 100%,
     rgba(210, 116, 122, 0) 120%);
   mix-blend-mode: screen;
   opacity: 0;
 }
 #celestial-light-dawn {
   background: radial-gradient(ellipse 190% 150% at 104% 50%,
-    rgba(255, 211, 151, 0.39) 0%,
-    rgba(248, 184, 161, 0.26) 38%,
-    rgba(218, 158, 183, 0.13) 76%,
-    rgba(207, 151, 180, 0.035) 100%,
+    rgba(255, 211, 151, 0.58) 0%,
+    rgba(248, 184, 161, 0.41) 38%,
+    rgba(218, 158, 183, 0.21) 76%,
+    rgba(207, 151, 180, 0.055) 100%,
     rgba(207, 151, 180, 0) 120%);
   mix-blend-mode: screen;
   opacity: 0;
@@ -4972,12 +4972,12 @@ function applyCelestialLighting(dayHours) {
   const dawnStrength = bell(hour, 6.2, 4.4);
   const nightStrength = Math.pow(1 - smoothDaylight, 0.9);
 
-  // День даёт лёгкий жёлтый свет, а не серую дымку. Рассвет/закат
-  // дольше остаются заметными и используют широкие градиенты по всей карте.
-  if (dayLayer) dayLayer.style.opacity = String(smoothDaylight * 0.42);
+  // Дневной оттенок временно отключён, чтобы карта оставалась чистой и контрастной.
+  // Рассвет и закат усилены отдельно, без изменения ночного затемнения.
+  if (dayLayer) dayLayer.style.opacity = "0";
   if (nightLayer) nightLayer.style.opacity = String(nightStrength * 0.32);
-  if (sunsetLayer) sunsetLayer.style.opacity = String(sunsetStrength * 0.68);
-  if (dawnLayer) dawnLayer.style.opacity = String(dawnStrength * 0.66);
+  if (sunsetLayer) sunsetLayer.style.opacity = String(sunsetStrength * 0.95);
+  if (dawnLayer) dawnLayer.style.opacity = String(dawnStrength * 0.92);
 }
 
 window.updateCelestialClock = function(state = window.partyPlaybackState, now = window.getSynchronizedRouteNow()) {
