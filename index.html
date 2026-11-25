@@ -159,9 +159,11 @@ body {
   opacity: 0;
 }
 #celestial-light-night {
-  /* Холодное затемнение покрывает карту целиком в ночные часы. */
+  /* Холодная ночная тень; на рассвете её край движется по карте неровной мягкой волной. */
   background: rgba(8, 15, 39, 0.62);
   opacity: 0;
+  will-change: clip-path, opacity;
+  filter: blur(13px);
 }
 #celestial-light-sunset {
   /* Закатный источник находится слева и смещается за край карты;
@@ -4974,44 +4976,56 @@ function applyCelestialLighting(dayHours) {
     const x = Math.max(0, Math.min(1, (value - from) / (to - from)));
     return x * x * (3 - 2 * x);
   };
-  const bell = (value, center, halfWidth) => {
-    const distance = Math.abs(value - center);
-    if (distance >= halfWidth) return 0;
-    const x = distance / halfWidth;
-    return 1 - x * x * (3 - 2 * x);
-  };
 
-  // Закат: широкий свет охватывает всю карту с заметным градиентом
-  // от яркого левого края к слабому дальнему краю, затем источник уходит за карту.
-  const sunsetStrength = bell(hour, 17.8, 4.4);
-  const sunsetProgress = smoothstep(15.5, 21.0, hour);
-  const sunsetX = -sunsetProgress * 34;
+  // Закат: свет достигает максимума перед заходом солнца, затем быстро
+  // слабеет, а его источник уходит за левый край карты. Это не даёт ему
+  // продолжать подсвечивать ночную карту до позднего вечера.
+  const sunsetFadeIn = smoothstep(15.8, 17.0, hour);
+  const sunsetFadeOut = 1 - smoothstep(17.35, 19.45, hour);
+  const sunsetStrength = sunsetFadeIn * sunsetFadeOut;
+  const sunsetProgress = smoothstep(16.4, 20.0, hour);
+  const sunsetX = 6 - sunsetProgress * 78;
 
-  // Рассвет: источник появляется справа, движется влево и постепенно вытесняет ночь.
-  const dawnProgress = smoothstep(4.0, 8.1, hour);
-  const dawnStrength = bell(hour, 6.2, 4.4);
-  const dawnX = 104 - dawnProgress * 88;
-  const nightStrength = Math.pow(1 - smoothDaylight, 0.9);
+  // Рассвет: сначала сохраняем полную ночную темноту. Затем её граница
+  // уходит справа налево вслед за золотистым светом восхода.
+  const dawnProgress = smoothstep(4.35, 8.55, hour);
+  const dawnStrength = smoothstep(4.35, 5.35, hour) * (1 - smoothstep(8.15, 9.0, hour));
+  const dawnX = 104 - dawnProgress * 112;
+
+  // До начала волны и во время её движения ночная плотность не уменьшается.
+  // После полного прохождения волны остаточная тень плавно исчезает.
+  const nightStrength = hour < 4.35 ? 1 :
+    (hour <= 8.55 ? 1 : 1 - smoothstep(8.55, 9.15, hour));
 
   if (dayLayer) dayLayer.style.opacity = "0";
   if (nightLayer) {
     nightLayer.style.opacity = String(nightStrength * 0.54);
-    // До восхода тьма сохраняется слева, а справа её постепенно смывает рассвет.
-    // Маска движется справа налево, не создавая равномерной серой/розовой дымки.
     if (dawnProgress <= 0.001) {
-      nightLayer.style.maskImage = "none";
-      nightLayer.style.webkitMaskImage = "none";
+      nightLayer.style.clipPath = "none";
+      nightLayer.style.webkitClipPath = "none";
     } else {
-      const darkEdge = Math.max(0, (1 - dawnProgress) * 100);
-      const fadeStart = Math.max(0, darkEdge - 16);
-      const mask = `linear-gradient(to right, #000 0%, #000 ${fadeStart}%, transparent ${darkEdge}%, transparent 100%)`;
-      nightLayer.style.maskImage = mask;
-      nightLayer.style.webkitMaskImage = mask;
+      const edge = 104 - dawnProgress * 112;
+      // Небольшие чередующиеся смещения по высоте создают живой,
+      // неровный фронт рассвета вместо идеально прямой вертикальной линии.
+      const wave = 4.2 * Math.sin(dawnProgress * Math.PI);
+      const xs = [
+        edge + wave * 0.55,
+        edge - wave * 0.75 - 1.2,
+        edge + wave * 0.9 + 1.0,
+        edge - wave * 0.65 - 1.5,
+        edge + wave * 0.7 + 0.6,
+        edge - wave * 0.45
+      ].map(x => `${Math.max(-18, Math.min(118, x)).toFixed(2)}%`);
+      const waveClip = `polygon(0 0, ${xs[0]} 0, ${xs[1]} 18%, ${xs[2]} 38%, ${xs[3]} 59%, ${xs[4]} 80%, ${xs[5]} 100%, 0 100%)`;
+      nightLayer.style.clipPath = waveClip;
+      nightLayer.style.webkitClipPath = waveClip;
     }
+    nightLayer.style.maskImage = "none";
+    nightLayer.style.webkitMaskImage = "none";
   }
   if (sunsetLayer) {
     sunsetLayer.style.setProperty("--sunset-x", `${sunsetX}%`);
-    sunsetLayer.style.opacity = String(sunsetStrength * 0.88);
+    sunsetLayer.style.opacity = String(sunsetStrength * 0.72);
   }
   if (dawnLayer) {
     dawnLayer.style.setProperty("--dawn-x", `${dawnX}%`);
