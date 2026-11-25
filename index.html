@@ -140,7 +140,8 @@ body {
   position: absolute;
   left: 0;
   top: 0;
-  z-index: 1;
+  /* В overlayPane карта имеет собственный z-index; свет должен быть выше map.jpg. */
+  z-index: 3;
   overflow: hidden;
   pointer-events: none;
 }
@@ -153,31 +154,33 @@ body {
   pointer-events: none;
 }
 #celestial-light-day {
-  background: rgba(255, 220, 132, 0.24);
-  mix-blend-mode: soft-light;
+  /* Не белёсая вуаль, а лёгкое золотистое повышение яркости. */
+  background: rgba(255, 218, 112, 0.20);
+  mix-blend-mode: screen;
   opacity: 0;
 }
 #celestial-light-night {
-  background: rgba(8, 15, 39, 0.54);
+  background: rgba(8, 15, 39, 0.48);
   opacity: 0;
 }
 #celestial-light-sunset {
-  background: radial-gradient(ellipse 145% 132% at 0% 50%,
-    rgba(255, 139, 78, 0.48) 0%,
-    rgba(239, 116, 82, 0.30) 38%,
-    rgba(205, 105, 104, 0.14) 76%,
-    rgba(205, 105, 104, 0.035) 100%,
-    rgba(205, 105, 104, 0) 120%);
+  /* Широкий тёплый градиент: цвет доходит и до противоположного края карты. */
+  background: radial-gradient(ellipse 190% 150% at -4% 50%,
+    rgba(255, 145, 82, 0.40) 0%,
+    rgba(245, 133, 91, 0.27) 38%,
+    rgba(222, 119, 111, 0.13) 76%,
+    rgba(210, 116, 122, 0.035) 100%,
+    rgba(210, 116, 122, 0) 120%);
   mix-blend-mode: screen;
   opacity: 0;
 }
 #celestial-light-dawn {
-  background: radial-gradient(ellipse 145% 132% at 100% 50%,
-    rgba(255, 204, 143, 0.46) 0%,
-    rgba(245, 169, 153, 0.29) 38%,
-    rgba(207, 145, 171, 0.14) 76%,
-    rgba(207, 145, 171, 0.035) 100%,
-    rgba(207, 145, 171, 0) 120%);
+  background: radial-gradient(ellipse 190% 150% at 104% 50%,
+    rgba(255, 211, 151, 0.39) 0%,
+    rgba(248, 184, 161, 0.26) 38%,
+    rgba(218, 158, 183, 0.13) 76%,
+    rgba(207, 151, 180, 0.035) 100%,
+    rgba(207, 151, 180, 0) 120%);
   mix-blend-mode: screen;
   opacity: 0;
 }
@@ -4965,14 +4968,16 @@ function applyCelestialLighting(dayHours) {
 
   // Рассвет и закат растянуты на несколько часов: оттенок заметен даже
   // на противоположном краю изображения, но не перекрашивает карту целиком.
-  const sunsetStrength = bell(hour, 17.7, 3.4);
-  const dawnStrength = bell(hour, 6.3, 3.4);
+  const sunsetStrength = bell(hour, 17.8, 4.4);
+  const dawnStrength = bell(hour, 6.2, 4.4);
   const nightStrength = Math.pow(1 - smoothDaylight, 0.9);
 
-  if (dayLayer) dayLayer.style.opacity = String(smoothDaylight * 0.72);
-  if (nightLayer) nightLayer.style.opacity = String(nightStrength * 0.34);
-  if (sunsetLayer) sunsetLayer.style.opacity = String(sunsetStrength * 0.48);
-  if (dawnLayer) dawnLayer.style.opacity = String(dawnStrength * 0.46);
+  // День даёт лёгкий жёлтый свет, а не серую дымку. Рассвет/закат
+  // дольше остаются заметными и используют широкие градиенты по всей карте.
+  if (dayLayer) dayLayer.style.opacity = String(smoothDaylight * 0.42);
+  if (nightLayer) nightLayer.style.opacity = String(nightStrength * 0.32);
+  if (sunsetLayer) sunsetLayer.style.opacity = String(sunsetStrength * 0.68);
+  if (dawnLayer) dawnLayer.style.opacity = String(dawnStrength * 0.66);
 }
 
 window.updateCelestialClock = function(state = window.partyPlaybackState, now = window.getSynchronizedRouteNow()) {
