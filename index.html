@@ -140,7 +140,6 @@ body {
   position: absolute;
   left: 0;
   top: 0;
-  /* В overlayPane карта имеет собственный z-index; свет должен быть выше map.jpg. */
   z-index: 3;
   overflow: hidden;
   pointer-events: none;
@@ -165,24 +164,25 @@ body {
   opacity: 0;
 }
 #celestial-light-sunset {
-  /* Локальный источник тёплого света слева: к центру и правому краю плавно исчезает. */
-  background: radial-gradient(ellipse 96% 128% at -3% 50%,
-    rgba(255, 164, 91, 0.48) 0%,
-    rgba(255, 151, 94, 0.34) 30%,
-    rgba(242, 139, 105, 0.17) 62%,
-    rgba(225, 128, 117, 0.045) 88%,
-    rgba(225, 128, 117, 0) 108%);
+  /* Закатный источник находится слева и смещается за край карты;
+     слабое рассеянное свечение доходит до противоположной стороны. */
+  background: radial-gradient(ellipse 155% 150% at var(--sunset-x, 0%) 50%,
+    rgba(255, 169, 91, 0.48) 0%,
+    rgba(255, 153, 91, 0.34) 28%,
+    rgba(242, 139, 105, 0.18) 62%,
+    rgba(225, 128, 117, 0.055) 92%,
+    rgba(225, 128, 117, 0) 118%);
   mix-blend-mode: screen;
   opacity: 0;
 }
 #celestial-light-dawn {
-  /* Золотисто-розовый локальный источник света справа. */
-  background: radial-gradient(ellipse 96% 128% at 103% 50%,
-    rgba(255, 220, 151, 0.48) 0%,
-    rgba(255, 199, 157, 0.34) 30%,
-    rgba(232, 169, 178, 0.17) 62%,
-    rgba(211, 151, 181, 0.045) 88%,
-    rgba(211, 151, 181, 0) 108%);
+  /* Рассветный источник начинается справа и постепенно движется вглубь карты. */
+  background: radial-gradient(ellipse 155% 150% at var(--dawn-x, 100%) 50%,
+    rgba(255, 222, 151, 0.52) 0%,
+    rgba(255, 202, 157, 0.36) 28%,
+    rgba(232, 169, 178, 0.18) 62%,
+    rgba(211, 151, 181, 0.055) 92%,
+    rgba(211, 151, 181, 0) 118%);
   mix-blend-mode: screen;
   opacity: 0;
 }
@@ -360,10 +360,19 @@ map.panInsideBounds(bounds, { animate: false });
 (function attachCelestialLightToMapImage() {
   const light = document.getElementById("celestial-light");
   if (!light || !overlay || typeof overlay.getElement !== "function") return;
+
+  // Отдельная pane располагается выше всех игровых маркеров и контуров.
+  // Благодаря этому освещение затрагивает не только map.jpg, но и маршрут,
+  // жетоны, маркер отряда и обводки поселений.
+  let lightPane = map.getPane("celestial-light-pane");
+  if (!lightPane) lightPane = map.createPane("celestial-light-pane");
+  lightPane.style.zIndex = "770";
+  lightPane.style.pointerEvents = "none";
+
   const syncLightBounds = function() {
     const image = overlay.getElement();
     if (!image || !image.parentNode) return;
-    if (light.parentNode !== image.parentNode) image.parentNode.appendChild(light);
+    if (light.parentNode !== lightPane) lightPane.appendChild(light);
     const style = image.style;
     light.style.left = style.left || "0px";
     light.style.top = style.top || "0px";
@@ -4961,6 +4970,10 @@ function applyCelestialLighting(dayHours) {
   const dawnLayer = document.getElementById("celestial-light-dawn");
   const hour = ((dayHours % 24) + 24) % 24;
   const smoothDaylight = Math.max(0, Math.sin(((hour - 6) / 12) * Math.PI));
+  const smoothstep = (from, to, value) => {
+    const x = Math.max(0, Math.min(1, (value - from) / (to - from)));
+    return x * x * (3 - 2 * x);
+  };
   const bell = (value, center, halfWidth) => {
     const distance = Math.abs(value - center);
     if (distance >= halfWidth) return 0;
@@ -4968,18 +4981,42 @@ function applyCelestialLighting(dayHours) {
     return 1 - x * x * (3 - 2 * x);
   };
 
-  // Рассвет и закат включают локальные боковые источники света;
-  // их радиальные градиенты плавно затухают до противоположного края.
+  // Закат: широкий свет охватывает всю карту с заметным градиентом
+  // от яркого левого края к слабому дальнему краю, затем источник уходит за карту.
   const sunsetStrength = bell(hour, 17.8, 4.4);
+  const sunsetProgress = smoothstep(15.5, 21.0, hour);
+  const sunsetX = -sunsetProgress * 34;
+
+  // Рассвет: источник появляется справа, движется влево и постепенно вытесняет ночь.
+  const dawnProgress = smoothstep(4.0, 8.1, hour);
   const dawnStrength = bell(hour, 6.2, 4.4);
+  const dawnX = 104 - dawnProgress * 88;
   const nightStrength = Math.pow(1 - smoothDaylight, 0.9);
 
-  // Днём карта остаётся без цветной вуали; ночь темнее и равномерно покрывает карту.
-  // Рассвет и закат усиливаются только в пределах своих боковых радиальных свечений.
   if (dayLayer) dayLayer.style.opacity = "0";
-  if (nightLayer) nightLayer.style.opacity = String(nightStrength * 0.54);
-  if (sunsetLayer) sunsetLayer.style.opacity = String(sunsetStrength * 0.88);
-  if (dawnLayer) dawnLayer.style.opacity = String(dawnStrength * 0.86);
+  if (nightLayer) {
+    nightLayer.style.opacity = String(nightStrength * 0.54);
+    // До восхода тьма сохраняется слева, а справа её постепенно смывает рассвет.
+    // Маска движется справа налево, не создавая равномерной серой/розовой дымки.
+    if (dawnProgress <= 0.001) {
+      nightLayer.style.maskImage = "none";
+      nightLayer.style.webkitMaskImage = "none";
+    } else {
+      const darkEdge = Math.max(0, (1 - dawnProgress) * 100);
+      const fadeStart = Math.max(0, darkEdge - 16);
+      const mask = `linear-gradient(to right, #000 0%, #000 ${fadeStart}%, transparent ${darkEdge}%, transparent 100%)`;
+      nightLayer.style.maskImage = mask;
+      nightLayer.style.webkitMaskImage = mask;
+    }
+  }
+  if (sunsetLayer) {
+    sunsetLayer.style.setProperty("--sunset-x", `${sunsetX}%`);
+    sunsetLayer.style.opacity = String(sunsetStrength * 0.88);
+  }
+  if (dawnLayer) {
+    dawnLayer.style.setProperty("--dawn-x", `${dawnX}%`);
+    dawnLayer.style.opacity = String(dawnStrength * 0.90);
+  }
 }
 
 window.updateCelestialClock = function(state = window.partyPlaybackState, now = window.getSynchronizedRouteNow()) {
