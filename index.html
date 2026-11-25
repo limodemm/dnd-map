@@ -224,6 +224,12 @@ body {
   #celestial-clock-disc { width: 97px; height: 97px; top: -48.5px; }
   #celestial-clock-frame { width: 106.6667px; height: 106.6667px; top: -53.3333px; }
 }
+/* Телефон в альбомной ориентации: весь циферблат уменьшается в 1,5 раза. */
+@media screen and (max-height: 600px) and (orientation: landscape) and (pointer: coarse) {
+  #celestial-clock { width: 100px; height: 44px; clip-path: inset(0 -7px -8px -7px); }
+  #celestial-clock-disc { width: 80px; height: 80px; top: -40px; }
+  #celestial-clock-frame { width: 88px; height: 88px; top: -44px; }
+}
   </style>
 </head>
 
@@ -2911,6 +2917,14 @@ function createRouteLaunchPanel() {
       #party-route-launch-panel .camp-safety { width: 22px; flex-basis: 22px; height: 65px; }
       #party-route-launch-panel .camp-safety svg { flex-basis: 12px; width: 12px; height: 12px; }
       #party-route-launch-panel .camp-safety input { width: 12px; height: 39px; flex-basis: 39px; }
+    }
+    /* В альбомной ориентации телефона панель отряда компактнее, как и редактор маршрута. */
+    @media screen and (max-height: 600px) and (orientation: landscape) and (pointer: coarse) {
+      #party-route-launch-panel {
+        transform: translateX(-50%) scale(0.75);
+        transform-origin: center bottom;
+        bottom: max(6px, env(safe-area-inset-bottom));
+      }
     }
   `;
   document.head.appendChild(style);
