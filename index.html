@@ -3693,23 +3693,23 @@ function createRoutePanel() {
 
 /* Золотая и чёрная линии: чёткие, без тяжёлой тени */
 .leaflet-overlay-pane .route-line-raised {
-  filter: drop-shadow(0px 1px 0px rgba(0, 0, 0, 0.65));
+  filter: drop-shadow(0px 1px 0px rgba(0, 0, 0, 0.65)) !important;
 }
 
 /* Поперечные засечки сниженной скорости */
 .leaflet-overlay-pane .route-speed-tick {
-  filter: drop-shadow(0px 0px 1px rgba(238, 211, 158, 0.9));
+  filter: drop-shadow(0px 0px 1px rgba(238, 211, 158, 0.9)) !important;
 }
 
 /* Объём обычным привалам */
 .leaflet-route-rest-pane-pane .route-rest-raised {
-  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8));
+  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8)) !important;
 }
 
 /* Объём разделительной черте и крестикам */
 .leaflet-marker-icon.route-march-boundary,
 .leaflet-marker-icon.route-exhaustion-mark {
-  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8));
+  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8)) !important;
 }
 
 /* Предпросмотр приглушён, но жетоны остаются заметнее линий */
@@ -3719,7 +3719,7 @@ function createRoutePanel() {
 }
 
 .leaflet-route-rest-pane-pane .route-rest-raised.route-preview-marker {
-  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.65));
+  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.65)) !important;
 }
 
 /* Линия и жетоны спокойно проявляются без падения и подпрыгивания. */
@@ -10765,19 +10765,24 @@ map.on("zoomend", function() {
     // Некоторые прибытия после форсированного марша завершаются без обычного
     // terminal/intermediate-флага. После перезагрузки всё равно восстанавливаем
     // город, если пауза сохранена, а жетон фактически находится внутри него.
-    const markerFallbackArea = !currentInterval && movement && movement.status === "paused" && partyMarker
+    const markerArea = movement && movement.status === "paused" && partyMarker
       ? (window.settlementAreas || []).find(area =>
-          Array.isArray(area.points) && area.points.length >= 3 &&
-          typeof window.pointInSettlement === "function" &&
-          window.pointInSettlement(partyMarker.getLatLng(), area.points)
+          isPointInsideSettlementClickPolygon(
+            partyMarker.getLatLng(),
+            getSettlementClickPolygon(area, 4)
+          )
         ) || null
       : null;
+    // Фактическая позиция жетона надёжнее расчётного интервала на границе города:
+    // после перезагрузки расстояние маршрута может оказаться ровно на стыке сегментов.
+    const markerFallbackArea = markerArea || null;
 
     let markerInsideSettlement = false;
     let missingCurrentArea = false;
-    const currentId = currentInterval && currentInterval.settlementId != null
-      ? String(currentInterval.settlementId)
-      : (markerFallbackArea && markerFallbackArea.id != null ? String(markerFallbackArea.id) : null);
+    const currentId = markerFallbackArea && markerFallbackArea.id != null
+      ? String(markerFallbackArea.id)
+      : (currentInterval && currentInterval.settlementId != null
+          ? String(currentInterval.settlementId) : null);
 
     if (currentId) {
       const area = (window.settlementAreas || []).find(item => String(item.id) === currentId);
@@ -10800,7 +10805,11 @@ map.on("zoomend", function() {
         partyMarker._icon.style.pointerEvents = "none";
       }
     }
-    window._restoreStaticSettlementOutlinesPending = missingCurrentArea;
+    window._restoreStaticSettlementOutlinesPending = Boolean(
+      missingCurrentArea ||
+      (movement && movement.status === "paused" && !currentId &&
+       Array.isArray(window.routePoints) && window.routePoints.length >= 2)
+    );
   };
 
   // Рассчитывает порог скрытия жетона отдельно от анимации обводки.
@@ -11845,10 +11854,11 @@ map.on("zoomend", function() {
       if (typeof window.updateTerminalMarkerHideDistance === "function") {
         window.updateTerminalMarkerHideDistance();
       }
-      if (window.partyPlaybackState && window.partyPlaybackState.status === "paused" &&
+      if (window._restoreStaticSettlementOutlinesPending &&
+          window.partyPlaybackState && window.partyPlaybackState.status === "paused" &&
           typeof window.restoreStaticSettlementOutlinesAfterReload === "function") {
-        // Геометрия поселений может загрузиться позже маршрута и позиции отряда.
-        // Повторно восстанавливаем контур уже после получения областей.
+        // Повторяем восстановление только если первая попытка действительно
+        // ожидала геометрию поселений. Не вмешиваемся в обычную перерисовку маршрута.
         window.restoreStaticSettlementOutlinesAfterReload(window.partyPlaybackState);
       }
       refreshSettlementContourEditorOptions();
