@@ -1327,9 +1327,10 @@ window.handleSettlementCityDoubleClick = function(latlng) {
     // внутри города. Для команды двойного клика этого достаточно.
     const markerPosition = partyMarker.getLatLng();
     targetArea = (window.settlementAreas || []).find(area =>
-      Array.isArray(area.points) && area.points.length >= 3 &&
-      typeof window.pointInSettlement === "function" &&
-      window.pointInSettlement(markerPosition, area.points)
+      isPointInsideSettlementClickPolygon(
+        markerPosition,
+        getSettlementClickPolygon(area, 4)
+      )
     ) || null;
   }
 
@@ -1743,7 +1744,7 @@ function requestPartyElapsedTime() {
   partyActionConfirmationType = "time";
   const message = overlay.querySelector("#party-action-confirmation-text");
   const hoursInput = overlay.querySelector("#party-action-confirmation-hours");
-  message.textContent = "Сколько времени прошло?";
+  message.textContent = "Сколько часов прошло?";
   if (hoursInput) {
     hoursInput.style.display = "block";
     hoursInput.value = "1";
@@ -2443,7 +2444,7 @@ function syncRouteLaunchControls() {
     ));
   const pausedInsideSettlement = paused && !pausedAtIntermediateCity &&
     (Boolean(window.partyMarkerHiddenForSettlementExit) || pausedMarkerInsideSettlement);
-  const editUnavailable = animationRunning || playing || terminalCityPaused || reachedRouteEnd || pausedInsideSettlement;
+  const editUnavailable = animationRunning || playing;
   const playButton = routeLaunchPanel.querySelector("#route-party-play");
   const editButton = routeLaunchPanel.querySelector("#route-party-edit");
   const campButton = routeLaunchPanel.querySelector("#route-party-camp");
@@ -2876,7 +2877,7 @@ function createRouteLaunchPanel() {
       left: 50%;
       transform: translateX(-50%);
       z-index: 3001;
-      width: 306px;
+      width: 352px;
       max-width: calc(100vw - 24px);
       padding: 10px 12px;
       box-sizing: border-box;
@@ -3004,7 +3005,12 @@ function createRouteLaunchPanel() {
       outline-offset: 2px;
     }
     @media (max-width: 480px) {
-      #party-route-launch-panel { bottom: 12px; width: 306px; padding: 8px 8px; }
+      #party-route-launch-panel {
+        bottom: 12px;
+        width: 340px;
+        max-width: calc(100vw - 16px);
+        padding: 8px;
+      }
       #party-route-launch-panel button { width: 42px; height: 39px; }
       #party-route-launch-panel .launch-actions { gap: 4px; }
       #party-route-launch-panel .launch-actions > button { flex-basis: 42px; width: 42px; }
@@ -3048,7 +3054,7 @@ function createRouteLaunchPanel() {
           <path d="m5.1 17.6 14.7 3.1c.7.2 1.1.9.9 1.6-.2.7-.9 1.1-1.6.9L4.4 20.1c-.7-.2-1.1-.9-.9-1.6.2-.7.9-1.1 1.6-.9Z"/>
         </svg>
       </button>
-      <button type="button" id="route-party-elapsed-time" aria-label="Указать, сколько времени прошло" disabled>
+      <button type="button" id="route-party-elapsed-time" aria-label="Указать, сколько часов прошло" disabled>
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path d="M6 3h12M6 21h12M7 3c0 4 2 5.4 5 9-3 3.6-5 5-5 9M17 3c0 4-2 5.4-5 9 3 3.6 5 5 5 9"/>
           <path d="M8.5 5.5h7M8.5 18.5h7M9 6l3 4 3-4M9 18l3-4 3 4"/>
@@ -3178,7 +3184,28 @@ function createRouteLaunchPanel() {
   });
   if (window.partyPlaybackState) renderPartyPlaybackState(window.partyPlaybackState);
   editButton.addEventListener("click", function() {
-    if (window.partyPlaybackState && window.partyPlaybackState.status === "playing") return;
+    const currentState = window.partyPlaybackState;
+    if (currentState && currentState.status === "playing") return;
+
+    // В занятом городе шестерёнка служит надёжным способом начать
+    // новый маршрут наружу, если двойной клик не распознался.
+    const pausedInCity = Boolean(currentState && currentState.status === "paused" &&
+      window.partyMarker && (
+        currentState.intermediateSettlementReached ||
+        isTerminalSettlementPaused(currentState) ||
+        window.partyMarkerHiddenForSettlementExit ||
+        (window.settlementAreas || []).some(area =>
+          isPointInsideSettlementClickPolygon(
+            window.partyMarker.getLatLng(),
+            getSettlementClickPolygon(area, 4)
+          )
+        )
+      ));
+    if (pausedInCity) {
+      partyMarker.fire("click");
+      return;
+    }
+
     const pausedIntermediateCityId = window.partyPlaybackState &&
       window.partyPlaybackState.status === "paused" &&
       window.partyPlaybackState.intermediateSettlementReached &&
@@ -5653,7 +5680,7 @@ function renderPartyPlaybackState(state) {
     ));
   const pausedInsideSettlement = paused && !pausedAtIntermediateCity &&
     (Boolean(window.partyMarkerHiddenForSettlementExit) || pausedMarkerInsideSettlement);
-  if (editButton) editButton.disabled = Boolean(playing || terminalCityPaused || reachedRouteEnd || pausedInsideSettlement);
+  if (editButton) editButton.disabled = Boolean(playing || routeMarkerAnimations.length > 0);
   pauseButton.classList.toggle("active", !playing);
   pauseButton.setAttribute("aria-pressed", !playing ? "true" : "false");
   playButton.classList.toggle("active", playing);
@@ -11818,8 +11845,10 @@ map.on("zoomend", function() {
       if (typeof window.updateTerminalMarkerHideDistance === "function") {
         window.updateTerminalMarkerHideDistance();
       }
-      if (window._restoreStaticSettlementOutlinesPending &&
+      if (window.partyPlaybackState && window.partyPlaybackState.status === "paused" &&
           typeof window.restoreStaticSettlementOutlinesAfterReload === "function") {
+        // Геометрия поселений может загрузиться позже маршрута и позиции отряда.
+        // Повторно восстанавливаем контур уже после получения областей.
         window.restoreStaticSettlementOutlinesAfterReload(window.partyPlaybackState);
       }
       refreshSettlementContourEditorOptions();
