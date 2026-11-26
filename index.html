@@ -5250,9 +5250,12 @@ window.updateCelestialClock = function(state = window.partyPlaybackState, now = 
     disc.style.transition = "none";
     disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
   } else if (deltaHours > 0.001) {
-    // Во время лагеря/отдыха освещение проходит весь промежуток времени,
-    // а не перескакивает сразу к конечному часу. Это делает рассвет и закат видимыми.
-    const duration = deltaHours >= 4 ? 2550 : 1140;
+    // При пропуске времени свет проходит весь игровой промежуток плавно.
+    // Длительность растёт вместе с количеством часов: короткий отдых не выглядит
+    // мгновенным скачком, а полноценный лагерь получает достаточно времени,
+    // чтобы рассвет/закат и ночное затемнение воспринимались как единый переход.
+    // Это влияет только на визуальную анимацию, не на игровые часы и маршрут.
+    const duration = Math.min(6000, Math.max(1800, 1600 + deltaHours * 360));
     const startedAt = performance.now();
     const fromHours = previousHours;
     const animateLight = function(timestamp) {
