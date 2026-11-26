@@ -3405,7 +3405,7 @@ function createRouteLaunchPanel() {
     // геометрии. Не оставляем старую абсолютную дистанцию в playback state:
     // zoomend и функции обрезки линии иначе применят её к уже укороченному
     // маршруту, из-за чего исчезают участки предпросмотра и скачет маркер.
-    partyPlaybackDistance = 0;
+    partyPlaybackDistance = window.partyPlaybackDistance = 0;
     if (window.partyPlaybackState) {
       window.partyPlaybackState = {
         ...window.partyPlaybackState,
@@ -5235,6 +5235,7 @@ function getRouteDistanceAtElapsedTime(points, startDistance, elapsedUnits, maxD
 window.partyPlaybackState = null;
 let partyPlaybackFrame = null;
 let partyPlaybackDistance = 0;
+window.partyPlaybackDistance = partyPlaybackDistance;
 let partyPlaybackLastUiStatus = null;
 
 function getPartyPlaybackDistance(state, now) {
@@ -5810,7 +5811,7 @@ function tickPartyPlayback() {
     const cityId = String(intermediateTransit.settlementId);
     const entryDistance = Math.max(0, Number(intermediateTransit.start) || 0);
     const exitDistance = Math.max(entryDistance, Number(intermediateTransit.end) || entryDistance);
-    partyPlaybackDistance = entryDistance;
+    partyPlaybackDistance = window.partyPlaybackDistance = entryDistance;
     const entryPosition = getPartyPlaybackDisplayPosition(entryDistance) ||
       getRoutePointAtDistance(routePoints, entryDistance);
     if (entryPosition && partyMarker) window.setPartyMarkerPlaybackPosition(entryPosition);
@@ -5857,7 +5858,7 @@ function tickPartyPlayback() {
     return;
   }
 
-  partyPlaybackDistance = distance;
+  partyPlaybackDistance = window.partyPlaybackDistance = distance;
   const destination = getTerminalDestinationSettlement();
   const startCityTransit = transitIntervals.find(interval =>
     Number(interval.start) <= 0.001 && Number(interval.end) > 0.001 && interval.settlementId
@@ -5950,7 +5951,7 @@ function tickPartyPlayback() {
       worldTimeHours: window.getPartyGameTimeHours(state, now)
     };
     window.partyPlaybackState = pausedState;
-    partyPlaybackDistance = total;
+    partyPlaybackDistance = window.partyPlaybackDistance = total;
     renderPartyPlaybackState(pausedState);
     stopPartyPlaybackFrame();
     setPartyMarkerPlaybackSmoothing(false);
@@ -6023,7 +6024,7 @@ window.applyPartyPlaybackState = function(state) {
     if (restResetDistancesChanged) routeRestResetDistances = incomingResets;
   }
   window.partyPlaybackState = state;
-  partyPlaybackDistance = window.getPartyPlaybackDistance(state, window.getSynchronizedRouteNow());
+  partyPlaybackDistance = window.partyPlaybackDistance = window.getPartyPlaybackDistance(state, window.getSynchronizedRouteNow());
   window.updateCelestialClock(state, window.getSynchronizedRouteNow());
   renderPartyPlaybackState(state);
   if (state.status === "playing") {
@@ -6316,7 +6317,7 @@ function cancelPartyRoute() {
     window.routePlaybackRouteStartedAt = terminalSnapshot.routeStartedAt || null;
     if (terminalSnapshot.playbackState) {
       window.partyPlaybackState = { ...terminalSnapshot.playbackState };
-      partyPlaybackDistance = Number(terminalSnapshot.playbackState.startDistance) ||
+      partyPlaybackDistance = window.partyPlaybackDistance = Number(terminalSnapshot.playbackState.startDistance) ||
         getRouteTravelLength(routePoints);
     }
     clearRouteIntermediateCityOutlines();
@@ -8577,7 +8578,7 @@ function refreshPartyPlaybackDuringMapMove() {
   const state = window.partyPlaybackState;
   if (!state || state.status !== "playing" || routeMarkerAnimations.length > 0) return;
   const distance = window.getPartyPlaybackDistance(state, window.getSynchronizedRouteNow());
-  partyPlaybackDistance = distance;
+  partyPlaybackDistance = window.partyPlaybackDistance = distance;
   // Сначала обновляем сам жетон по текущему времени и новой позиции карты,
   // затем режем линию точно под его фактическим экранным положением.
   const position = getPartyPlaybackPositionForDistance(distance);
@@ -8632,7 +8633,7 @@ map.on("zoomend", function() {
       !window.routeMode && !window.routePendingConfirmation &&
       !window.routeEditingConfirmedRoute) {
     if (window.partyPlaybackState.status === "playing") {
-      partyPlaybackDistance = window.getPartyPlaybackDistance(
+      partyPlaybackDistance = window.partyPlaybackDistance = window.getPartyPlaybackDistance(
         window.partyPlaybackState, window.getSynchronizedRouteNow()
       );
     }
@@ -8674,7 +8675,7 @@ map.on("zoomend", function() {
       const distance = state.status === "playing"
         ? window.getPartyPlaybackDistance(state, window.getSynchronizedRouteNow())
         : Math.max(0, Number(state.startDistance) || 0);
-      partyPlaybackDistance = distance;
+      partyPlaybackDistance = window.partyPlaybackDistance = distance;
       const position = window.getPartyPlaybackDisplayPosition(distance);
       if (position) window.setPartyMarkerPlaybackPosition(position);
       updatePartyPlaybackRouteLine(distance);
@@ -9566,7 +9567,7 @@ map.on("zoomend", function() {
     const currentDistance = isPublished && movement &&
       typeof window.getPartyPlaybackDistance === "function"
         ? window.getPartyPlaybackDistance(movement, window.getSynchronizedRouteNow())
-        : Math.max(0, Number(partyPlaybackDistance) || 0);
+        : Math.max(0, Number(window.partyPlaybackDistance) || 0);
     const intervals = isPublished && Array.isArray(routePoints) && routePoints.length >= 2
       ? getRouteSettlementTransitIntervals(routePoints) : [];
     const visibleIds = new Set(ids.map(id => String(id)));
