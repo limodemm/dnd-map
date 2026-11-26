@@ -5204,9 +5204,22 @@ window.updateCelestialClock = function(state = window.partyPlaybackState, now = 
   const hours = window.getPartyGameTimeHours(state, now);
   // Освещение использует тот же игровой момент, что и верхние часы,
   // но только читает его и не вмешивается в расчёты маршрута.
-  const previousHours = Number(disc.dataset.gameHours);
+  // Если во время перехода приходит повторный Firebase-снимок с тем же
+  // игровым временем, он не должен отменять уже идущую анимацию.
+  const animationInProgress = Boolean(window.celestialLightAnimationFrame);
+  const previousHours = animationInProgress &&
+      Number.isFinite(Number(window.celestialLightAnimationCurrentHours))
+    ? Number(window.celestialLightAnimationCurrentHours)
+    : Number(disc.dataset.gameHours);
   const hasPreviousValue = Number.isFinite(previousHours);
   const deltaHours = hasPreviousValue ? hours - previousHours : 0;
+  if (animationInProgress && state.status !== "playing" &&
+      Number.isFinite(Number(window.celestialLightAnimationTargetHours)) &&
+      Math.abs(Number(window.celestialLightAnimationTargetHours) - hours) < 0.0001) {
+    // Это повторное подтверждение того же состояния, а не новое изменение времени.
+    // Оставляем текущие RAF-анимацию света и CSS-анимацию циферблата нетронутыми.
+    return;
+  }
   const angle = (hours / 24) * 360;
 
   const getLightValues = function(totalHours) {
@@ -5235,18 +5248,21 @@ window.updateCelestialClock = function(state = window.partyPlaybackState, now = 
     cancelAnimationFrame(window.celestialLightAnimationFrame);
     window.celestialLightAnimationFrame = 0;
   }
+  window.celestialLightAnimationTargetHours = null;
   [nightLayer, sunsetLayer, dawnLayer].forEach(layer => {
     if (layer) layer.style.transition = "none";
   });
 
   if (!hasPreviousValue) {
     applyLight(hours);
+    window.celestialLightAnimationCurrentHours = hours;
     disc.style.transition = "none";
     disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
     clock.style.opacity = "1";
   } else if (state.status === "playing") {
     // При движении отряда время обновляется часто — свет следует за ним без задержки.
     applyLight(hours);
+    window.celestialLightAnimationCurrentHours = hours;
     disc.style.transition = "none";
     disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
   } else if (deltaHours > 0.001) {
@@ -5258,14 +5274,20 @@ window.updateCelestialClock = function(state = window.partyPlaybackState, now = 
     const duration = Math.min(6000, Math.max(1800, 1600 + deltaHours * 360));
     const startedAt = performance.now();
     const fromHours = previousHours;
+    window.celestialLightAnimationTargetHours = hours;
+    window.celestialLightAnimationCurrentHours = fromHours;
     const animateLight = function(timestamp) {
       const progress = Math.min(1, (timestamp - startedAt) / duration);
       const eased = progress * progress * (3 - 2 * progress);
-      applyLight(fromHours + (hours - fromHours) * eased);
+      const currentHours = fromHours + (hours - fromHours) * eased;
+      window.celestialLightAnimationCurrentHours = currentHours;
+      applyLight(currentHours);
       if (progress < 1) {
         window.celestialLightAnimationFrame = requestAnimationFrame(animateLight);
       } else {
         window.celestialLightAnimationFrame = 0;
+        window.celestialLightAnimationTargetHours = null;
+        window.celestialLightAnimationCurrentHours = hours;
         applyLight(hours);
       }
     };
@@ -5274,6 +5296,7 @@ window.updateCelestialClock = function(state = window.partyPlaybackState, now = 
     disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
   } else {
     applyLight(hours);
+    window.celestialLightAnimationCurrentHours = hours;
     disc.style.transform = `translateX(-50%) rotate(${angle}deg)`;
   }
 
