@@ -243,8 +243,15 @@ body {
 .leaflet-overlay-pane .route-speed-tick {
   filter: drop-shadow(0px 0px 1px rgba(238, 211, 158, 0.9)) !important;
 }
-.leaflet-route-rest-pane .route-rest-raised {
-  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8)) !important;
+.leaflet-route-rest-pane,
+.leaflet-route-rest-pane svg {
+  overflow: visible !important;
+}
+.leaflet-route-rest-pane .route-rest-raised,
+.leaflet-route-rest-pane path.route-rest-raised,
+path.route-rest-raised {
+  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.82))
+          drop-shadow(0px 0px 1px rgba(0, 0, 0, 0.65)) !important;
 }
 .leaflet-marker-icon.route-march-boundary,
 .leaflet-marker-icon.route-exhaustion-mark {
@@ -385,34 +392,40 @@ map.panInsideBounds(bounds, { animate: false });
   const mapElement = map.getContainer();
   if (!light || !mapElement) return;
   let clipFrame = 0;
-  const syncClip = function() {
-    if (clipFrame) cancelAnimationFrame(clipFrame);
-    clipFrame = requestAnimationFrame(function() {
-      clipFrame = 0;
-      const image = overlay && overlay._image;
-      if (!image || !image.isConnected) return;
-      const mapRect = mapElement.getBoundingClientRect();
-      const imageRect = image.getBoundingClientRect();
-      const width = mapRect.width;
-      const height = mapRect.height;
-      const left = Math.max(0, Math.min(width, imageRect.left - mapRect.left));
-      const top = Math.max(0, Math.min(height, imageRect.top - mapRect.top));
-      const right = Math.max(0, Math.min(width, mapRect.right - imageRect.right));
-      const bottom = Math.max(0, Math.min(height, mapRect.bottom - imageRect.bottom));
-      if (imageRect.right <= mapRect.left || imageRect.left >= mapRect.right ||
-          imageRect.bottom <= mapRect.top || imageRect.top >= mapRect.bottom) {
-        light.style.clipPath = "inset(50% 50% 50% 50%)";
-        light.style.webkitClipPath = "inset(50% 50% 50% 50%)";
-        return;
-      }
-      const clip = `inset(${top}px ${right}px ${bottom}px ${left}px)`;
-      light.style.clipPath = clip;
-      light.style.webkitClipPath = clip;
-    });
+  const applyClip = function() {
+    clipFrame = 0;
+    const image = overlay && overlay._image;
+    if (!image || !image.isConnected) return;
+    const mapRect = mapElement.getBoundingClientRect();
+    const imageRect = image.getBoundingClientRect();
+    const width = mapRect.width;
+    const height = mapRect.height;
+    const left = Math.max(0, Math.min(width, imageRect.left - mapRect.left));
+    const top = Math.max(0, Math.min(height, imageRect.top - mapRect.top));
+    const right = Math.max(0, Math.min(width, mapRect.right - imageRect.right));
+    const bottom = Math.max(0, Math.min(height, mapRect.bottom - imageRect.bottom));
+    if (imageRect.right <= mapRect.left || imageRect.left >= mapRect.right ||
+        imageRect.bottom <= mapRect.top || imageRect.top >= mapRect.bottom) {
+      light.style.clipPath = "inset(50% 50% 50% 50%)";
+      light.style.webkitClipPath = "inset(50% 50% 50% 50%)";
+      return;
+    }
+    const clip = `inset(${top}px ${right}px ${bottom}px ${left}px)`;
+    light.style.clipPath = clip;
+    light.style.webkitClipPath = clip;
   };
-  map.on("move zoom resize viewreset zoomanim", syncClip);
-  map.whenReady(syncClip);
-  window.addEventListener("resize", syncClip, { passive: true });
+  const syncClip = function(immediate = false) {
+    if (clipFrame) cancelAnimationFrame(clipFrame);
+    clipFrame = 0;
+    if (immediate) applyClip();
+    else clipFrame = requestAnimationFrame(applyClip);
+  };
+  // Рамка и свет обновляются синхронно при переключении минимального зума.
+  window.syncCelestialLightClip = function() { syncClip(true); };
+  const scheduleClip = function() { syncClip(false); };
+  map.on("move zoom resize viewreset zoomanim", scheduleClip);
+  map.whenReady(function() { syncClip(true); });
+  window.addEventListener("resize", scheduleClip, { passive: true });
 })();
 
 map.on('popupclose', function() {
@@ -440,6 +453,10 @@ function updateFrame() {
     mapEl.classList.add("zoomed");
 
     map.dragging.enable(); // ← ВОТ ЭТО ВАЖНО
+  }
+  // Пересчитываем обрезку света в том же проходе, что и рамку карты.
+  if (typeof window.syncCelestialLightClip === "function") {
+    window.syncCelestialLightClip();
   }
 }
 
@@ -3715,8 +3732,15 @@ function createRoutePanel() {
 }
 
 /* Объём обычным привалам */
-.leaflet-route-rest-pane .route-rest-raised {
-  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8)) !important;
+.leaflet-route-rest-pane,
+.leaflet-route-rest-pane svg {
+  overflow: visible !important;
+}
+.leaflet-route-rest-pane .route-rest-raised,
+.leaflet-route-rest-pane path.route-rest-raised,
+path.route-rest-raised {
+  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.82))
+          drop-shadow(0px 0px 1px rgba(0, 0, 0, 0.65)) !important;
 }
 
 /* Объём разделительной черте и крестикам */
@@ -6436,6 +6460,7 @@ function ensureRouteMarkerPanes() {
   let restPane = map.getPane("route-rest-pane");
   if (!restPane) restPane = map.createPane("route-rest-pane");
   restPane.style.zIndex = "650";
+  restPane.style.overflow = "visible";
 
   let flagPane = map.getPane("route-flag-pane");
   if (!flagPane) flagPane = map.createPane("route-flag-pane");
@@ -7859,6 +7884,19 @@ function updateRouteLine(cursorPosition = null) {
         (restIsPreview ? " route-preview-marker" : "")
     }).addTo(map);
 
+    // Явно задаём тень непосредственно SVG-пути привала: это переживает
+    // пересоздание CircleMarker и не зависит от порядка CSS-панелей Leaflet.
+    const restElement = marker.getElement && marker.getElement();
+    if (restElement && restElement.style) {
+      restElement.style.setProperty(
+        "filter",
+        restIsPreview
+          ? "drop-shadow(1px 2px 2px rgba(0,0,0,0.68))"
+          : "drop-shadow(1px 2px 2px rgba(0,0,0,0.82)) drop-shadow(0px 0px 1px rgba(0,0,0,0.65))",
+        "important"
+      );
+    }
+
     if (restShouldAnimate) animateRouteToken(marker, restAnimationDelay);
 
     // Привал находится в отдельном слое выше крестиков.
@@ -8071,8 +8109,8 @@ window.applySynchronizedPartyRoute = function(data) {
   // Они должны появляться только как анимация, когда линия маршрута
   // действительно доходит до соответствующей точки входа.
   clearRouteIntermediateCityOutlines();
-  // После подтверждения маршрута сразу возвращаем статичные контуры городов,
-  // к которым линия уже проложена, не дожидаясь прибытия маркера.
+  // После подтверждения не рисуем статичные контуры заранее: каждый город
+  // появится только в момент анимационного касания границы маршрутом.
   if (window.settlementAreasLoaded && typeof refreshRouteIntermediateCityOutlines === "function") {
     refreshRouteIntermediateCityOutlines();
   }
@@ -9558,43 +9596,19 @@ map.on("zoomend", function() {
 
   function refreshRouteIntermediateCityOutlines() {
     clearRouteIntermediateCityOutlines();
+    // После подтверждения маршрута город не получает предварительную
+    // статичную кисть. Его контур появляется только через animateSettlementTrace,
+    // когда анимированная линия маршрута действительно достигает границы.
+    // Текущий город после перезагрузки восстанавливается отдельной функцией.
+    if (window.routeAnimationPublished) return;
+
     const ids = Array.isArray(window.routeIntermediateCityIds)
       ? window.routeIntermediateCityIds : [];
     const areas = Array.isArray(window.settlementAreas)
       ? window.settlementAreas : [];
-    const isPublished = Boolean(window.routeAnimationPublished);
-    const movement = window.partyPlaybackState;
-    const currentDistance = isPublished && movement &&
-      typeof window.getPartyPlaybackDistance === "function"
-        ? window.getPartyPlaybackDistance(movement, window.getSynchronizedRouteNow())
-        : Math.max(0, Number(window.partyPlaybackDistance) || 0);
-    const intervals = isPublished && Array.isArray(routePoints) && routePoints.length >= 2
-      ? getRouteSettlementTransitIntervals(routePoints) : [];
     const visibleIds = new Set(ids.map(id => String(id)));
 
-    if (isPublished) {
-      // Включаем каждое поселение, до которого уже проложена линия маршрута,
-      // а не только вручную выбранные промежуточные города.
-      intervals.forEach(interval => {
-        if (interval.settlementId == null) return;
-        if (Number(interval.start) > currentDistance + 0.001) {
-          visibleIds.add(String(interval.settlementId));
-        }
-      });
-      if (window.routeDestinationCityId != null) {
-        visibleIds.add(String(window.routeDestinationCityId));
-      }
-    }
-
     visibleIds.forEach(id => {
-      if (isPublished) {
-        const interval = intervals.find(item => String(item.settlementId) === id);
-        // Уже пройденные и текущее поселения не показываем этим слоем:
-        // текущее восстанавливается отдельно, будущие остаются обведёнными.
-        if (interval && Number(interval.start) <= currentDistance + 0.001) return;
-      }
-      // Частичная и завершённая анимация уже являются корректным представлением.
-      // Не накладываем на них статичную кисть.
       if (settlementTraceLayers.has(id) || settlementBrushTraceLayers.has(id)) return;
       const area = areas.find(item => String(item.id) === id);
       if (!area) return;
