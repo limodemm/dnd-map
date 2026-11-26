@@ -391,11 +391,17 @@ map.panInsideBounds(bounds, { animate: false });
   const light = document.getElementById("celestial-light");
   const mapElement = map.getContainer();
   if (!light || !mapElement) return;
+
   let clipFrame = 0;
+  let trackingFrame = 0;
+  let trackingStartedAt = 0;
+  let lastRect = null;
+  let stableFrames = 0;
+
   const applyClip = function() {
-    clipFrame = 0;
     const image = overlay && overlay._image;
     if (!image || !image.isConnected) return;
+
     const mapRect = mapElement.getBoundingClientRect();
     const imageRect = image.getBoundingClientRect();
     const width = mapRect.width;
@@ -404,28 +410,76 @@ map.panInsideBounds(bounds, { animate: false });
     const top = Math.max(0, Math.min(height, imageRect.top - mapRect.top));
     const right = Math.max(0, Math.min(width, mapRect.right - imageRect.right));
     const bottom = Math.max(0, Math.min(height, mapRect.bottom - imageRect.bottom));
+
     if (imageRect.right <= mapRect.left || imageRect.left >= mapRect.right ||
         imageRect.bottom <= mapRect.top || imageRect.top >= mapRect.bottom) {
       light.style.clipPath = "inset(50% 50% 50% 50%)";
       light.style.webkitClipPath = "inset(50% 50% 50% 50%)";
       return;
     }
+
     const clip = `inset(${top}px ${right}px ${bottom}px ${left}px)`;
     light.style.clipPath = clip;
     light.style.webkitClipPath = clip;
   };
+
   const syncClip = function(immediate = false) {
     if (clipFrame) cancelAnimationFrame(clipFrame);
     clipFrame = 0;
     if (immediate) applyClip();
-    else clipFrame = requestAnimationFrame(applyClip);
+    else clipFrame = requestAnimationFrame(function() {
+      clipFrame = 0;
+      applyClip();
+    });
   };
-  // Рамка и свет обновляются синхронно при переключении минимального зума.
+
+  // Во время zoom Leaflet меняет transform изображения через CSS transition.
+  // Событие zoomanim приходит только в начале перехода, поэтому на время
+  // анимации отдельно считываем фактические границы изображения каждый кадр.
+  const trackClipDuringZoom = function() {
+    if (trackingFrame) cancelAnimationFrame(trackingFrame);
+    trackingStartedAt = performance.now();
+    lastRect = null;
+    stableFrames = 0;
+
+    const tick = function(now) {
+      applyClip();
+
+      const image = overlay && overlay._image;
+      if (image && image.isConnected) {
+        const r = image.getBoundingClientRect();
+        const current = [r.left, r.top, r.right, r.bottom];
+        if (lastRect && current.every((value, i) => Math.abs(value - lastRect[i]) < 0.15)) {
+          stableFrames++;
+        } else {
+          stableFrames = 0;
+        }
+        lastRect = current;
+      }
+
+      const elapsed = now - trackingStartedAt;
+      // Не прекращаем слежение слишком рано: CSS-переход может начаться
+      // после zoomstart, а после zoomend браузеру нужен ещё кадр на фиксацию.
+      if (elapsed < 700 || (stableFrames < 6 && elapsed < 2000)) {
+        trackingFrame = requestAnimationFrame(tick);
+      } else {
+        trackingFrame = 0;
+        applyClip();
+      }
+    };
+
+    trackingFrame = requestAnimationFrame(tick);
+  };
+
   window.syncCelestialLightClip = function() { syncClip(true); };
-  const scheduleClip = function() { syncClip(false); };
-  map.on("move zoom resize viewreset zoomanim", scheduleClip);
+  map.on("move zoom resize viewreset", function() { syncClip(false); });
+  map.on("zoomstart zoomanim", trackClipDuringZoom);
+  map.on("zoomend", function() {
+    syncClip(true);
+    trackClipDuringZoom();
+  });
   map.whenReady(function() { syncClip(true); });
-  window.addEventListener("resize", scheduleClip, { passive: true });
+  window.addEventListener("resize", function() { syncClip(false); }, { passive: true });
 })();
 
 map.on('popupclose', function() {
