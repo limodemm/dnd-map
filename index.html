@@ -234,6 +234,34 @@ body {
   #celestial-clock-disc { width: 80px; height: 80px; top: -40px; }
   #celestial-clock-frame { width: 88px; height: 88px; top: -44px; }
 }
+
+/* Постоянные эффекты маршрута. Эти правила находятся в основном style-блоке,
+   поэтому работают и после перезагрузки, даже до открытия редактора маршрута. */
+.leaflet-overlay-pane .route-line-raised {
+  filter: drop-shadow(0px 1px 0px rgba(0, 0, 0, 0.65)) !important;
+}
+.leaflet-overlay-pane .route-speed-tick {
+  filter: drop-shadow(0px 0px 1px rgba(238, 211, 158, 0.9)) !important;
+}
+.leaflet-route-rest-pane .route-rest-raised {
+  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8)) !important;
+}
+.leaflet-marker-icon.route-march-boundary,
+.leaflet-marker-icon.route-exhaustion-mark {
+  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8)) !important;
+}
+.leaflet-marker-icon.route-end-flag {
+  filter: drop-shadow(1px 2px 3px rgba(0, 0, 0, 0.82)) !important;
+}
+.leaflet-marker-icon.party-marker-icon {
+  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.82)) !important;
+}
+.leaflet-marker-icon.route-preview-marker {
+  opacity: 0.58 !important;
+}
+.leaflet-route-rest-pane .route-rest-raised.route-preview-marker {
+  filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.65)) !important;
+}
   </style>
 </head>
 
@@ -3687,7 +3715,7 @@ function createRoutePanel() {
 }
 
 /* Объём обычным привалам */
-.leaflet-route-rest-pane-pane .route-rest-raised {
+.leaflet-route-rest-pane .route-rest-raised {
   filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.8)) !important;
 }
 
@@ -3704,10 +3732,9 @@ function createRoutePanel() {
 /* Предпросмотр приглушён, но жетоны остаются заметнее линий */
 .leaflet-marker-icon.route-preview-marker {
   opacity: 0.58 !important;
-  filter: none !important;
 }
 
-.leaflet-route-rest-pane-pane .route-rest-raised.route-preview-marker {
+.leaflet-route-rest-pane .route-rest-raised.route-preview-marker {
   filter: drop-shadow(1px 2px 2px rgba(0, 0, 0, 0.65)) !important;
 }
 
@@ -8043,6 +8070,11 @@ window.applySynchronizedPartyRoute = function(data) {
   // Они должны появляться только как анимация, когда линия маршрута
   // действительно доходит до соответствующей точки входа.
   clearRouteIntermediateCityOutlines();
+  // После подтверждения маршрута сразу возвращаем статичные контуры городов,
+  // к которым линия уже проложена, не дожидаясь прибытия маркера.
+  if (window.settlementAreasLoaded && typeof refreshRouteIntermediateCityOutlines === "function") {
+    refreshRouteIntermediateCityOutlines();
+  }
   lastCursorPosition = null;
 
   if (routePanel) routePanel.style.display = "none";
@@ -9525,27 +9557,49 @@ map.on("zoomend", function() {
 
   function refreshRouteIntermediateCityOutlines() {
     clearRouteIntermediateCityOutlines();
-    // После публикации маршрута промежуточные города больше не должны
-    // получать статичную обводку при поздней загрузке данных или зуме.
-    // Их контур появится только через animateSettlementTrace по прибытии.
-    if (window.routeAnimationPublished) return;
     const ids = Array.isArray(window.routeIntermediateCityIds)
       ? window.routeIntermediateCityIds : [];
     const areas = Array.isArray(window.settlementAreas)
       ? window.settlementAreas : [];
+    const isPublished = Boolean(window.routeAnimationPublished);
+    const movement = window.partyPlaybackState;
+    const currentDistance = isPublished && movement &&
+      typeof window.getPartyPlaybackDistance === "function"
+        ? window.getPartyPlaybackDistance(movement, window.getSynchronizedRouteNow())
+        : Math.max(0, Number(partyPlaybackDistance) || 0);
+    const intervals = isPublished && Array.isArray(routePoints) && routePoints.length >= 2
+      ? getRouteSettlementTransitIntervals(routePoints) : [];
+    const visibleIds = new Set(ids.map(id => String(id)));
 
-    ids.forEach(id => {
-      const key = String(id);
-      // Частичная и завершённая анимация — уже корректное представление
-      // контура. Статичная промежуточная кисть поверх неё не нужна.
-      if (settlementTraceLayers.has(key) || settlementBrushTraceLayers.has(key)) return;
-      const area = areas.find(item => String(item.id) === key);
+    if (isPublished) {
+      // Включаем каждое поселение, до которого уже проложена линия маршрута,
+      // а не только вручную выбранные промежуточные города.
+      intervals.forEach(interval => {
+        if (interval.settlementId == null) return;
+        if (Number(interval.start) > currentDistance + 0.001) {
+          visibleIds.add(String(interval.settlementId));
+        }
+      });
+      if (window.routeDestinationCityId != null) {
+        visibleIds.add(String(window.routeDestinationCityId));
+      }
+    }
+
+    visibleIds.forEach(id => {
+      if (isPublished) {
+        const interval = intervals.find(item => String(item.settlementId) === id);
+        // Уже пройденные и текущее поселения не показываем этим слоем:
+        // текущее восстанавливается отдельно, будущие остаются обведёнными.
+        if (interval && Number(interval.start) <= currentDistance + 0.001) return;
+      }
+      // Частичная и завершённая анимация уже являются корректным представлением.
+      // Не накладываем на них статичную кисть.
+      if (settlementTraceLayers.has(id) || settlementBrushTraceLayers.has(id)) return;
+      const area = areas.find(item => String(item.id) === id);
       if (!area) return;
       const layers = createSettlementDryBrushLayers(area, 0.96);
-      // Помечаем статические слои ID поселения, чтобы убрать только его
-      // непосредственно перед запуском анимации, не затрагивая следующие города.
       layers.forEach(layer => {
-        layer._routeIntermediateSettlementId = String(id);
+        layer._routeIntermediateSettlementId = id;
       });
       routeIntermediateBrushLayers.push(...layers);
     });
@@ -10723,8 +10777,6 @@ map.on("zoomend", function() {
       window._restoreStaticSettlementOutlinesPending = true;
       return;
     }
-    // Снимок маршрута часто приходит раньше settlements/areas. Если
-    // восстановить контур до загрузки полигонов, определить города нельзя.
     if (!window.settlementAreasLoaded) {
       window._restoreStaticSettlementOutlinesPending = true;
       return;
@@ -10743,33 +10795,20 @@ map.on("zoomend", function() {
 
     const terminalPaused = movement && typeof window.isTerminalSettlementPaused === "function" &&
       window.isTerminalSettlementPaused(movement);
-    const completedIds = new Set();
-    let missingCurrentArea = false;
-
-    // Восстанавливаем не только город, в котором стоит отряд, но и все
-    // поселения, чьи транзитные участки маршрут уже полностью прошёл.
-    // Будущие города не обводим раньше времени.
-    intervals.forEach(interval => {
-      const end = Math.max(Number(interval.start) || 0, Number(interval.end) || 0);
-      if (end <= distance + 0.001 && interval.settlementId != null) {
-        completedIds.add(String(interval.settlementId));
-      }
-    });
+    const currentIds = new Set();
     if (currentInterval && currentInterval.settlementId != null) {
-      completedIds.add(String(currentInterval.settlementId));
+      currentIds.add(String(currentInterval.settlementId));
     }
-
-    if (movement && movement.intermediateSettlementReached &&
+    if (movement && movement.status === "paused" && movement.intermediateSettlementReached &&
         movement.intermediateSettlementId != null) {
-      completedIds.add(String(movement.intermediateSettlementId));
+      currentIds.add(String(movement.intermediateSettlementId));
     }
     if (terminalPaused && window.routeDestinationCityId != null) {
-      completedIds.add(String(window.routeDestinationCityId));
+      currentIds.add(String(window.routeDestinationCityId));
     }
 
-    // Если маршрут заканчивается внутри города без обычного transit-флага,
-    // определяем его по фактическому положению жетона после восстановления.
-    const markerFallbackArea = !currentInterval && movement && movement.status === "paused" && partyMarker
+    // Резервно определяем только поселение под остановившимся маркером.
+    const markerFallbackArea = !currentIds.size && movement && movement.status === "paused" && partyMarker
       ? (window.settlementAreas || []).find(area =>
           Array.isArray(area.points) && area.points.length >= 3 &&
           typeof window.pointInSettlement === "function" &&
@@ -10777,10 +10816,11 @@ map.on("zoomend", function() {
         ) || null
       : null;
     if (markerFallbackArea && markerFallbackArea.id != null) {
-      completedIds.add(String(markerFallbackArea.id));
+      currentIds.add(String(markerFallbackArea.id));
     }
 
-    completedIds.forEach(id => {
+    let missingCurrentArea = false;
+    currentIds.forEach(id => {
       const area = (window.settlementAreas || []).find(item => String(item.id) === id);
       if (area && typeof window.completeRouteSettlementOutline === "function") {
         window.completeRouteSettlementOutline(area);
@@ -10789,7 +10829,14 @@ map.on("zoomend", function() {
       }
     });
 
-    const markerInsideSettlement = Boolean(currentInterval || markerFallbackArea || terminalPaused);
+    // Статичные контуры будущих поселений восстанавливаются отдельно по
+    // оставшейся части маршрута; уже пройденные поселения в список не входят.
+    if (typeof refreshRouteIntermediateCityOutlines === "function") {
+      refreshRouteIntermediateCityOutlines();
+    }
+
+    const markerInsideSettlement = Boolean(currentInterval || markerFallbackArea || terminalPaused ||
+      (movement && movement.status === "paused" && movement.intermediateSettlementReached));
     if (markerInsideSettlement) {
       window.partyMarkerHiddenForSettlementExit = true;
       if (partyMarker && partyMarker._icon) {
