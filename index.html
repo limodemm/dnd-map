@@ -35,6 +35,8 @@ body {
   border: 1px solid rgba(139, 111, 76, .48);
   background: linear-gradient(145deg, rgba(53,47,40,.96), rgba(27,26,25,.98) 48%, rgba(15,16,17,.98));
   box-shadow: 0 14px 38px rgba(0,0,0,.62), 0 3px 10px rgba(0,0,0,.48), inset 0 1px 0 rgba(218,195,157,.10), inset 0 0 0 4px rgba(0,0,0,.32);
+  clip-path: var(--map-frame-clip, inset(0));
+  -webkit-clip-path: var(--map-frame-clip, inset(0));
   pointer-events: none;
 }
 
@@ -391,6 +393,8 @@ map.panInsideBounds(bounds, { animate: false });
     if (!image || !image.isConnected) return;
 
     const mapRect = mapElement.getBoundingClientRect();
+    const wrapper = document.getElementById("map-wrapper");
+    const wrapperRect = wrapper ? wrapper.getBoundingClientRect() : mapRect;
     const imageRect = image.getBoundingClientRect();
     const width = mapRect.width;
     const height = mapRect.height;
@@ -398,6 +402,20 @@ map.panInsideBounds(bounds, { animate: false });
     const top = Math.max(0, Math.min(height, imageRect.top - mapRect.top));
     const right = Math.max(0, Math.min(width, mapRect.right - imageRect.right));
     const bottom = Math.max(0, Math.min(height, mapRect.bottom - imageRect.bottom));
+
+    // Внешняя бронзовая рамка шире контейнера карты на 13px со всех сторон.
+    // Поэтому её clip-path рассчитывается относительно wrapper, но по тем же
+    // фактическим границам изображения, что и обрезка света/внутренней рамки.
+    const frameLeft = Math.max(0, imageRect.left - wrapperRect.left);
+    const frameTop = Math.max(0, imageRect.top - wrapperRect.top);
+    const frameRight = Math.max(0, wrapperRect.right - imageRect.right);
+    const frameBottom = Math.max(0, wrapperRect.bottom - imageRect.bottom);
+    if (wrapper) {
+      wrapper.style.setProperty(
+        "--map-frame-clip",
+        `inset(${frameTop}px ${frameRight}px ${frameBottom}px ${frameLeft}px)`
+      );
+    }
 
     if (imageRect.right <= mapRect.left || imageRect.left >= mapRect.right ||
         imageRect.bottom <= mapRect.top || imageRect.top >= mapRect.bottom) {
